@@ -1,8 +1,8 @@
 package com.andhab.cubelens.ui.cube
 
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -74,6 +74,10 @@ internal object TurnEasing {
 internal val Move.signedQuarterTurns: Int
     get() = if (turns == 3) -1 else turns
 
+/** [Move.signedQuarterTurns] for a turn of any layers. */
+internal val LayerMove.signedQuarterTurns: Int
+    get() = if (turns == 3) -1 else turns
+
 /**
  * Rotation in degrees (right-handed, about `move.face.normal`) of the turning layer at linear
  * time fraction [progress]. Clockwise as seen from outside the face is negative.
@@ -81,36 +85,29 @@ internal val Move.signedQuarterTurns: Int
 internal fun turnAngleDegrees(move: Move, progress: Float): Float =
     -90f * move.signedQuarterTurns * TurnEasing.transform(progress)
 
+/** [turnAngleDegrees] for a turn of any layers: they all rotate about `move.face.normal`. */
+internal fun turnAngleDegrees(move: LayerMove, progress: Float): Float =
+    -90f * move.signedQuarterTurns * TurnEasing.transform(progress)
+
 /**
- * Static cube geometry plus the small amount of math the renderer needs each frame. Everything
- * works on preallocated [FloatArray]s so a frame does not allocate.
+ * Size-independent camera and rotation math of the renderer. Everything works on preallocated
+ * [FloatArray]s so a frame does not allocate.
  *
- * Coordinates match [Facelets]: x right (R), y up (U), z towards the viewer (F). Cubie centers are
- * at integer coordinates in -1..1 and each cubie is a unit cube.
+ * World coordinates match [com.andhab.cubelens.core.nxn.NxNGeometry]'s axes: x right (R), y up (U),
+ * z towards the viewer (F). Whatever its size, the cube spans [-HALF_EXTENT, HALF_EXTENT] on every
+ * axis (a 3×3 has unit cubies), so the camera and framing are the same for every size.
  */
 internal object CubeGeometry {
-    const val CUBIE_COUNT = 27
+    /** Half the edge length of the whole cube, in world units. */
+    const val HALF_EXTENT = 1.5f
 
-    /** Distance from the cube center to the camera, in cubie units. */
+    /** Distance from the cube center to the camera, in world units. */
     const val CAMERA_DISTANCE = 10.5f
 
     /** Radius of the sphere that contains the cube in any orientation and mid-turn. */
     const val BOUNDING_RADIUS = 2.6f
 
-    /** Cubie index for integer coordinates in -1..1. */
-    fun cubieIndex(x: Int, y: Int, z: Int): Int = (x + 1) * 9 + (y + 1) * 3 + (z + 1)
-
-    /** Cubie positions, flattened as x, y, z per [cubieIndex]. */
-    val cubiePosition: IntArray = IntArray(CUBIE_COUNT * 3).also { p ->
-        for (x in -1..1) for (y in -1..1) for (z in -1..1) {
-            val c = cubieIndex(x, y, z)
-            p[c * 3] = x
-            p[c * 3 + 1] = y
-            p[c * 3 + 2] = z
-        }
-    }
-
-    /** Outward normal of each of the six cubie faces, in [Face] order, flattened xyz. */
+    /** Outward normal of each of the six faces, in [Face] order, flattened xyz. */
     val faceNormal: IntArray = IntArray(18).also { n ->
         Face.entries.forEach { f ->
             n[f.ordinal * 3] = f.normal.x
@@ -120,8 +117,8 @@ internal object CubeGeometry {
     }
 
     /**
-     * In-plane axes (u, v) of each face with u x v = normal. The renderer maps a face's local square
-     * (0..S along u, 0..S along v) onto its projected quad.
+     * In-plane axes (u, v) of each face with u x v = normal. The renderer maps a face's local
+     * rectangle (x along u, y along v) onto its projected quad.
      */
     val faceU: IntArray = intArrayOf(
         1, 0, 0, // U
@@ -142,17 +139,6 @@ internal object CubeGeometry {
         0, 1, 0, // B
     )
 
-    /** Facelet index shown on cubie face `cubie * 6 + face`, or -1 for an inner (sticker-less) face. */
-    val sticker: IntArray = IntArray(CUBIE_COUNT * 6) { -1 }.also { s ->
-        for (i in 0 until Facelets.COUNT) {
-            val p = Facelets.position[i]
-            s[cubieIndex(p.x, p.y, p.z) * 6 + Facelets.faceOf(i).ordinal] = i
-        }
-    }
-
-    /** Whether integer coordinates lie inside the 3x3x3 grid. */
-    fun inGrid(x: Int, y: Int, z: Int): Boolean = x in -1..1 && y in -1..1 && z in -1..1
-
     /** Axis index (0 = x, 1 = y, 2 = z) of a face normal. */
     fun axisOf(face: Face): Int = when (face) {
         Face.R, Face.L -> 0
@@ -160,12 +146,22 @@ internal object CubeGeometry {
         Face.F, Face.B -> 2
     }
 
-    /** Which slab along [axisOf] the outer layer of [face] occupies: +1 or -1. */
-    fun slabOf(face: Face): Int = with(face.normal) { x + y + z }
+    /** Sign (+1 or -1) of [face]'s normal along its [axisOf]. Allocation-free (unlike [Face.normal]). */
+    fun signOf(face: Face): Int = signOfVector(faceNormal, face.ordinal)
+
+    /** Axis index of the unit vector stored at [vectors]`[d * 3]` (e.g. [faceU] or [faceV] of face d). */
+    fun axisOfVector(vectors: IntArray, d: Int): Int = when {
+        vectors[d * 3] != 0 -> 0
+        vectors[d * 3 + 1] != 0 -> 1
+        else -> 2
+    }
+
+    /** Sign of the unit vector stored at [vectors]`[d * 3]` along its axis. */
+    fun signOfVector(vectors: IntArray, d: Int): Int = vectors[d * 3] + vectors[d * 3 + 1] + vectors[d * 3 + 2]
 
     /**
      * Writes the 3x3 row-major matrix of a right-handed rotation by [degrees] about the integer unit
-     * [axis] (Rodrigues' formula) into [out].
+     * axis into [out] (Rodrigues' formula).
      */
     fun rotation(axisX: Int, axisY: Int, axisZ: Int, degrees: Float, out: FloatArray) {
         val rad = Math.toRadians(degrees.toDouble())
@@ -210,81 +206,6 @@ internal object CubeGeometry {
         out[2] = view[8] * CAMERA_DISTANCE
     }
 
-    /**
-     * Back-to-front order of the three slabs at coordinates -1, 0, 1 along one axis, for an eye whose
-     * coordinate along that axis is [eye]. Slabs are separated by the planes at -0.5 and 0.5, so a
-     * slab farther from the eye (by distance to its center line) can never cover a nearer one.
-     */
-    fun slabOrder(eye: Float, out: IntArray) {
-        when {
-            eye > 0.5f -> { out[0] = -1; out[1] = 0; out[2] = 1 }
-            eye < -0.5f -> { out[0] = 1; out[1] = 0; out[2] = -1 }
-            // The eye is between the two planes: the outer slabs cannot overlap each other on screen,
-            // and the middle slab is in front of both.
-            eye >= 0f -> { out[0] = -1; out[1] = 1; out[2] = 0 }
-            else -> { out[0] = 1; out[1] = -1; out[2] = 0 }
-        }
-    }
-
-    /**
-     * Painter's order (back to front) of all 27 cubies.
-     *
-     * The three slabs along [axis] are ordered first (the turning layer stays inside its slab because
-     * it rotates about that axis). Inside a slab the cubies form a rigid 3x3 grid, so rows and then
-     * cubies are ordered the same way using the eye position expressed in the slab's own frame: for
-     * the turning slab ([turningSlab], or 0 if nothing turns) that frame is rotated by
-     * [layerRotation]. Every step is separated by a plane, which makes the order exact.
-     *
-     * @param eye camera position in cube coordinates (3 floats).
-     * @param axis turning axis (0 = x, 1 = y, 2 = z); any axis when nothing turns.
-     * @param out receives the 27 cubie indices, back to front.
-     * @param scratch reusable working memory, so ordering a frame allocates nothing.
-     */
-    fun cubieDrawOrder(
-        eye: FloatArray,
-        axis: Int,
-        turningSlab: Int,
-        layerRotation: FloatArray,
-        out: IntArray,
-        scratch: OrderScratch,
-    ) {
-        val b = (axis + 1) % 3
-        val c = (axis + 2) % 3
-        slabOrder(eye[axis], scratch.slabs)
-        var n = 0
-        for (si in 0 until 3) {
-            val slab = scratch.slabs[si]
-            val local = scratch.localEye
-            if (turningSlab != 0 && slab == turningSlab) {
-                // Eye in the rotated slab's frame: R^T * eye.
-                val r = layerRotation
-                local[0] = r[0] * eye[0] + r[3] * eye[1] + r[6] * eye[2]
-                local[1] = r[1] * eye[0] + r[4] * eye[1] + r[7] * eye[2]
-                local[2] = r[2] * eye[0] + r[5] * eye[1] + r[8] * eye[2]
-            } else {
-                local[0] = eye[0]; local[1] = eye[1]; local[2] = eye[2]
-            }
-            slabOrder(local[b], scratch.rows)
-            slabOrder(local[c], scratch.cols)
-            for (ri in 0 until 3) for (ci in 0 until 3) {
-                val coord = scratch.coord
-                coord[axis] = slab
-                coord[b] = scratch.rows[ri]
-                coord[c] = scratch.cols[ci]
-                out[n++] = cubieIndex(coord[0], coord[1], coord[2])
-            }
-        }
-    }
-
-    /** Reusable working memory for [cubieDrawOrder]. */
-    class OrderScratch {
-        val slabs = IntArray(3)
-        val rows = IntArray(3)
-        val cols = IntArray(3)
-        val coord = IntArray(3)
-        val localEye = FloatArray(3)
-    }
-
     /** Multiplies the 3x3 row-major matrix [m] with (x, y, z) and writes the result at [out][offset]. */
     fun transform(m: FloatArray, x: Float, y: Float, z: Float, out: FloatArray, offset: Int = 0) {
         out[offset] = m[0] * x + m[1] * y + m[2] * z
@@ -297,5 +218,33 @@ internal object CubeGeometry {
         out[offset] = m[0] * x + m[3] * y + m[6] * z
         out[offset + 1] = m[1] * x + m[4] * y + m[7] * z
         out[offset + 2] = m[2] * x + m[5] * y + m[8] * z
+    }
+
+    /**
+     * Back-to-front painting order of [count] slabs stacked along one axis.
+     *
+     * Slab `i` spans `[starts[i], ends[i]]` along the axis; slabs are sorted and do not overlap
+     * (`ends[i] <= starts[i + 1]`), so any two are separated by a plane perpendicular to the axis.
+     * [eye] is the eye's coordinate on that axis. A slab is painted only once every slab it could
+     * cover is already painted:
+     *  - a slab whose upper plane is below the eye is behind all slabs above it, and a slab whose
+     *    lower plane is above the eye is behind all slabs below it;
+     *  - slabs on opposite sides of the eye's own plane never overlap on screen;
+     *  - so peeling the lowest or highest remaining slab, whichever lies beyond the eye, is exact.
+     *
+     * Writes slab indices, back to front, into [out]. Allocation-free.
+     */
+    fun backToFront(count: Int, starts: FloatArray, ends: FloatArray, eye: Float, out: IntArray) {
+        var lo = 0
+        var hi = count - 1
+        var k = 0
+        while (lo <= hi) {
+            out[k++] = when {
+                eye >= ends[lo] -> lo++
+                eye <= starts[hi] -> hi--
+                // Only reachable with a single slab left (the eye is inside it).
+                else -> lo++
+            }
+        }
     }
 }

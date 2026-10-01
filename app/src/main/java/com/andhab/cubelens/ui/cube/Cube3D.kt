@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Velocity
 import com.andhab.cubelens.core.cube.Face
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -38,16 +39,19 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * A glossy, real-time 3D Rubik's cube drawn with Compose Canvas.
+ * A glossy, real-time 3D twisty cube of any size (2×2 up to 10×10) drawn with Compose Canvas.
  *
- * Layer turns, colors and the camera come from [state]. The cube is centered in the available
- * space, sized to fit any orientation, and sits above a soft warm glow.
+ * Layer turns, colors, size and the camera come from [state]; sticker colors are drawn in
+ * [LocalStickerPalette], so a pastel or knock-off cube looks like itself. The cube is centered in
+ * the available space, sized to fit any orientation, and sits above a soft warm glow. The cube
+ * takes the same space whatever its size, so bigger cubes simply have smaller cubies.
  *
  * @param interactive drag to orbit the camera; releasing with speed keeps it spinning with inertia.
  *   Drags past touch slop are consumed in every direction, so inside a vertically scrolling
  *   container the page does not scroll while the drag starts on the cube.
  * @param autoRotate slow idle spin and a gentle float (the Home hero). Pauses while the user drags.
- * @param highlightFacelets stickers outlined with a pulsing [com.andhab.cubelens.ui.theme.Brand.Danger] ring.
+ * @param highlightFacelets stickers (indices into [CubeViewState.colors]) outlined with a pulsing
+ *   [com.andhab.cubelens.ui.theme.Brand.Danger] ring.
  * @param focusFace show this face at full brightness and dim the others; set [CubeViewState.yaw]
  *   and [CubeViewState.pitch] (e.g. from [viewAnglesFor]) so the face is visible.
  */
@@ -62,6 +66,7 @@ fun Cube3D(
 ) {
     val renderer = remember { CubeRenderer() }
     val frame = remember { CubeFrame() }
+    val palette = LocalStickerPalette.current
     val scope = rememberCoroutineScope()
     val orbit = remember(state) { OrbitController(state, scope) }
 
@@ -82,6 +87,8 @@ fun Cube3D(
     }
 
     val pulse: State<Float>? = if (highlightFacelets.isNotEmpty()) rememberHighlightPulse() else null
+    // A lookup table, so drawing never boxes sticker indices.
+    val highlights = remember(highlightFacelets) { highlightTable(highlightFacelets) }
 
     val faceDim = Face.entries.map { face ->
         animateFloatAsState(
@@ -104,11 +111,13 @@ fun Cube3D(
             .semantics { contentDescription = if (interactive) "3D cube, drag to rotate" else "3D cube" },
     ) {
         frame.colors = state.colors
+        frame.size = state.size
         frame.yaw = state.yaw
         frame.pitch = state.pitch
-        frame.move = state.animatingMove
+        frame.move = state.animatingLayerMove
         frame.progress = state.moveProgress
-        frame.highlights = highlightFacelets
+        frame.highlights = highlights
+        frame.palette = palette
         frame.pulse = pulse?.value ?: 0f
         for (i in faceDim.indices) frame.faceDim[i] = faceDim[i].value
         frame.focusFace = focusFace
@@ -116,6 +125,13 @@ fun Cube3D(
         frame.lift = if (autoRotate) sin(idleClock.floatValue * FLOAT_RADIANS_PER_SECOND) else 0f
         drawIntoCanvas { renderer.draw(it.nativeCanvas, size.width, size.height, frame) }
     }
+}
+
+/** Sticker indices as a lookup table (`table[i]` = highlighted), or null for none. */
+internal fun highlightTable(stickers: Set<Int>): BooleanArray? {
+    val valid = stickers.filter { it >= 0 }
+    if (valid.isEmpty()) return null
+    return BooleanArray(valid.max() + 1).also { table -> for (i in valid) table[i] = true }
 }
 
 /** Degrees of yaw per second for the idle spin. */

@@ -1,8 +1,14 @@
 package com.andhab.cubelens.ui.theme
 
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import com.andhab.cubelens.core.cube.CubeColor
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * CubeLens brand palette: "sunset on ink". Near-black backgrounds, a hot magenta → orange → gold
@@ -58,7 +64,13 @@ object Brand {
     val GlassBorderBrush: Brush = Brush.verticalGradient(listOf(Color(0x2EFFFFFF), Color(0x0FFFFFFF)))
 }
 
-/** Sticker colors used everywhere a cube is drawn. */
+/**
+ * The stock sticker colors and the cube body.
+ *
+ * Cube visuals read sticker colors through [LocalStickerPalette] (whose default,
+ * [StickerPalette.Standard], uses these values), so a cube with non-standard stickers is drawn in
+ * its own colors. Only the brand mark always uses these.
+ */
 object CubePalette {
     val Body = Color(0xFF0D0D13)
     val BodyEdge = Color(0xFF1A1A22)
@@ -73,5 +85,228 @@ object CubePalette {
         CubeColor.BLUE -> Color(0xFF1F6BFF)
         CubeColor.RED -> Color(0xFFF2243C)
         CubeColor.ORANGE -> Color(0xFFFF7B00)
+    }
+}
+
+/**
+ * The display color of each sticker label of the cube being shown.
+ *
+ * A [CubeColor] is only a label: a knock-off cube may have pastel stickers where a standard cube
+ * has vivid ones. Provide the user's colors through [LocalStickerPalette] and every cube visual (3D
+ * cube, net, face thumbnails, sticker grids) draws in them. Labels missing from the map fall back
+ * to [Standard]; `null` (a sticker not set yet) is always [CubePalette.Unknown].
+ *
+ * Palettes compare by value, so an equal palette never invalidates drawing caches.
+ */
+@Immutable
+class StickerPalette(colors: Map<CubeColor, Color>) {
+    private val table: Array<Color> = Array(CubeColor.entries.size) { i ->
+        val label = CubeColor.entries[i]
+        colors[label] ?: CubePalette.color(label)
+    }
+    private val finishes: Array<StickerFinish> = Array(table.size) { StickerFinish.of(table[it]) }
+
+    /** Display color of a sticker; `null` means "not set yet". */
+    fun color(c: CubeColor?): Color = if (c == null) CubePalette.Unknown else table[c.ordinal]
+
+    /** How a sticker of label [c] is lit: gloss and shadow adapted to its lightness. */
+    fun finish(c: CubeColor?): StickerFinish = if (c == null) UnknownFinish else finishes[c.ordinal]
+
+    override fun equals(other: Any?): Boolean = other is StickerPalette && table.contentEquals(other.table)
+
+    override fun hashCode(): Int = table.contentHashCode()
+
+    override fun toString(): String =
+        CubeColor.entries.joinToString(prefix = "StickerPalette(", postfix = ")") { "${it.letter}=${table[it.ordinal]}" }
+
+    companion object {
+        /** The stock vivid colors of [CubePalette]. */
+        val Standard: StickerPalette = StickerPalette(CubeColor.entries.associateWith { CubePalette.color(it) })
+
+        /** A palette from ARGB color ints (e.g. averaged from camera frames), one per label. */
+        fun fromArgb(colors: Map<CubeColor, Int>): StickerPalette = StickerPalette(colors.mapValues { Color(it.value) })
+
+        private val UnknownFinish = StickerFinish.of(CubePalette.Unknown)
+    }
+}
+
+/**
+ * The sticker colors cube visuals draw with. Defaults to [StickerPalette.Standard]; provide the
+ * scanned cube's own colors for knock-off or pastel cubes. It is static: a palette change redraws
+ * everything below the provider, which is what it needs anyway.
+ */
+val LocalStickerPalette = staticCompositionLocalOf { StickerPalette.Standard }
+
+/**
+ * How glossy sticker plastic of one [base] color is lit, so that every color reads as rich plastic
+ * on the dark UI, vivid and pastel alike.
+ *
+ * Vivid colors and neutral white keep the classic recipe: a white gloss, a black corner shadow and
+ * plain darkening on faces turned away from the light. Light, softly saturated colors (pastels)
+ * would wash out under it: white gloss over pale pink reads as white, darkening turns it grey, and
+ * darkened lemon or peach read as olive and brown. So in proportion to [pastel]:
+ *  - the white gloss is gentler ([glossScale] < 1);
+ *  - the corner shadow is a deep tint of the hue ([shadow]) and a little stronger ([shadeScale] > 1),
+ *    which gives pale stickers shape instead of a grey smudge;
+ *  - faces turned from the light darken less, deepen their saturation instead, and oranges drift
+ *    slightly towards red (peach to coral) rather than to brown ([shadeArgb]), like real pastel
+ *    plastic in the shade. Yellows are the touchiest: any real darkening or a drift towards orange
+ *    turns lemon into mustard, so they keep most of their light, barely drift, and gain a little
+ *    more saturation instead (a deeper lemon).
+ */
+@Immutable
+class StickerFinish private constructor(
+    val base: Color,
+    /** 0 for vivid or neutral colors, up to 1 for a light, softly saturated color. */
+    val pastel: Float,
+    /** Multiplier for the strength of the white gloss highlight. */
+    val glossScale: Float,
+    /** Multiplier for the strength of the corner shadow. */
+    val shadeScale: Float,
+    /** Color of the corner shadow: black for vivid colors, a deep tint of the hue for pastels. */
+    val shadow: Color,
+    private val hue: Float,
+    private val saturation: Float,
+    private val value: Float,
+    /** Degrees a warm hue drifts towards red at full shade. */
+    private val warmDrift: Float,
+    /** Fraction of the darkening a full pastel of this hue is spared. */
+    private val lightKept: Float,
+    /** How much saturation grows as the color darkens, per unit of lost light. */
+    private val saturationGain: Float,
+) {
+    /**
+     * [base] lit by [light] (0..1, 1 = fully lit) as packed ARGB: plain darkening (`rgb * light`) for
+     * vivid colors; pastels darken less and grow richer instead of turning grey, olive or brown.
+     * Allocation-free, so renderers may call it every frame.
+     */
+    fun shadeArgb(light: Float): Int {
+        val dark = (1f - light.coerceIn(0f, 1f)) * (1f - lightKept * pastel)
+        val s = min(1f, saturation * (1f + dark * saturationGain * pastel))
+        val h = (hue - warmDrift * dark + 360f) % 360f
+        return hsvToArgb(h, s, value * (1f - dark), base.alpha)
+    }
+
+    /** [shadeArgb] as a [Color]. */
+    fun shade(light: Float): Color = Color(shadeArgb(light))
+
+    override fun equals(other: Any?): Boolean = other is StickerFinish && base == other.base
+
+    override fun hashCode(): Int = base.hashCode()
+
+    companion object {
+        /**
+         * Finishes of recently used colors, direct-mapped by color: per-frame callers (stickers drawn
+         * every frame, even with animated colors) get them without recomputing or allocating. Races
+         * are benign: entries are immutable and a lost write only costs a recomputation.
+         */
+        private val recent = arrayOfNulls<StickerFinish>(64)
+
+        /** The finish for a sticker of [color]. */
+        fun of(color: Color): StickerFinish {
+            val slot = (color.value.hashCode() and Int.MAX_VALUE) % recent.size
+            recent[slot]?.let { if (it.base == color) return it }
+            return create(color).also { recent[slot] = it }
+        }
+
+        private fun create(color: Color): StickerFinish {
+            val r = color.red
+            val g = color.green
+            val b = color.blue
+            val maxC = max(r, max(g, b))
+            val delta = maxC - min(r, min(g, b))
+            val hue = when {
+                delta == 0f -> 0f
+                maxC == r -> 60f * (((g - b) / delta + 6f) % 6f)
+                maxC == g -> 60f * ((b - r) / delta + 2f)
+                else -> 60f * ((r - g) / delta + 4f)
+            }
+            val saturation = if (maxC == 0f) 0f else delta / maxC
+            val pastel = pastelness(color.luminance(), saturation)
+            // Warm hues (~20..80) go brown or olive when darkened, so they drift towards red instead.
+            val warm = smoothstep(15f, 30f, hue) * (1f - smoothstep(70f, 90f, hue))
+            // Except yellows (~45..70), which that would make mustard: they stay light and keep their hue.
+            val yellow = smoothstep(38f, 48f, hue) * (1f - smoothstep(66f, 76f, hue))
+            val warmDrift = WARM_DRIFT_DEGREES * pastel * warm * (1f - YELLOW_DRIFT_CUT * yellow)
+            val tintHue = (hue - warmDrift * 0.5f + 360f) % 360f
+            val tint = Color(hsvToArgb(tintHue, min(1f, saturation * 1.6f + 0.12f), maxC * 0.4f, 1f))
+            return StickerFinish(
+                base = color,
+                pastel = pastel,
+                glossScale = 1f - 0.45f * pastel,
+                shadeScale = 1f + 0.6f * pastel,
+                shadow = Color(
+                    red = tint.red * pastel,
+                    green = tint.green * pastel,
+                    blue = tint.blue * pastel,
+                ),
+                hue = hue,
+                saturation = saturation,
+                value = maxC,
+                warmDrift = warmDrift,
+                lightKept = PASTEL_LIGHT_KEPT + YELLOW_LIGHT_KEPT * yellow,
+                saturationGain = PASTEL_SHADE_SATURATION * (1f + YELLOW_SATURATION_BOOST * yellow),
+            )
+        }
+
+        /**
+         * How pastel a color is: light (high relative [luminance]) and softly saturated. Neutral
+         * white and strongly saturated colors score 0, so the stock palette keeps its classic look.
+         */
+        internal fun pastelness(luminance: Float, saturation: Float): Float {
+            val light = smoothstep(0.25f, 0.6f, luminance)
+            val soft = smoothstep(0.08f, 0.2f, saturation) * (1f - smoothstep(0.62f, 0.82f, saturation))
+            return light * soft
+        }
+
+        /** How much a pastel's saturation grows as it darkens, per unit of lost light. */
+        private const val PASTEL_SHADE_SATURATION = 2f
+
+        /** Fraction of the darkening a full pastel is spared, so it still reads as itself in the shade. */
+        private const val PASTEL_LIGHT_KEPT = 0.35f
+
+        /** How far (degrees, towards red) a warm pastel's hue drifts at full shade. */
+        private const val WARM_DRIFT_DEGREES = 40f
+
+        /** Extra fraction of the darkening a full pastel yellow is spared (on top of [PASTEL_LIGHT_KEPT]). */
+        private const val YELLOW_LIGHT_KEPT = 0.25f
+
+        /** Fraction of [WARM_DRIFT_DEGREES] a pastel yellow gives up, so lemon never drifts to mustard. */
+        private const val YELLOW_DRIFT_CUT = 0.75f
+
+        /** Relative extra saturation gain of a pastel yellow in the shade (a deeper lemon). */
+        private const val YELLOW_SATURATION_BOOST = 0.25f
+
+        private fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
+            val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
+            return t * t * (3f - 2f * t)
+        }
+
+        /** Packed ARGB of hue (0..360), saturation, value and alpha (all 0..1); allocation-free. */
+        private fun hsvToArgb(hue: Float, saturation: Float, value: Float, alpha: Float): Int {
+            val c = value * saturation
+            val h = (hue / 60f).coerceIn(0f, 5.9999f)
+            val x = c * (1f - abs(h % 2f - 1f))
+            val m = value - c
+            val sector = h.toInt()
+            val r = when (sector) {
+                0, 5 -> c
+                1, 4 -> x
+                else -> 0f
+            }
+            val g = when (sector) {
+                1, 2 -> c
+                0, 3 -> x
+                else -> 0f
+            }
+            val b = when (sector) {
+                3, 4 -> c
+                2, 5 -> x
+                else -> 0f
+            }
+            return (channel(alpha) shl 24) or (channel(r + m) shl 16) or (channel(g + m) shl 8) or channel(b + m)
+        }
+
+        private fun channel(v: Float): Int = (v * 255f + 0.5f).toInt().coerceIn(0, 255)
     }
 }

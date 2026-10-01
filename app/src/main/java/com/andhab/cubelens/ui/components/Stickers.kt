@@ -34,12 +34,18 @@ import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
+import com.andhab.cubelens.ui.theme.StickerFinish
 
 /**
  * Draws one cube sticker as glossy plastic: a rounded square (≈18% corners) whose color brightens
  * toward the top-left, with a soft specular sheen across its upper half.
  *
- * @param color the sticker's display color, normally from [CubePalette.color].
+ * The lighting adapts to the color ([StickerFinish]): vivid colors get the classic white gloss and
+ * dark falloff, while light pastels get a gentler gloss and a deeper, hue-tinted falloff so they
+ * keep their color instead of washing out.
+ *
+ * @param color the sticker's display color, normally `LocalStickerPalette.current.color(label)`.
  */
 fun DrawScope.drawSticker(
     color: Color,
@@ -47,10 +53,15 @@ fun DrawScope.drawSticker(
     size: Size,
     cornerFraction: Float = 0.18f,
 ) {
+    val finish = StickerFinish.of(color)
     val radius = CornerRadius(size.minDimension * cornerFraction)
     drawRoundRect(
         brush = Brush.linearGradient(
-            listOf(lerp(color, Color.White, 0.18f), color, lerp(color, Color.Black, 0.12f)),
+            listOf(
+                lerp(color, Color.White, 0.18f * finish.glossScale),
+                color,
+                lerp(color, finish.shadow, 0.12f * finish.shadeScale),
+            ),
             start = topLeft,
             end = topLeft + Offset(size.width, size.height),
         ),
@@ -61,7 +72,7 @@ fun DrawScope.drawSticker(
     val inset = size.minDimension * 0.08f
     drawRoundRect(
         brush = Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = 0.30f), Color.White.copy(alpha = 0f)),
+            listOf(Color.White.copy(alpha = 0.30f * finish.glossScale), Color.White.copy(alpha = 0f)),
             startY = topLeft.y + inset,
             endY = topLeft.y + size.height * 0.55f,
         ),
@@ -73,7 +84,7 @@ fun DrawScope.drawSticker(
 
 /**
  * One face of the cube as a 3x3 grid of glossy stickers on a black body, e.g. the live scan
- * readout or a face of the review net.
+ * readout or a face of the review net. Stickers are drawn in [LocalStickerPalette].
  *
  * Flagged stickers never rely on color alone: the sticker shrinks inside a dark gap and a danger
  * ring, a "!" badge sits on its corner, a soft red glow spills around it, and screen readers hear
@@ -93,6 +104,7 @@ fun StickerGrid(
 ) {
     require(colors.size == 9) { "A face has 9 stickers, got ${colors.size}" }
     val flaggedState = stringResource(R.string.sticker_flagged)
+    val palette = LocalStickerPalette.current
     Column(
         modifier = modifier
             .aspectRatio(1f)
@@ -108,7 +120,7 @@ fun StickerGrid(
                     drawSoftGlow(Brand.Danger, alpha = 0.6f, center = cell.center, radiusX = cell.width * 0.9f)
                 }
                 for (index in 0 until 9) {
-                    val color = CubePalette.color(colors[index])
+                    val color = palette.color(colors[index])
                     val cell = cells.rect(index)
                     if (index in highlighted) drawFlaggedSticker(color, cell) else drawSticker(color, cell.topLeft, cell.size)
                 }

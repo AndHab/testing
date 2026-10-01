@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
@@ -20,6 +21,7 @@ import com.andhab.cubelens.core.cube.FaceletCube
 import com.andhab.cubelens.core.cube.Move
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubeLensTheme
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
 import org.junit.Test
@@ -68,6 +70,56 @@ class CubeNetScreenshotTest {
     @Test
     fun faceGridActiveLarge() = shot("cube_face_grid_active") {
         FaceGrid(scrambled.subList(Face.R.ordinal * 9, Face.R.ordinal * 9 + 9), Modifier.size(200.dp), active = true)
+    }
+
+    @Test
+    fun net4x4() = shot("cube_net_4x4") {
+        CubeNet(TestCubes.scrambled(4), Modifier.fillMaxWidth(), highlightFacelets = setOf(5, 37, 70), selectedFacelet = 42)
+    }
+
+    @Test
+    fun net7x7Tappable() = shot("cube_net_7x7") {
+        CubeNet(TestCubes.scrambled(7), Modifier.fillMaxWidth(), highlightFacelets = setOf(120), onFaceClick = {})
+    }
+
+    @Test
+    fun netPastel() = shot("cube_net_pastel") {
+        CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) {
+            CubeNet(scrambled, Modifier.fillMaxWidth(), selectedFacelet = 22, onStickerClick = {})
+        }
+    }
+
+    @Test
+    fun faceEditor5x5() = shot("cube_face_editor_5x5") {
+        val face = TestCubes.scrambled(5).subList(2 * 25, 3 * 25).mapIndexed { i, c -> if (i == 24) null else c }
+        FaceEditor(face, Modifier.fillMaxWidth(), highlightStickers = setOf(3, 16), selectedSticker = 12, onStickerClick = {})
+    }
+
+    @Test
+    fun faceEditor7x7Pastel() = shot("cube_face_editor_7x7_pastel") {
+        CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) {
+            FaceEditor(TestCubes.scrambled(7).subList(0, 49), Modifier.fillMaxWidth(), selectedSticker = 24, onStickerClick = {})
+        }
+    }
+
+    @Test
+    fun faceGridSizes() = shot("cube_face_grid_sizes") {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FaceGrid(TestCubes.scrambled(2).subList(0, 4), Modifier.width(110.dp))
+            FaceGrid(TestCubes.scrambled(4).subList(32, 48), Modifier.width(110.dp), active = true)
+            FaceGrid(TestCubes.scrambled(7).subList(98, 147), Modifier.width(110.dp))
+        }
+    }
+
+    @Test
+    fun faceGridPastel() = shot("cube_face_grid_pastel") {
+        CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FaceGrid(scrambled.subList(0, 9), Modifier.width(110.dp))
+                FaceGrid(scrambled.subList(18, 27), Modifier.width(110.dp), active = true)
+                FaceGrid(scrambled.subList(36, 45), Modifier.width(110.dp))
+            }
+        }
     }
 
     private fun shot(name: String, content: @Composable () -> Unit) {

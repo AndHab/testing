@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -18,6 +19,9 @@ import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.FaceletCube
 import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
+import com.andhab.cubelens.core.nxn.toLayerMove
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubeLensTheme
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -27,7 +31,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/** Product-shot screenshots of the 3D cube. PNGs land in app/build/outputs/roborazzi/cube_*.png. */
+/**
+ * Product-shot screenshots of the 3D cube in several sizes and palettes. PNGs land in
+ * app/build/outputs/roborazzi/cube_*.png.
+ */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w411dp-h891dp-xxhdpi")
@@ -47,13 +54,111 @@ class CubeScreenshotTest {
     fun scrambled() = shot("cube_scrambled") { CubeStage(scrambled) }
 
     @Test
-    fun midMoveR() = shot("cube_mid_R_040") { CubeStage(scrambled, preview = Move.R1 to 0.4f) }
+    fun midMoveR() = shot("cube_mid_R_040") { CubeStage(scrambled, preview = Move.R1.toLayerMove() to 0.4f) }
 
     @Test
-    fun midMoveUPrime() = shot("cube_mid_Uprime_060") { CubeStage(scrambled, preview = Move.U3 to 0.6f) }
+    fun midMoveUPrime() = shot("cube_mid_Uprime_060") { CubeStage(scrambled, preview = Move.U3.toLayerMove() to 0.6f) }
 
     @Test
-    fun midMoveF2() = shot("cube_mid_F2_050") { CubeStage(scrambled, preview = Move.F2 to 0.5f) }
+    fun midMoveF2() = shot("cube_mid_F2_050") { CubeStage(scrambled, preview = Move.F2.toLayerMove() to 0.5f) }
+
+    @Test
+    fun midSliceM() = shot("cube_mid_2R_045") { CubeStage(scrambled, preview = LayerMove.parse("2R") to 0.45f) }
+
+    @Test
+    fun twoByTwoScrambled() = shot("cube_2x2_scrambled") { CubeStage(TestCubes.scrambled(2)) }
+
+    @Test
+    fun fourByFourScrambled() = shot("cube_4x4_scrambled") { CubeStage(TestCubes.scrambled(4)) }
+
+    @Test
+    fun fourByFourMidWideR() = shot("cube_4x4_mid_Rw_045") {
+        CubeStage(TestCubes.scrambled(4), preview = LayerMove.parse("Rw") to 0.45f)
+    }
+
+    @Test
+    fun fiveByFiveMidInnerSlice() = shot("cube_5x5_mid_2R_050") {
+        CubeStage(TestCubes.scrambled(5), preview = LayerMove.parse("2R") to 0.5f)
+    }
+
+    @Test
+    fun sevenBySevenScrambled() = shot("cube_7x7_scrambled") { CubeStage(TestCubes.scrambled(7)) }
+
+    @Test
+    fun sevenBySevenMidWideU() = shot("cube_7x7_mid_3Uwprime_040") {
+        CubeStage(TestCubes.scrambled(7), preview = LayerMove.parse("3Uw'") to 0.4f)
+    }
+
+    @Test
+    fun sevenBySevenHighlightedAndFocused() = shot("cube_7x7_focus_F") {
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(TestCubes.scrambled(7), yaw = yaw, pitch = pitch, highlights = setOf(98, 110, 140), focus = Face.F)
+    }
+
+    @Test
+    fun wholeCubeRotation() = shot("cube_4x4_mid_x_035") {
+        CubeStage(TestCubes.scrambled(4), preview = LayerMove.parse("4Rw") to 0.35f)
+    }
+
+    @Test
+    fun sixBySixGrazingView() = shot("cube_6x6_grazing_3Fprime_050") {
+        // Nearly edge-on top face: the rounded corner where three faces meet must not show a dark cap.
+        CubeStage(TestCubes.scrambled(6), yaw = 170f, pitch = 10f, preview = LayerMove.parse("3F'") to 0.5f)
+    }
+
+    @Test
+    fun focusedWholeCubeRotationStart() = shot("cube_focus_F_mid_x_008") {
+        // A whole-cube rotation carries the focus frame along with the leaving face while it fades out.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = LayerMove.parse("3Rw") to 0.08f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedWholeCubeRotationMiddle() = shot("cube_focus_F_mid_x_050") {
+        // Mid-rotation no frame floats in space: it has faded out.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = LayerMove.parse("3Rw") to 0.5f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedWholeCubeRotationEnd() = shot("cube_focus_F_mid_x_094") {
+        // Near the end the frame rides in on the face arriving at the front.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = LayerMove.parse("3Rw") to 0.94f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedLayerTurnSettling() = shot("cube_focus_F_mid_R_080") {
+        // A layer settling into place: the frame fades back in over the face's slot, and the
+        // stickers turning into the front slot have brightened on the way.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = Move.R1.toLayerMove() to 0.8f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedLayerTurnMiddle() = shot("cube_focus_F_mid_R_045") {
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = Move.R1.toLayerMove() to 0.45f, focus = Face.F)
+    }
+
+    @Test
+    fun pastel() = shot("cube_pastel") {
+        CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) { CubeStage(scrambled) }
+    }
+
+    @Test
+    fun pastelMidMove() = shot("cube_pastel_mid_R_040") {
+        CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) {
+            CubeStage(scrambled, preview = Move.R1.toLayerMove() to 0.4f)
+        }
+    }
+
+    @Test
+    fun pastelSolvedFromBelow() = shot("cube_pastel_solved_below") {
+        CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) {
+            CubeStage(solved, yaw = 150f, pitch = -30f)
+        }
+    }
 
     @Test
     fun highlighted() = shot("cube_highlighted") {
@@ -125,7 +230,7 @@ class CubeScreenshotTest {
         colors: List<CubeColor?>,
         yaw: Float = -35f,
         pitch: Float = 28f,
-        preview: Pair<Move, Float>? = null,
+        preview: Pair<LayerMove, Float>? = null,
         highlights: Set<Int> = emptySet(),
         focus: Face? = null,
     ) {

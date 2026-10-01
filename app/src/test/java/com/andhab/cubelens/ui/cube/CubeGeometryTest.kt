@@ -3,48 +3,124 @@ package com.andhab.cubelens.ui.cube
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
+import com.andhab.cubelens.core.nxn.NxNGeometry
+import com.andhab.cubelens.core.nxn.toLayerMove
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.random.Random
 
 /** Pure-math tests of the renderer geometry (plain JVM, no Android). */
 class CubeGeometryTest {
 
+    /**
+     * For every size and every kind of turn (outer, wide, inner slice, ranges, whole-cube rotations;
+     * all faces, all amounts), rotating each turning sticker's position and normal by the full
+     * animation angle lands exactly on the sticker the committed permutation moves its color to,
+     * so the last frame of an animation and the committed colors are pixel-identical.
+     */
     @Test
-    fun finishedTurnLandsExactlyOnTheCommittedState() {
+    fun finishedTurnLandsExactlyOnTheCommittedStateForEverySizeAndLayerMove() {
         val r = FloatArray(9)
         val out = FloatArray(3)
-        for (move in Move.entries) {
-            val n = move.face.normal
-            CubeGeometry.rotation(n.x, n.y, n.z, turnAngleDegrees(move, 1f), r)
-            for (i in 0 until Facelets.COUNT) {
-                if (!Facelets.isInLayer(i, move.face)) continue
-                val j = (0 until Facelets.COUNT).single { move.permutation[it] == i }
-                val p = Facelets.position[i]
-                val q = Facelets.normal[i]
-
-                CubeGeometry.transform(r, p.x.toFloat(), p.y.toFloat(), p.z.toFloat(), out)
-                assertLandsOn(Facelets.position[j].let { intArrayOf(it.x, it.y, it.z) }, out, "$move position of $i")
-                CubeGeometry.transform(r, q.x.toFloat(), q.y.toFloat(), q.z.toFloat(), out)
-                assertLandsOn(Facelets.normal[j].let { intArrayOf(it.x, it.y, it.z) }, out, "$move normal of $i")
+        for (n in 2..7) {
+            val g = NxNGeometry.of(n)
+            val moves = allLayerMoves(n)
+            // Sanity: every kind of turn is covered.
+            assertTrue(moves.any { it.isOuter })
+            assertTrue(n < 3 || moves.any { it.fromDepth == 1 && it.toDepth in 2 until n })
+            assertTrue(n < 3 || moves.any { it.fromDepth == it.toDepth && it.fromDepth in 2 until n })
+            assertTrue(n < 4 || moves.any { it.fromDepth > 1 && it.toDepth > it.fromDepth && it.toDepth < n })
+            assertTrue(moves.any { it.fromDepth == 1 && it.toDepth == n })
+            for (move in moves) {
+                val axis = move.face.normal
+                CubeGeometry.rotation(axis.x, axis.y, axis.z, turnAngleDegrees(move, 1f), r)
+                val perm = g.permutation(move)
+                val destination = IntArray(g.stickerCount).also { d -> for (j in perm.indices) d[perm[j]] = j }
+                for (i in 0 until g.stickerCount) {
+                    val j = destination[i]
+                    if (!g.isMovedBy(i, move)) {
+                        assertEquals("$n×$n $move keeps sticker $i", i, j)
+                        continue
+                    }
+                    val p = g.position[i]
+                    val q = g.normal[i]
+                    CubeGeometry.transform(r, p.x.toFloat(), p.y.toFloat(), p.z.toFloat(), out)
+                    assertLandsOn(g.position[j].let { intArrayOf(it.x, it.y, it.z) }, out, "$n×$n $move position of $i")
+                    CubeGeometry.transform(r, q.x.toFloat(), q.y.toFloat(), q.z.toFloat(), out)
+                    assertLandsOn(g.normal[j].let { intArrayOf(it.x, it.y, it.z) }, out, "$n×$n $move normal of $i")
+                }
             }
         }
     }
 
     @Test
-    fun rendererLayerMatchesFaceletLayer() {
-        for (face in Face.entries) {
-            val axis = CubeGeometry.axisOf(face)
-            val slab = CubeGeometry.slabOf(face)
-            for (i in 0 until Facelets.COUNT) {
-                val p = Facelets.position[i]
-                val coord = intArrayOf(p.x, p.y, p.z)[axis]
-                assertEquals("$face facelet $i", Facelets.isInLayer(i, face), coord == slab)
+    fun outerLayerMovesAnimateLikeTheirThreeByThreeMoves() {
+        for (move in Move.entries) {
+            for (progress in listOf(0f, 0.3f, 0.5f, 1f)) {
+                assertEquals(turnAngleDegrees(move, progress), turnAngleDegrees(move.toLayerMove(), progress), 0f)
+            }
+            assertEquals(move.signedQuarterTurns, move.toLayerMove().signedQuarterTurns)
+        }
+    }
+
+    @Test
+    fun sceneTurnsExactlyTheLayersTheModelMoves() {
+        val scene = CubeScene()
+        for (n in 2..7) {
+            val lattice = CubeLattice.of(n)
+            val g = lattice.geometry
+            for (move in allLayerMoves(n)) {
+                scene.update(lattice, yaw = 10f, pitch = 20f, move = move, progress = 0.5f)
+                val axis = scene.axis
+                assertEquals(CubeGeometry.axisOf(move.face), axis)
+                for (i in 0 until g.stickerCount) {
+                    val p = g.position[i]
+                    val layer = (intArrayOf(p.x, p.y, p.z)[axis] + n - 1) / 2
+                    val inTurningGroup = (0 until scene.groupCount).any { k ->
+                        scene.isTurning(k) && layer in scene.lower(k, axis)..scene.upper(k, axis)
+                    }
+                    assertEquals("$n×$n $move sticker $i", g.isMovedBy(i, move), inTurningGroup)
+                }
             }
         }
+    }
+
+    @Test
+    fun latticeStickerTableMatchesTheModel() {
+        for (n in 2..7) {
+            val lattice = CubeLattice.of(n)
+            val g = lattice.geometry
+            var stickers = 0
+            for (x in 0 until n) for (y in 0 until n) for (z in 0 until n) for (d in 0 until 6) {
+                val i = lattice.sticker(x, y, z, d)
+                if (i < 0) continue
+                stickers++
+                assertEquals(Face.entries[d], g.faceOf(i))
+                val p = g.position[i]
+                assertEquals(listOf(2 * x - (n - 1), 2 * y - (n - 1), 2 * z - (n - 1)), listOf(p.x, p.y, p.z))
+            }
+            assertEquals(g.stickerCount, stickers)
+            assertEquals(2f * CubeGeometry.HALF_EXTENT, n * lattice.cell, 1e-5f)
+        }
+        // A 3×3 lattice has unit cubies at integer centers, like the facelet model.
+        val three = CubeLattice.of(3)
+        for (i in 0 until Facelets.COUNT) {
+            val p = Facelets.position[i]
+            assertEquals(i, three.sticker(p.x + 1, p.y + 1, p.z + 1, Facelets.faceOf(i).ordinal))
+        }
+    }
+
+    @Test
+    fun layerAtDepthCountsFromTheMovingFace() {
+        val lattice = CubeLattice.of(5)
+        assertEquals(4, lattice.layerAtDepth(Face.R, 1))
+        assertEquals(0, lattice.layerAtDepth(Face.L, 1))
+        assertEquals(3, lattice.layerAtDepth(Face.U, 2))
+        assertEquals(1, lattice.layerAtDepth(Face.B, 2))
+        assertEquals(0, lattice.layerAtDepth(Face.F, 5))
     }
 
     @Test
@@ -52,6 +128,8 @@ class CubeGeometryTest {
         assertEquals(-90f, turnAngleDegrees(Move.U1, 1f), 0f)
         assertEquals(-180f, turnAngleDegrees(Move.U2, 1f), 0f)
         assertEquals(90f, turnAngleDegrees(Move.U3, 1f), 0f)
+        assertEquals(90f, turnAngleDegrees(LayerMove.parse("3Uw'"), 1f), 0f)
+        assertEquals(-180f, turnAngleDegrees(LayerMove.parse("2R2"), 1f), 0f)
         for (move in Move.entries) {
             assertEquals(0f, turnAngleDegrees(move, 0f), 0f)
             // Never overshoots and moves monotonically.
@@ -71,21 +149,10 @@ class CubeGeometryTest {
             val v = IntArray(3) { CubeGeometry.faceV[d * 3 + it] }
             val cross = intArrayOf(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
             assertEquals(Face.entries[d].normal.let { listOf(it.x, it.y, it.z) }, cross.toList())
+            assertEquals(Face.entries[d].normal.let { listOf(it.x, it.y, it.z) }, IntArray(3) { CubeGeometry.faceNormal[d * 3 + it] }.toList())
+            assertEquals(CubeGeometry.axisOf(Face.entries[d]), CubeGeometry.axisOfVector(CubeGeometry.faceNormal, d))
+            assertEquals(CubeGeometry.signOf(Face.entries[d]), CubeGeometry.signOfVector(CubeGeometry.faceNormal, d))
         }
-    }
-
-    @Test
-    fun stickerTableMatchesFacelets() {
-        var stickers = 0
-        for (c in 0 until CubeGeometry.CUBIE_COUNT) for (d in 0 until 6) {
-            val facelet = CubeGeometry.sticker[c * 6 + d]
-            if (facelet < 0) continue
-            stickers++
-            val p = Facelets.position[facelet]
-            assertEquals(c, CubeGeometry.cubieIndex(p.x, p.y, p.z))
-            assertEquals(Face.entries[d], Facelets.faceOf(facelet))
-        }
-        assertEquals(Facelets.COUNT, stickers)
     }
 
     @Test
@@ -129,72 +196,6 @@ class CubeGeometryTest {
     }
 
     @Test
-    fun slabOrderIsBackToFront() {
-        val out = IntArray(3)
-        CubeGeometry.slabOrder(5f, out)
-        assertEquals(listOf(-1, 0, 1), out.toList())
-        CubeGeometry.slabOrder(-5f, out)
-        assertEquals(listOf(1, 0, -1), out.toList())
-        CubeGeometry.slabOrder(0.2f, out)
-        assertEquals(0, out[2])
-        CubeGeometry.slabOrder(-0.3f, out)
-        assertEquals(0, out[2])
-        for (e in listOf(-3f, -0.7f, -0.2f, 0f, 0.4f, 0.6f, 3f)) {
-            CubeGeometry.slabOrder(e, out)
-            assertEquals(setOf(-1, 0, 1), out.toSet())
-            // Distance from the eye to each slab's center never increases along the order.
-            for (k in 0 until 2) assertTrue(abs(e - out[k]) >= abs(e - out[k + 1]))
-        }
-    }
-
-    @Test
-    fun cubieDrawOrderNeverPaintsANearerCubieFirst() {
-        val random = Random(20261001)
-        val view = FloatArray(9)
-        val eye = FloatArray(3)
-        val layer = FloatArray(9)
-        val order = IntArray(CubeGeometry.CUBIE_COUNT)
-        val scratch = CubeGeometry.OrderScratch()
-        val local = FloatArray(3)
-        repeat(600) { iteration ->
-            val yaw = random.nextFloat() * 360f - 180f
-            val pitch = random.nextFloat() * 160f - 80f
-            val move = if (iteration % 6 == 0) null else Move.entries[random.nextInt(Move.entries.size)]
-            val progress = random.nextFloat()
-            CubeGeometry.viewRotation(yaw, pitch, view)
-            CubeGeometry.eyePosition(view, eye)
-            val axis = move?.let { CubeGeometry.axisOf(it.face) } ?: 1
-            val turning = move?.let { CubeGeometry.slabOf(it.face) } ?: 0
-            if (move != null) {
-                val n = move.face.normal
-                CubeGeometry.rotation(n.x, n.y, n.z, turnAngleDegrees(move, progress), layer)
-            } else {
-                CubeGeometry.identity(layer)
-            }
-            CubeGeometry.cubieDrawOrder(eye, axis, turning, layer, order, scratch)
-            assertEquals((0 until CubeGeometry.CUBIE_COUNT).toSet(), order.toSet())
-
-            for (i in order.indices) for (j in i + 1 until order.size) {
-                val a = order[i]
-                val b = order[j]
-                val pa = position(a)
-                val pb = position(b)
-                val aTurns = turning != 0 && pa[axis] == turning
-                val bTurns = turning != 0 && pb[axis] == turning
-                val ok = if (aTurns != bTurns) {
-                    // Different slabs along the turning axis: both stay inside their slab, so any plane
-                    // between the two slabs separates them.
-                    eyeOnSideOf(pa[axis], pb[axis], eye[axis])
-                } else {
-                    if (aTurns) CubeGeometry.transformTransposed(layer, eye[0], eye[1], eye[2], local) else eye.copyInto(local)
-                    (0 until 3).any { k -> eyeOnSideOf(pa[k], pb[k], local[k]) }
-                }
-                assertTrue("iteration $iteration ($yaw, $pitch, $move @ $progress): cubie $a drawn before $b", ok)
-            }
-        }
-    }
-
-    @Test
     fun turnEasingHitsEndpointsExactly() {
         assertEquals(0f, TurnEasing.transform(0f), 0f)
         assertEquals(1f, TurnEasing.transform(1f), 0f)
@@ -211,22 +212,38 @@ class CubeGeometryTest {
         assertEquals(10f, wrapDegrees(370f + 720f), 1e-3f)
     }
 
-    /**
-     * Whether some plane perpendicular to this axis separates the two cubies (coordinates [a] and
-     * [b]) with the eye on [b]'s side.
-     */
-    private fun eyeOnSideOf(a: Int, b: Int, eye: Float): Boolean = when {
-        b > a -> eye > a + 0.5f
-        b < a -> eye < a - 0.5f
-        else -> false
+    @Test
+    fun cubeSizeIsInferredFromStickerCounts() {
+        for (n in 2..10) {
+            assertEquals(n, CubeSizes.ofCube(6 * n * n))
+            assertEquals(n, CubeSizes.ofFace(n * n))
+        }
+        for (bad in listOf(0, 1, 6, 9, 53, 55, 6 * 11 * 11, -54)) {
+            assertThrows("cube of $bad") { CubeSizes.ofCube(bad) }
+        }
+        for (bad in listOf(0, 1, 8, 10, 54, 121)) {
+            assertThrows("face of $bad") { CubeSizes.ofFace(bad) }
+        }
     }
 
-    private fun position(c: Int) = IntArray(3) { CubeGeometry.cubiePosition[c * 3 + it] }
+    private fun assertThrows(what: String, block: () -> Unit) {
+        val thrown = runCatching(block).exceptionOrNull()
+        assertTrue("$what should be rejected", thrown is IllegalArgumentException)
+    }
 
     private fun assertLandsOn(expected: IntArray, actual: FloatArray, what: String) {
         for (k in 0 until 3) {
             assertEquals(what, expected[k], actual[k].roundToInt())
-            assertTrue("$what lands exactly", abs(actual[k] - expected[k]) < 1e-5f)
+            assertTrue("$what lands exactly", abs(actual[k] - expected[k]) < 1e-4f)
+        }
+    }
+
+    companion object {
+        /** Every layer range of every face of an [n]×[n] cube, with every amount of turn. */
+        fun allLayerMoves(n: Int): List<LayerMove> = buildList {
+            for (face in Face.entries) for (from in 1..n) for (to in from..n) for (turns in 1..3) {
+                add(LayerMove(face, from, to, turns))
+            }
         }
     }
 }

@@ -41,5 +41,8 @@ val CubeLensTypography = Typography(
     labelSmall = TextStyle(fontFamily = BodyFont, fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.06.em),
 )
 
-/** Big move notation, e.g. "R'" on the solve screen. */
+/**
+ * Big move notation, e.g. "R′" on the solve screen. Pass the text through
+ * [com.andhab.cubelens.ui.components.displayNotation] so primes render as a true prime mark.
+ */
 val NotationStyle = TextStyle(fontFamily = DisplayFont, fontWeight = FontWeight.Bold, fontSize = 72.sp, lineHeight = 72.sp, letterSpacing = (-0.02).em)

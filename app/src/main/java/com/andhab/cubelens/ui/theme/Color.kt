@@ -19,10 +19,24 @@ object Brand {
     val Hairline = Color(0x1AFFFFFF)
     val HairlineStrong = Color(0x33FFFFFF)
 
+    /** Fill of dark-glass surfaces (cards, secondary buttons) floating over the aurora. */
+    val Glass = Color(0xB817171F)
+
+    /** Slightly brighter glass for pressed or selected glass surfaces. */
+    val GlassHigh = Color(0xCC24242F)
+
     // Text
     val TextPrimary = Color(0xFFF6F3FF)
     val TextSecondary = Color(0xFFADA8C2)
-    val TextTertiary = Color(0xFF6F6A86)
+
+    /** Lowest-emphasis text (overlines, captions, step numbers): still ≥ 5:1 on Ink and Surface. */
+    val TextTertiary = Color(0xFF8A85A3)
+
+    /**
+     * Text and icons placed on the sunset gradient. A deep wine-black rather than white: it keeps
+     * at least 5:1 contrast across the whole gradient, including the gold end.
+     */
+    val OnAccent = Color(0xFF1C0812)
 
     // Accents
     val Magenta = Color(0xFFFF2E63)
@@ -36,6 +50,12 @@ object Brand {
     /** Primary accent gradient (left → right). */
     val SunsetBrush: Brush = Brush.linearGradient(listOf(Magenta, Tangerine, Gold))
     val SunsetColors: List<Color> = listOf(Magenta, Tangerine, Gold)
+
+    /** Strictly horizontal sunset, for wide shapes such as buttons and progress bars. */
+    val SunsetHorizontalBrush: Brush = Brush.horizontalGradient(SunsetColors)
+
+    /** Hairline for glass edges: brighter at the top, as if lit from above. */
+    val GlassBorderBrush: Brush = Brush.verticalGradient(listOf(Color(0x2EFFFFFF), Color(0x0FFFFFFF)))
 }
 
 /** Sticker colors used everywhere a cube is drawn. */

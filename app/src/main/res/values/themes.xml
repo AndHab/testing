@@ -1,13 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+        Window theme behind the Compose UI. Dark-only by design: ink background, transparent system
+        bars (the app draws edge to edge), tangerine accent for the few platform widgets.
+    -->
     <style name="Theme.CubeLens" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/ink</item>
+        <item name="android:colorBackground">@color/ink</item>
+        <item name="android:colorAccent">@color/brand_tangerine</item>
+        <item name="android:colorControlActivated">@color/brand_tangerine</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 
+    <!-- Launch splash: the brand cube in its sunset glow, centered on ink. -->
     <style name="Theme.CubeLens.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/ink</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
         <item name="postSplashScreenTheme">@style/Theme.CubeLens</item>
     </style>
 </resources>

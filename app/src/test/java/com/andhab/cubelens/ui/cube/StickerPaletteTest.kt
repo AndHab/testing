@@ -84,10 +84,14 @@ class StickerPaletteTest {
             val finish = TestCubes.Pastel.finish(c)
             assertEquals(finish.base.toArgb(), finish.shadeArgb(1f))
             val dark = Color(finish.shadeArgb(0.6f))
-            if (c.isWarm) {
-                // Lemon turns golden and peach coral, never olive or brown: the hue moves towards red.
+            if (c == CubeColor.ORANGE) {
+                // Peach turns coral, never brown: the hue moves towards red.
                 val drift = hue(finish.base) - hue(dark)
                 assertTrue("$c drifts warmer by $drift", drift in 3f..20f)
+            } else if (c == CubeColor.YELLOW) {
+                // Lemon barely drifts: a move towards orange is what makes it mustard.
+                val drift = hue(finish.base) - hue(dark)
+                assertTrue("$c drifts warmer by $drift", drift in 0f..4f)
             } else {
                 assertHue("$c hue", hue(finish.base), hue(dark), 4f)
             }
@@ -95,6 +99,21 @@ class StickerPaletteTest {
             // Darker, but less than plain multiplication would make it.
             assertTrue("$c value", value(dark) in value(finish.base) * 0.6f + 0.02f..value(finish.base) - 0.05f)
         }
+    }
+
+    @Test
+    fun shadedLemonStaysADeeperLemonRatherThanMustard() {
+        val lemon = TestCubes.Pastel.finish(CubeColor.YELLOW)
+        val peach = TestCubes.Pastel.finish(CubeColor.ORANGE)
+        // 0.6 is the darkest a face gets in the renderer (its ambient light).
+        val shaded = Color(lemon.shadeArgb(0.6f))
+        assertHue("lemon hue in the shade", hue(lemon.base), hue(shaded), 4f)
+        assertTrue("lemon keeps its light: ${value(shaded)}", value(shaded) >= value(lemon.base) * 0.82f)
+        assertTrue("lemon deepens: ${saturation(shaded)}", saturation(shaded) >= saturation(lemon.base) + 0.12f)
+        // Shaded lemon and shaded peach stay clearly apart.
+        val shadedPeach = Color(peach.shadeArgb(0.6f))
+        val apart = abs(hue(shaded) - hue(shadedPeach))
+        assertTrue("lemon and peach hues apart by $apart", apart > 20f)
     }
 
     @Test

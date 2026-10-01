@@ -63,6 +63,60 @@ class CubeSceneTest {
         assertTrue(scene.isTurning(0))
     }
 
+    @Test
+    fun turnsReportHowFarTheyAreFromARestPose() {
+        val scene = CubeScene()
+        val lattice = CubeLattice.of(3)
+        scene.update(lattice, -35f, 28f, null, 0f)
+        assertEquals(0f, scene.degreesFromRest, 0f)
+        assertEquals(0f, scene.turnFraction, 0f)
+        for (move in listOf("R", "U2", "3Rw", "2-3Fw'", "3Uw2")) {
+            val parsed = LayerMove.parse(move)
+            scene.update(lattice, -35f, 28f, parsed, 0f)
+            assertEquals("$move at the start", 0f, scene.degreesFromRest, 1e-4f)
+            assertEquals("$move done at the start", 0f, scene.turnFraction, 1e-4f)
+            scene.update(lattice, -35f, 28f, parsed, 1f)
+            assertEquals("$move at the end", 0f, scene.degreesFromRest, 1e-3f)
+            assertEquals("$move done at the end", 1f, scene.turnFraction, 1e-4f)
+            assertEquals("$move ends on its quarter turns", 90f * abs(parsed.signedQuarterTurns), abs(scene.turnTarget), 1e-3f)
+            for (progress in listOf(0.1f, 0.3f, 0.5f, 0.8f)) {
+                scene.update(lattice, -35f, 28f, parsed, progress)
+                val angle = turnAngleDegrees(parsed, progress)
+                val expected = minOf(abs(angle), abs(scene.turnTarget - angle))
+                assertEquals("$move at $progress", expected, scene.degreesFromRest, 1e-3f)
+            }
+            scene.update(lattice, -35f, 28f, parsed, 0.3f)
+            assertTrue("$move is well away from rest at 0.3: ${scene.degreesFromRest}", scene.degreesFromRest > 20f)
+        }
+    }
+
+    @Test
+    fun wholeCubeRotationsLandTheRightFaceInEachSlot() {
+        val scene = CubeScene()
+        val lattice = CubeLattice.of(3)
+        scene.update(lattice, 0f, 0f, null, 0f)
+        for (face in Face.entries) assertEquals(face.ordinal, scene.faceLandingOn(face.ordinal))
+
+        // x (= 3Rw on a 3×3): F goes up, so D arrives at F, F at U, U at B and B at D; R and L stay.
+        scene.update(lattice, 0f, 0f, LayerMove.parse("3Rw"), 0.3f)
+        assertEquals(-90f, scene.turnTarget, 1e-3f)
+        val x = mapOf(Face.F to Face.D, Face.U to Face.F, Face.B to Face.U, Face.D to Face.B, Face.R to Face.R, Face.L to Face.L)
+        for ((slot, arriving) in x) assertEquals("x: into $slot", arriving.ordinal, scene.faceLandingOn(slot.ordinal))
+
+        for (face in Face.entries) assertEquals(face.ordinal, scene.faceCarriedTo(scene.faceLandingOn(face.ordinal)))
+        assertEquals(Face.U.ordinal, scene.faceCarriedTo(Face.F.ordinal))
+
+        // y' (= 4Uw' on a 4×4): F goes right, so L arrives at F and F at R.
+        scene.update(CubeLattice.of(4), 0f, 0f, LayerMove.parse("4Uw'"), 0.7f)
+        assertEquals(Face.L.ordinal, scene.faceLandingOn(Face.F.ordinal))
+        assertEquals(Face.F.ordinal, scene.faceLandingOn(Face.R.ordinal))
+
+        // z2 lands the opposite face.
+        scene.update(lattice, 0f, 0f, LayerMove.parse("3Fw2"), 0.5f)
+        assertEquals(Face.D.ordinal, scene.faceLandingOn(Face.U.ordinal))
+        assertEquals(Face.L.ordinal, scene.faceLandingOn(Face.R.ordinal))
+    }
+
     /**
      * Ray-casts random pixels of random frames (sizes 2..7, random camera, any layer move at any
      * progress) and checks that the face the painter's algorithm paints last at each pixel is the

@@ -22,6 +22,7 @@ import com.andhab.cubelens.ui.cube.CubeGeometry.faceV
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.StickerFinish
 import com.andhab.cubelens.ui.theme.StickerPalette
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -50,7 +51,10 @@ internal class CubeFrame {
     /** 0..1 phase of the highlight pulse. */
     var pulse = 0f
 
-    /** Per-face dimming (0 = full color, 1 = fully dimmed), indexed by [Face.ordinal]. */
+    /**
+     * Dimming (0 = full color, 1 = fully dimmed) of each face's slot on the cube, indexed by
+     * [Face.ordinal]. Stickers turning from one slot into another blend between the two.
+     */
     val faceDim = FloatArray(6)
     var focusFace: Face? = null
 
@@ -242,7 +246,7 @@ internal class CubeRenderer {
             for (d in 0 until 6) if ((visible and (1 shl d)) != 0) drawBoxFace(canvas, frame, g, d)
         }
 
-        if (frame.focusGlow > 0.01f && scene.groupCount == 1) frame.focusFace?.let { drawFocusOutline(canvas, it, frame) }
+        frame.focusFace?.let { drawFocus(canvas, it, frame.focusGlow) }
     }
 
     /** Rebuilds the shaders that depend on the palette or the size, only when those change. */
@@ -313,10 +317,26 @@ internal class CubeRenderer {
      * Where three visible faces of a group's box meet, each face's rounded corner leaves a tiny gap
      * at the shared vertex. A body-colored cap drawn underneath the faces fills it, so the vertex
      * reads as a rounded plastic corner instead of a pinhole onto the background.
+     *
+     * The cap must stay inside the three faces, or it pokes out past the group's outline as a dark
+     * disk (over the background or a group further back). When one of the faces is seen nearly
+     * edge-on, its projection is a thin sliver: about `reach · sin(angle)` wide, where reach is
+     * the face's shorter side and the angle is between the face and the line of sight. So the cap
+     * is clamped to fit inside that width and shrinks away as the face approaches edge-on; the
+     * pinhole then sits on the outline itself, where it simply reads as the rounded corner it is.
      */
     private fun fillCornerJunctions(canvas: Canvas, g: Int, visible: Int) {
         val cell = scene.lattice.cell
         val view = scene.view
+        val eye = scene.eye
+        val fullCap = cell * (style.bodyRadius / S) * CAP_SCALE
+        // Shorter side (world units) of the group's box faces across x, y and z.
+        val spanX = scene.span(g, 0)
+        val spanY = scene.span(g, 1)
+        val spanZ = scene.span(g, 2)
+        val reachX = min(spanY, spanZ) * cell
+        val reachY = min(spanX, spanZ) * cell
+        val reachZ = min(spanX, spanY) * cell
         for (corner in 0 until 8) {
             val sx = if ((corner and 1) != 0) 1 else -1
             val sy = if ((corner and 2) != 0) 1 else -1
@@ -327,9 +347,21 @@ internal class CubeRenderer {
             val mask = (1 shl fx.ordinal) or (1 shl fy.ordinal) or (1 shl fz.ordinal)
             if ((visible and mask) != mask) continue
             scene.orient(g, scene.boxPlane(g, 0, sx), scene.boxPlane(g, 1, sy), scene.boxPlane(g, 2, sz), point)
+            // Width of the thinnest of the three faces' projections near the vertex: reach times the
+            // sine of the angle to the line of sight (the eye's distance from the plane over its
+            // distance from the vertex).
+            val ex = eye[0] - point[0]
+            val ey = eye[1] - point[1]
+            val ez = eye[2] - point[2]
+            val room = min(
+                reachX * scene.facing(g, fx.ordinal),
+                min(reachY * scene.facing(g, fy.ordinal), reachZ * scene.facing(g, fz.ordinal)),
+            ) / sqrt(ex * ex + ey * ey + ez * ez)
+            val cap = min(fullCap, CAP_FIT * room)
+            if (cap <= fullCap * 0.05f) continue
             project(point[0], point[1], point[2], 0)
             val vz = view[6] * point[0] + view[7] * point[1] + view[8] * point[2]
-            val radius = focal / (CAMERA_DISTANCE - vz) * cell * (style.bodyRadius / S) * 1.15f
+            val radius = focal / (CAMERA_DISTANCE - vz) * cap
             bodyPaint.color = CORNER_CAP
             canvas.drawCircle(dst[0], dst[1], radius, bodyPaint)
         }
@@ -368,6 +400,15 @@ internal class CubeRenderer {
         val layerN = if (sn > 0) scene.upper(g, na) else scene.lower(g, na)
         val outer = if (sn > 0) layerN == lattice.n - 1 else layerN == 0
 
+        // Focus dimming belongs to the face's slot in the world: stickers turning into another
+        // slot blend into its dimming as they go, so committing the turn never pops.
+        val dim = if (scene.isTurning(g)) {
+            val from = frame.faceDim[d]
+            from + (frame.faceDim[scene.faceCarriedTo(d)] - from) * scene.turnFraction
+        } else {
+            frame.faceDim[d]
+        }
+
         canvas.save()
         canvas.concat(faceMatrix)
 
@@ -383,7 +424,7 @@ internal class CubeRenderer {
         val su = CubeGeometry.signOfVector(faceU, d)
         val sv = CubeGeometry.signOfVector(faceV, d)
         coords[na] = layerN
-        if (outer) prepareFills(frame.faceDim[d], diffuse)
+        if (outer) prepareFills(dim, diffuse)
         val sheen = 0.5f + 0.5f * diffuse
         var tx = 0f
         var ty = 0f
@@ -399,7 +440,7 @@ internal class CubeRenderer {
                 drawSheen(canvas, cornerMask(i, j, cellsU, cellsV), sheen)
                 if (outer) {
                     val sticker = lattice.sticker(coords[0], coords[1], coords[2], d)
-                    if (sticker >= 0) drawSticker(canvas, frame, sticker, specular, frame.faceDim[d])
+                    if (sticker >= 0) drawSticker(canvas, frame, sticker, specular, dim)
                 }
             }
         }
@@ -537,39 +578,67 @@ internal class CubeRenderer {
     }
 
     /**
-     * A glowing sunset frame around the whole [face]. Drawn last and only at rest, when a front-facing
-     * face of the convex cube cannot be covered by anything; it fades in as the face turns towards the
-     * camera so orbiting never makes it pop.
+     * A glowing sunset frame around the whole [face], drawn last: a front-facing face of the convex
+     * cube at rest cannot be covered by anything. It fades in as the face turns towards the camera,
+     * so orbiting never makes it pop, and with [glow] (the focus animation).
+     *
+     * A layer turn breaks the cube's outline, so the frame fades out within a few degrees
+     * ([FOCUS_LAYER_TURN_FADE_DEGREES]) of the turn leaving its rest pose and back in as the layers
+     * settle into the next one, never floating over pieces that have moved. During a whole-cube
+     * rotation the cube stays one box, so the frame rides along with it instead (fading within
+     * [FOCUS_TURN_FADE_DEGREES]): on the face leaving the focused slot during the first half of the
+     * rotation, then on the face arriving in it, which lands exactly where the frame sits once the
+     * rotation is committed.
      */
-    private fun drawFocusOutline(canvas: Canvas, face: Face, frame: CubeFrame) {
-        val d = face.ordinal
-        val nx = faceNormal[d * 3]
-        val ny = faceNormal[d * 3 + 1]
-        val nz = faceNormal[d * 3 + 2]
-        val eye = scene.eye
-        val e = HALF_EXTENT
-        val facing = (eye[0] - e * nx) * nx + (eye[1] - e * ny) * ny + (eye[2] - e * nz) * nz
+    private fun drawFocus(canvas: Canvas, face: Face, glow: Float) {
+        val wholeCube = scene.groupCount == 1 && scene.isTurning(0)
+        val fade = if (wholeCube) FOCUS_TURN_FADE_DEGREES else FOCUS_LAYER_TURN_FADE_DEGREES
+        val alpha = glow * (1f - smoothstep(0f, fade, scene.degreesFromRest))
+        if (alpha <= 0.01f) return
+        val facing: Float
+        if (wholeCube) {
+            val leaving = abs(scene.turnAngle) <= abs(scene.turnTarget - scene.turnAngle)
+            val d = if (leaving) face.ordinal else scene.faceLandingOn(face.ordinal)
+            for (k in 0 until 4) {
+                scene.faceCorner(0, d, k, point)
+                project(point[0], point[1], point[2], k)
+            }
+            facing = scene.facing(0, d)
+        } else {
+            // At rest, or near the rest poses of a layer turn: the face's slot on the resting cube.
+            val d = face.ordinal
+            val nx = faceNormal[d * 3]
+            val ny = faceNormal[d * 3 + 1]
+            val nz = faceNormal[d * 3 + 2]
+            val eye = scene.eye
+            val e = HALF_EXTENT
+            facing = (eye[0] - e * nx) * nx + (eye[1] - e * ny) * ny + (eye[2] - e * nz) * nz
+            for (k in 0 until 4) {
+                val su = if (k == 1 || k == 2) e else -e
+                val sv = if (k >= 2) e else -e
+                project(
+                    e * nx + su * faceU[d * 3] + sv * faceV[d * 3],
+                    e * ny + su * faceU[d * 3 + 1] + sv * faceV[d * 3 + 1],
+                    e * nz + su * faceU[d * 3 + 2] + sv * faceV[d * 3 + 2],
+                    k,
+                )
+            }
+        }
         val presence = ((facing - FOCUS_FADE_START) / (FOCUS_FADE_END - FOCUS_FADE_START)).coerceIn(0f, 1f)
         if (presence <= 0f) return
-        for (k in 0 until 4) {
-            val su = if (k == 1 || k == 2) e else -e
-            val sv = if (k >= 2) e else -e
-            project(
-                e * nx + su * faceU[d * 3] + sv * faceV[d * 3],
-                e * ny + su * faceU[d * 3 + 1] + sv * faceV[d * 3 + 1],
-                e * nz + su * faceU[d * 3 + 2] + sv * faceV[d * 3 + 2],
-                k,
-            )
-        }
+        drawFocusOutline(canvas, alpha * presence)
+    }
+
+    /** The focus frame around the face whose corners [project] wrote into [dst], at [alpha]. */
+    private fun drawFocusOutline(canvas: Canvas, alpha: Float) {
         if (!faceMatrix.setPolyToPoly(faceSrc, 0, dst, 0, 4)) return
         canvas.save()
         canvas.concat(faceMatrix)
-        val a = frame.focusGlow * presence
         val o = -4f
         outlinePaint.shader = focusShader
         for (i in FOCUS_GLOW_WIDTHS.indices) {
             outlinePaint.strokeWidth = FOCUS_GLOW_WIDTHS[i]
-            outlinePaint.alpha = (255 * FOCUS_GLOW_ALPHAS[i] * a).toInt()
+            outlinePaint.alpha = (255 * FOCUS_GLOW_ALPHAS[i] * alpha).toInt()
             canvas.drawRoundRect(o, o, FACE_S - o, FACE_S - o, FOCUS_RADIUS, FOCUS_RADIUS, outlinePaint)
         }
         outlinePaint.shader = null
@@ -657,6 +726,19 @@ internal class CubeRenderer {
         const val FOCUS_RADIUS = 26f
         const val FOCUS_FADE_START = 0.5f
         const val FOCUS_FADE_END = 3f
+
+        /** Degrees from a rest pose over which a whole-cube rotation fades the focus frame out (and back in). */
+        const val FOCUS_TURN_FADE_DEGREES = 14f
+
+        /** Degrees from a rest pose over which a layer turn fades the focus frame out (and back in). */
+        const val FOCUS_LAYER_TURN_FADE_DEGREES = 5f
+
+        /** Radius of a corner cap relative to the body's corner radius. */
+        const val CAP_SCALE = 1.15f
+
+        /** Largest corner cap radius, as a fraction of the width of the thinnest face's projection. */
+        const val CAP_FIT = 0.8f
+
         val FOCUS_GLOW_WIDTHS = floatArrayOf(30f, 26f, 22f, 18f, 14f, 10f, 6f, 3.5f)
         val FOCUS_GLOW_ALPHAS = floatArrayOf(0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.06f, 0.08f, 1f)
         const val BOUNCE_THRESHOLD = 0.55f
@@ -702,6 +784,12 @@ internal class CubeRenderer {
         const val EMPTY_RIM = 0xB39A95B5.toInt()
         const val BEVEL_COLOR = 0xFFFFFFFF.toInt()
         const val SEAM_COLOR = 0x8C000000.toInt()
+
+        /** Hermite step: 0 up to [edge0], 1 from [edge1], smooth in between. */
+        fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
+            val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
+            return t * t * (3f - 2f * t)
+        }
 
         fun lerpArgb(a: Int, b: Int, t: Float): Int {
             val u = t.coerceIn(0f, 1f)

@@ -101,6 +101,47 @@ class CubeScreenshotTest {
     }
 
     @Test
+    fun sixBySixGrazingView() = shot("cube_6x6_grazing_3Fprime_050") {
+        // Nearly edge-on top face: the rounded corner where three faces meet must not show a dark cap.
+        CubeStage(TestCubes.scrambled(6), yaw = 170f, pitch = 10f, preview = LayerMove.parse("3F'") to 0.5f)
+    }
+
+    @Test
+    fun focusedWholeCubeRotationStart() = shot("cube_focus_F_mid_x_008") {
+        // A whole-cube rotation carries the focus frame along with the leaving face while it fades out.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = LayerMove.parse("3Rw") to 0.08f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedWholeCubeRotationMiddle() = shot("cube_focus_F_mid_x_050") {
+        // Mid-rotation no frame floats in space: it has faded out.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = LayerMove.parse("3Rw") to 0.5f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedWholeCubeRotationEnd() = shot("cube_focus_F_mid_x_094") {
+        // Near the end the frame rides in on the face arriving at the front.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = LayerMove.parse("3Rw") to 0.94f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedLayerTurnSettling() = shot("cube_focus_F_mid_R_080") {
+        // A layer settling into place: the frame fades back in over the face's slot, and the
+        // stickers turning into the front slot have brightened on the way.
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = Move.R1.toLayerMove() to 0.8f, focus = Face.F)
+    }
+
+    @Test
+    fun focusedLayerTurnMiddle() = shot("cube_focus_F_mid_R_045") {
+        val (yaw, pitch) = viewAnglesFor(Face.F)
+        CubeStage(scrambled, yaw = yaw, pitch = pitch, preview = Move.R1.toLayerMove() to 0.45f, focus = Face.F)
+    }
+
+    @Test
     fun pastel() = shot("cube_pastel") {
         CompositionLocalProvider(LocalStickerPalette provides TestCubes.Pastel) { CubeStage(scrambled) }
     }

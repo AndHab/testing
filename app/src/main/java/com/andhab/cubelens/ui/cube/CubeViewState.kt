@@ -166,7 +166,8 @@ class CubeViewState(
 
     /**
      * Cancels any running turn and freezes [move] at linear time fraction [progress] without changing
-     * [colors]. Pass `null` to return to rest. Useful for screenshots, tests, hints and scrubbing.
+     * [colors]. Pass `null` (or call [clearPreview]) to return to rest. Useful for screenshots,
+     * tests, hints and scrubbing.
      *
      * @throws IllegalArgumentException if [move] needs more layers than the cube has.
      */
@@ -178,11 +179,20 @@ class CubeViewState(
     }
 
     /**
-     * [setPreview] for an outer-layer turn. (`setPreview(null, progress)` resolves to the
-     * [LayerMove] overload and returns the cube to rest.)
+     * [setPreview] for an outer-layer turn. To return to rest, call [clearPreview] (or
+     * `setPreview(null, 0f)`, which resolves to the [LayerMove] overload); a caller holding a
+     * nullable `Move?` can write `setPreview(move?.toLayerMove(), progress)`.
      */
     fun setPreview(move: Move, progress: Float) {
         setPreview(move.toLayerMove(), progress)
+    }
+
+    /**
+     * Returns the cube to rest: cancels any running turn without committing it and clears a frozen
+     * preview. Same as `setPreview(null, 0f)`.
+     */
+    fun clearPreview() {
+        setPreview(null, 0f)
     }
 
     /**

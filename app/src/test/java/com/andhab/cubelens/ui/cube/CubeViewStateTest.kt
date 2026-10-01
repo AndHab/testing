@@ -6,6 +6,7 @@ import com.andhab.cubelens.core.cube.FaceletCube
 import com.andhab.cubelens.core.cube.Move
 import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.core.nxn.NxNCube
+import com.andhab.cubelens.core.nxn.toLayerMove
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -215,6 +216,28 @@ class CubeViewStateTest {
         assertNull(state.animatingLayerMove)
         assertEquals(0f, state.moveProgress, 0f)
         assertEquals(NxNCube.solved(5).toColors(), state.colors)
+
+        // A nullable Move goes through the LayerMove overload; clearPreview returns to rest.
+        val maybe: Move? = Move.D2
+        state.setPreview(maybe?.toLayerMove(), 0.6f)
+        assertEquals(Move.D2, state.animatingMove)
+        state.clearPreview()
+        assertNull(state.animatingLayerMove)
+        assertEquals(0f, state.moveProgress, 0f)
+        assertEquals(NxNCube.solved(5).toColors(), state.colors)
+    }
+
+    @Test
+    fun clearPreviewCancelsARunningTurnWithoutCommitting() = runTest(FakeFrameClock()) {
+        val state = CubeViewState(solved)
+        val turn = launch { state.animateMove(Move.R1, durationMillis = 400) }
+        runCurrent()
+        assertEquals(Move.R1, state.animatingMove)
+        state.clearPreview()
+        runCurrent()
+        assertTrue(turn.isCancelled)
+        assertNull(state.animatingMove)
+        assertEquals(solved, state.colors)
     }
 
     @Test

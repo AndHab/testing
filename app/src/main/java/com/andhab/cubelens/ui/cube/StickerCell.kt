@@ -44,9 +44,10 @@ import kotlin.math.min
  * The sticker is drawn in the colors of [LocalStickerPalette], centered in the cell and inset by
  * [insetFraction] of the cell's side on every edge (the whole cell is the touch target). Unknown
  * (`null`) stickers are hollow with a dashed rim, the selected one lifts slightly inside a white
- * ring, and a flagged one gets a [Brand.Danger] ring: on the sticker's edge in the compact style,
- * or separated from the sticker by a dark gap plus a "!" badge in the [roomy] style used where
- * stickers are big.
+ * ring, and a flagged one shrinks inside a dark gap and a [Brand.Danger] ring, so the flag never
+ * relies on color alone (it reads on red and orange stickers too). The [roomy] style used where
+ * stickers are big adds a "!" badge; the compact style (nets) scales the ring and gap down with
+ * tiny stickers.
  *
  * @param onClick called with [index] when tapped; `null` makes the sticker read-only (taps then
  *   reach whatever lies underneath).
@@ -109,7 +110,7 @@ internal fun StickerCell(
             )
             .drawWithCache {
                 val side = (size.minDimension * (1f - 2 * insetFraction)).coerceAtLeast(1f)
-                val look = StickerLook(side, finish, this)
+                val look = StickerLook(side, finish, roomy, this)
                 val origin = Offset((size.width - side) / 2, (size.height - side) / 2)
                 val center = Offset(size.width / 2, size.height / 2)
                 // The selection ring straddles the sticker's edge, so even at SELECTED_SCALE it ends
@@ -133,9 +134,7 @@ internal fun StickerCell(
                         // Scaling the canvas (rather than the rects) keeps every brush at one size, so
                         // no shader is rebuilt while the selection animates.
                         scale(1f + (selectedBodyScale - 1f) * amount, pivot = Offset(side / 2, side / 2)) {
-                            with(look) {
-                                if (flagged && roomy) drawGappedFlag(fill, color != null) else drawBody(fill, color != null, flagged)
-                            }
+                            with(look) { if (flagged) drawFlagged(fill, color != null) else drawBody(fill, color != null) }
                         }
                     }
                     if (flagged && roomy) with(look) { drawFlagBadge(center + Offset(side / 2, -side / 2)) }
@@ -146,9 +145,9 @@ internal fun StickerCell(
 
 /**
  * Brushes, strokes and metrics for drawing one sticker of [side] px with [finish], built once per
- * size and color inside `drawWithCache`.
+ * size and color inside `drawWithCache`. [roomy] stickers get a heavier flag treatment.
  */
-private class StickerLook(private val side: Float, finish: StickerFinish, density: Density) {
+private class StickerLook(private val side: Float, finish: StickerFinish, roomy: Boolean, density: Density) {
     val stickerSize = Size(side, side)
     val radius = CornerRadius(side * STICKER_CORNER)
     private val gloss = Brush.linearGradient(
@@ -174,19 +173,18 @@ private class StickerLook(private val side: Float, finish: StickerFinish, densit
             floatArrayOf(with(density) { 4.dp.toPx() } * fineness, with(density) { 3.dp.toPx() } * fineness),
         ),
     )
-    private val flagWidth = with(density) { 2.dp.toPx() } * fineness.coerceAtLeast(0.6f)
-    private val flagRing = Stroke(flagWidth)
-
-    // Roomy flags: a danger ring separated from the shrunken sticker by an ink gap, plus a badge.
-    private val gappedRingWidth = with(density) { 2.5.dp.toPx() }
-    private val gappedInset = gappedRingWidth + with(density) { 2.dp.toPx() }
-    private val gappedRing = Stroke(gappedRingWidth)
-    private val innerScale = 1f - 2 * gappedInset / side
+    // Flags: a danger ring separated from the shrunken sticker by an ink gap (roomy: heavier, plus a
+    // badge; compact: hairlines that scale down with tiny stickers, like the rim above).
+    private val flagScale = if (roomy) 1f else fineness.coerceAtLeast(0.6f)
+    private val flagRingWidth = with(density) { (if (roomy) 2.5.dp else 2.dp).toPx() } * flagScale
+    private val flagInset = flagRingWidth + with(density) { (if (roomy) 2.dp else 1.dp).toPx() } * flagScale
+    private val flagRing = Stroke(flagRingWidth)
+    private val innerScale = (1f - 2 * flagInset / side).coerceAtLeast(0.4f)
     private val badgeDiameter = (side * 0.42f).coerceIn(with(density) { 12.dp.toPx() }, with(density) { 18.dp.toPx() })
     private val badgeHalo = with(density) { 1.5.dp.toPx() }
 
-    /** The sticker itself: color, shadow and gloss, or a hollow slot; an edge ring when [flagged]. */
-    fun DrawScope.drawBody(fill: Color, known: Boolean, flagged: Boolean) {
+    /** The sticker itself: color, shadow and gloss, or a hollow slot. */
+    fun DrawScope.drawBody(fill: Color, known: Boolean) {
         if (known) {
             drawRoundRect(fill, size = stickerSize, cornerRadius = radius)
             drawRoundRect(shade, size = stickerSize, cornerRadius = radius)
@@ -201,31 +199,22 @@ private class StickerLook(private val side: Float, finish: StickerFinish, densit
                 style = emptyRim,
             )
         }
-        if (flagged) {
-            drawRoundRect(
-                color = Brand.Danger,
-                topLeft = Offset(flagWidth / 2, flagWidth / 2),
-                size = Size(side - flagWidth, side - flagWidth),
-                cornerRadius = radius,
-                style = flagRing,
-            )
-        }
     }
 
     /**
      * A flagged sticker that never relies on color alone: shrunk inside an ink gap and a
      * [Brand.Danger] ring, so the ring reads on any sticker color, red and orange included.
      */
-    fun DrawScope.drawGappedFlag(fill: Color, known: Boolean) {
+    fun DrawScope.drawFlagged(fill: Color, known: Boolean) {
         drawRoundRect(Brand.Ink, size = stickerSize, cornerRadius = radius)
         drawRoundRect(
             color = Brand.Danger,
-            topLeft = Offset(gappedRingWidth / 2, gappedRingWidth / 2),
-            size = Size(side - gappedRingWidth, side - gappedRingWidth),
-            cornerRadius = CornerRadius(radius.x - gappedRingWidth / 2),
-            style = gappedRing,
+            topLeft = Offset(flagRingWidth / 2, flagRingWidth / 2),
+            size = Size(side - flagRingWidth, side - flagRingWidth),
+            cornerRadius = CornerRadius(radius.x - flagRingWidth / 2),
+            style = flagRing,
         )
-        scale(innerScale, pivot = Offset(side / 2, side / 2)) { drawBody(fill, known, flagged = false) }
+        scale(innerScale, pivot = Offset(side / 2, side / 2)) { drawBody(fill, known) }
     }
 
     /** A round "!" badge centered near the sticker's top-right [corner]. */

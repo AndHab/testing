@@ -148,9 +148,11 @@ val LocalStickerPalette = staticCompositionLocalOf { StickerPalette.Standard }
  *  - the white gloss is gentler ([glossScale] < 1);
  *  - the corner shadow is a deep tint of the hue ([shadow]) and a little stronger ([shadeScale] > 1),
  *    which gives pale stickers shape instead of a grey smudge;
- *  - faces turned from the light darken less, deepen their saturation instead, and warm hues drift
- *    slightly towards red (lemon to gold, peach to coral) rather than to olive or brown
- *    ([shadeArgb]), like real pastel plastic in the shade.
+ *  - faces turned from the light darken less, deepen their saturation instead, and oranges drift
+ *    slightly towards red (peach to coral) rather than to brown ([shadeArgb]), like real pastel
+ *    plastic in the shade. Yellows are the touchiest: any real darkening or a drift towards orange
+ *    turns lemon into mustard, so they keep most of their light, barely drift, and gain a little
+ *    more saturation instead (a deeper lemon).
  */
 @Immutable
 class StickerFinish private constructor(
@@ -168,6 +170,10 @@ class StickerFinish private constructor(
     private val value: Float,
     /** Degrees a warm hue drifts towards red at full shade. */
     private val warmDrift: Float,
+    /** Fraction of the darkening a full pastel of this hue is spared. */
+    private val lightKept: Float,
+    /** How much saturation grows as the color darkens, per unit of lost light. */
+    private val saturationGain: Float,
 ) {
     /**
      * [base] lit by [light] (0..1, 1 = fully lit) as packed ARGB: plain darkening (`rgb * light`) for
@@ -175,8 +181,8 @@ class StickerFinish private constructor(
      * Allocation-free, so renderers may call it every frame.
      */
     fun shadeArgb(light: Float): Int {
-        val dark = (1f - light.coerceIn(0f, 1f)) * (1f - PASTEL_LIGHT_KEPT * pastel)
-        val s = min(1f, saturation * (1f + dark * PASTEL_SHADE_SATURATION * pastel))
+        val dark = (1f - light.coerceIn(0f, 1f)) * (1f - lightKept * pastel)
+        val s = min(1f, saturation * (1f + dark * saturationGain * pastel))
         val h = (hue - warmDrift * dark + 360f) % 360f
         return hsvToArgb(h, s, value * (1f - dark), base.alpha)
     }
@@ -217,9 +223,11 @@ class StickerFinish private constructor(
             }
             val saturation = if (maxC == 0f) 0f else delta / maxC
             val pastel = pastelness(color.luminance(), saturation)
-            // Yellows and oranges (hue ~20..80) go olive or brown when darkened; let them warm up.
+            // Warm hues (~20..80) go brown or olive when darkened, so they drift towards red instead.
             val warm = smoothstep(15f, 30f, hue) * (1f - smoothstep(70f, 90f, hue))
-            val warmDrift = WARM_DRIFT_DEGREES * pastel * warm
+            // Except yellows (~45..70), which that would make mustard: they stay light and keep their hue.
+            val yellow = smoothstep(38f, 48f, hue) * (1f - smoothstep(66f, 76f, hue))
+            val warmDrift = WARM_DRIFT_DEGREES * pastel * warm * (1f - YELLOW_DRIFT_CUT * yellow)
             val tintHue = (hue - warmDrift * 0.5f + 360f) % 360f
             val tint = Color(hsvToArgb(tintHue, min(1f, saturation * 1.6f + 0.12f), maxC * 0.4f, 1f))
             return StickerFinish(
@@ -236,6 +244,8 @@ class StickerFinish private constructor(
                 saturation = saturation,
                 value = maxC,
                 warmDrift = warmDrift,
+                lightKept = PASTEL_LIGHT_KEPT + YELLOW_LIGHT_KEPT * yellow,
+                saturationGain = PASTEL_SHADE_SATURATION * (1f + YELLOW_SATURATION_BOOST * yellow),
             )
         }
 
@@ -257,6 +267,15 @@ class StickerFinish private constructor(
 
         /** How far (degrees, towards red) a warm pastel's hue drifts at full shade. */
         private const val WARM_DRIFT_DEGREES = 40f
+
+        /** Extra fraction of the darkening a full pastel yellow is spared (on top of [PASTEL_LIGHT_KEPT]). */
+        private const val YELLOW_LIGHT_KEPT = 0.25f
+
+        /** Fraction of [WARM_DRIFT_DEGREES] a pastel yellow gives up, so lemon never drifts to mustard. */
+        private const val YELLOW_DRIFT_CUT = 0.75f
+
+        /** Relative extra saturation gain of a pastel yellow in the shade (a deeper lemon). */
+        private const val YELLOW_SATURATION_BOOST = 0.25f
 
         private fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
             val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)

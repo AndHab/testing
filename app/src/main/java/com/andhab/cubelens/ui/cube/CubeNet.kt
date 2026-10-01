@@ -55,9 +55,10 @@ import kotlin.math.roundToInt
  * The net fills the available width (or the available height, if that is the tighter fit), and
  * keeps the same overall proportions for every size. Each face sits on a dark glass plate;
  * stickers are rounded and glossy in the colors of [LocalStickerPalette], unknown (`null`) stickers
- * are hollow with a dashed rim, flagged stickers pulse with a soft [Brand.Danger] glow and ring,
- * and the selected sticker lifts slightly inside a white ring. When [onStickerClick] is set,
- * stickers are buttons with a springy press.
+ * are hollow with a dashed rim, flagged stickers pulse with a soft [Brand.Danger] glow and sit
+ * inside a danger ring set off by a dark gap (so red and orange stickers read as flagged too), and
+ * the selected sticker lifts slightly inside a white ring. When [onStickerClick] is set, stickers
+ * are buttons with a springy press.
  *
  * On a big cube the stickers of a net get small; pass [onFaceClick] to make each face's plate a
  * button (e.g. to open that face in a [FaceEditor]). Taps on a sticker go to [onStickerClick] when

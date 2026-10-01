@@ -63,6 +63,7 @@ import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.NxNSolution
 import com.andhab.cubelens.ui.components.AuroraBackground
 import com.andhab.cubelens.ui.components.CircleIconButton
 import com.andhab.cubelens.ui.components.ConfettiBurst
@@ -77,6 +78,22 @@ import com.andhab.cubelens.ui.theme.CubePalette
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
+
+/**
+ * Playback of a staged solution for a cube of any size (N inferred from [startColors]).
+ *
+ * STUB: delegates to the 3×3 playback for now; the staged, any-size playback replaces it.
+ */
+@Composable
+fun SolveScreen(
+    startColors: List<CubeColor>,
+    solution: NxNSolution,
+    onBack: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    SolveScreen(startColors, solution.moves.mapNotNull { it.toMove() }, onBack, onDone, modifier)
+}
 
 /**
  * Step-by-step animated solution playback.

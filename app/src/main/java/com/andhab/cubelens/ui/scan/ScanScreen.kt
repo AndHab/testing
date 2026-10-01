@@ -56,6 +56,7 @@ fun ScanScreen(
     onBack: () -> Unit,
     onManualEntry: () -> Unit,
     modifier: Modifier = Modifier,
+    size: Int = 3,
 ) {
     val context = LocalContext.current
     val activity = LocalActivity.current

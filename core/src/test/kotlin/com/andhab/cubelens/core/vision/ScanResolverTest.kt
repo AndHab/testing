@@ -61,6 +61,50 @@ class ScanResolverTest {
     }
 
     @Test
+    fun greyFacesAreNotACube() {
+        // Six faces in six grey levels, plain or faintly tinted (e.g. photos of something else): every
+        // face is uniform, so the colors alone would form a "solved cube", but nothing is colored.
+        val random = Random(4)
+        for (tint in listOf(0, 2, 4)) {
+            val scans = List(6) { k ->
+                val level = 50 + 36 * k
+                val r = (level + random.nextInt(-tint, tint + 1)).coerceIn(0, 255)
+                val b = (level + random.nextInt(-tint, tint + 1)).coerceIn(0, 255)
+                List(9) { StickerSample.of(r, level, b) }
+            }
+            val analysis = ScanResolver.resolve(scans.shuffled(random))
+            assertWellFormed(analysis)
+            assertFalse("tint $tint", analysis.isValid)
+            assertEquals(Facelets.COUNT, analysis.uncertain.size)
+        }
+        // A real cube in the same kind of uniform scans still resolves.
+        val solved = scansOf(FaceletCube.SOLVED)
+        assertTrue(ScanResolver.resolve(solved).isValid)
+        val pale = FaceletCube.SOLVED.toColors().chunked(9).map { face -> face.map(KnockOffCubes.PALE::sample) }
+        assertTrue(ScanResolver.resolve(pale).isValid)
+    }
+
+    @Test
+    fun centersThatLookAlikeInTheirPhotosKeepTheirOwnColors() {
+        // Recorded from a rendered session of a pastel cube with a very light sky blue, every photo
+        // under its own mild cast: the white center (cool cast) and the sky-blue center (warm cast)
+        // look nearly the same. A first clustering gave the other whites to the blue center and the
+        // other blues to the white one; the resolver must notice and undo that.
+        val scans = linkedMapOf(
+            Face.L to listOf(0xC0C080, 0x8AAAD5, 0xCFA68D, 0xC4C8D3, 0xC8A383, 0xC4C781, 0x809ECE, 0x84CCBB, 0xCBA087),
+            Face.B to listOf(0xEFDEC5, 0xECAD77, 0xA6DEAD, 0x9FB4C4, 0xA1B9BC, 0xEA9191, 0xED9096, 0xEFE3C6, 0xEA9195),
+            Face.U to listOf(0x87CCBA, 0xBCB97C, 0xB47F9B, 0xC4A688, 0xC2CCD8, 0xBFCECF, 0x8CB1DC, 0xC0C681, 0xBD86A0),
+            Face.F to listOf(0xC5D4DF, 0xC886A4, 0xCBD8E3, 0xC588A3, 0x8BD2C4, 0x89D2CA, 0xC6C77E, 0x8BD2C1, 0xCBCC81),
+            Face.D to listOf(0xBDC378, 0xC0889B, 0x88C7B9, 0x85C8B3, 0xC0B976, 0xB9BB75, 0x84C4B7, 0xC1CCCD, 0x7E9EC3),
+            Face.R to listOf(0xDED7B6, 0x8FAEB0, 0xDAA36E, 0xE0AC73, 0xDE8B8C, 0x91AEB7, 0x9BB4BD, 0xE5AD74, 0xE4AA75),
+        )
+        val truth = "GYR OWW BYR WBO ORB BOO WRW RGG YGY YRG GYY GWB YBO WOY BGO WOG BBR RWR"
+        val analysis = ScanResolver.resolve(scans.values.map { face -> face.map(StickerSample::ofArgb) })
+        assertTrue(analysis.isValid)
+        assertEquals(truth, analysis.rawColors.letters())
+    }
+
+    @Test
     fun resolvesAnUnusualCenterReading() {
         // The white center of the user's cube has a colorful logo; a careless read is bluish grey.
         val cube = FaceletCube.scrambled(Move.parseSequence("R U F' L2 D B R' U2 F"))

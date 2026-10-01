@@ -9,7 +9,7 @@ import com.andhab.cubelens.core.cube.CubeColor
  * Absolute references fail on unusual cubes: a pastel blue is closer to a standard white than to a
  * standard blue, and a pink "red" is far from any standard red. What every cube keeps is the order of
  * its colors around the color wheel: red, orange, yellow, green, blue and back to red (pink and
- * magenta reds included). So a labelling is scored by
+ * magenta reds included). So a labelling of several colors at once is scored by
  *
  *  - how white-like the color called white is ([LiveClassifier.whiteDistance], cast-aware);
  *  - how far each other color's hue is from its usual hue band ([LiveClassifier.costs]), a soft
@@ -17,13 +17,23 @@ import com.andhab.cubelens.core.cube.CubeColor
  *  - how badly the hues break the cyclic order of the wheel (strong): consecutive colors must follow
  *    each other in the right direction, with the gap measured as the hue difference closest to the
  *    usual one;
- *  - for a whole cube, red being lighter than orange (weak: red is the darker of the two on every
- *    cube, standard or not).
+ *  - red being lighter than orange (weak: red is the darker of the two on every cube, standard or not).
  *
- * For a whole cube ([labelAll]) all six candidates for white are tried; each hypothesis white-balances
- * the other colors with the candidate before reading their hues, which removes a common color cast.
+ * Every candidate for white is tried (and, for fewer than six colors, none); each hypothesis
+ * white-balances the other colors with the candidate before reading their hues, which removes a
+ * common color cast. The search is exhaustive (at most 6 x 120 labellings) and takes microseconds.
+ *
+ * Two kinds of input:
+ *  - [labelAll]: the six cluster colors of a whole scanned cube in one common light ([ScanResolver]).
+ *  - [labelCenters]: one to six center stickers from separate photos, as captured on the scanning
+ *    screen ([AdaptiveLiveClassifier]). Each photo has its own exposure, and a single sticker can
+ *    look like white under some cast, so here the default rules of [LiveClassifier] rank each
+ *    sticker's colors, and calling a sticker white costs extra when that implies a strongly warm
+ *    light (a light warm pastel is the likelier explanation).
  */
 internal object PaletteLabeler {
+
+    private val COLORS = CubeColor.entries
 
     /** The chromatic colors in hue order around the color wheel. */
     private val WHEEL = listOf(CubeColor.RED, CubeColor.ORANGE, CubeColor.YELLOW, CubeColor.GREEN, CubeColor.BLUE)
@@ -37,12 +47,12 @@ internal object PaletteLabeler {
     /** Degrees below [MIN_GAP] per unit of (squared) order cost. */
     private const val ORDER_SOFTNESS = 5.0
 
-    /** [labelAll]: L* by which red is lighter than orange per unit of (squared) cost. */
+    /** L* by which red is lighter than orange per unit of (squared) cost. */
     private const val RED_ORANGE_LIGHTNESS_SOFTNESS = 10.0
 
     /**
-     * [labelOne]: warmth ([LiveClassifier.warmth]) up to which a white reading costs nothing extra
-     * (mildly warm light), and the softness of the cost beyond.
+     * [photoWhiteCost]: warmth ([LiveClassifier.warmth]) up to which a white reading costs nothing
+     * extra (mildly warm light), and the softness of the cost beyond.
      */
     private const val MILD_WARMTH = 0.45
     private const val WARMTH_SOFTNESS = 0.35
@@ -51,12 +61,14 @@ internal object PaletteLabeler {
     private const val MIN_GAIN = 0.4
     private const val MAX_GAIN = 2.5
 
-    private val wheelIndex: IntArray = IntArray(CubeColor.entries.size) { -1 }.also { index ->
-        WHEEL.forEachIndexed { i, c -> index[c.ordinal] = i }
-    }
+    /** White cost of a color too dark to judge. */
+    private const val UNUSABLE = 1e6
 
-    /** All orderings of the five [WHEEL] positions. */
-    private val PERMUTATIONS: List<IntArray> = permutations(5)
+    /** Extra cost of a color that other evidence rules out (still chosen if nothing else fits). */
+    private const val RULED_OUT = 1e3
+
+    /** An 8-bit channel value at or above this may be clipped (as in [LiveClassifier]). */
+    private const val CLIPPED_LEVEL = 250
 
     /**
      * Labels six distinct colors given in linear RGB (e.g. the lighting-compensated sticker colors of
@@ -65,109 +77,181 @@ internal object PaletteLabeler {
      */
     fun labelAll(linear: List<DoubleArray>): List<CubeColor> {
         require(linear.size == 6 && linear.all { it.size == 3 }) { "Need six linear RGB colors" }
-        val whiteCost = DoubleArray(6) { k ->
-            val d = LiveClassifier.whiteDistance(linear[k][0], linear[k][1], linear[k][2])
-            if (d.isFinite()) d * d else UNUSABLE
-        }
-        var bestCost = Double.POSITIVE_INFINITY
-        var best: IntArray? = null // color ordinal per input
-        val others = IntArray(5)
-        val costs = Array(5) { DoubleArray(6) }
-        val hues = DoubleArray(5)
-        val lightness = DoubleArray(5)
-        val byWheel = DoubleArray(5)
-        for (white in (0 until 6).sortedBy { whiteCost[it] }) {
-            if (whiteCost[white] >= bestCost) break
-            val gains = neutralizingGains(linear[white])
-            var n = 0
-            for (k in 0 until 6) {
-                if (k == white) continue
-                others[n] = k
-                val c = linear[k]
-                val r = c[0] * gains[0]
-                val g = c[1] * gains[1]
-                val b = c[2] * gains[2]
-                val lab = ColorMath.linearToLab(r, g, b)
-                costs[n] = LiveClassifier.costs(LiveClassifier.whiteDistance(r, g, b), lab)
-                hues[n] = lab.hue.toDouble()
-                lightness[n] = lab.l.toDouble()
-                n++
-            }
-            for (perm in PERMUTATIONS) {
-                // perm[j]: wheel position given to others[j].
-                var cost = whiteCost[white]
-                for (j in 0 until 5) cost += costs[j][WHEEL[perm[j]].ordinal]
-                if (cost >= bestCost) continue
-                var redLightness = 0.0
-                var orangeLightness = 0.0
-                for (j in 0 until 5) {
-                    byWheel[perm[j]] = hues[j]
-                    if (perm[j] == 0) redLightness = lightness[j]
-                    if (perm[j] == 1) orangeLightness = lightness[j]
-                }
-                cost += orderCost(byWheel)
-                if (redLightness > orangeLightness) {
-                    val x = (redLightness - orangeLightness) / RED_ORANGE_LIGHTNESS_SOFTNESS
-                    cost += x * x
-                }
-                if (cost < bestCost) {
-                    bestCost = cost
-                    best = IntArray(6).also { labels ->
-                        labels[white] = CubeColor.WHITE.ordinal
-                        for (j in 0 until 5) labels[others[j]] = WHEEL[perm[j]].ordinal
-                    }
-                }
-            }
-        }
-        val labels = best ?: return CubeColor.entries.toList() // only for non-finite input
-        return labels.map { CubeColor.entries[it] }
+        val items = linear.map { Item(it, NOT_CLIPPED) }
+        return Search(items, null, null, photos = false).run() ?: COLORS.toList()
     }
 
     /**
-     * The best color among [allowed] for [sample], given the CIELAB values of colors already named
-     * ([known]); e.g. the center of a newly captured face, when the other captured centers have been
-     * named already. [whiteRuledOut]: other evidence says the sample is not white (white is then
-     * chosen only if nothing else is allowed). [allowed] must not be empty.
+     * Names [centers] (one to six center stickers of different faces, each from its own photo) with
+     * distinct colors, jointly: element k of the result names [centers] element k.
+     *
+     * [allowed] optionally restricts the colors each center may get (e.g. a single color for centers
+     * already named); [whiteRuledOut]`[k]` says other evidence rules out white for center k (it is
+     * then white only if nothing else fits). Returns null if [allowed] admits no distinct labelling.
      */
-    fun labelOne(
-        sample: StickerSample,
-        known: Map<CubeColor, Lab>,
-        allowed: Collection<CubeColor>,
-        whiteRuledOut: Boolean = false,
-    ): CubeColor {
-        require(allowed.isNotEmpty()) { "No color to choose from" }
-        val costs = LiveClassifier.costs(sample)
-        val hue = sample.lab.hue.toDouble()
-        val byWheel = DoubleArray(5) { Double.NaN }
-        for ((color, lab) in known) {
-            val w = wheelIndex[color.ordinal]
-            if (w >= 0) byWheel[w] = lab.hue.toDouble()
+    fun labelCenters(
+        centers: List<StickerSample>,
+        allowed: List<Set<CubeColor>>? = null,
+        whiteRuledOut: BooleanArray? = null,
+    ): List<CubeColor>? {
+        require(centers.size in 1..6) { "Need one to six centers, got ${centers.size}" }
+        require(allowed == null || allowed.size == centers.size) { "allowed must have one entry per center" }
+        require(whiteRuledOut == null || whiteRuledOut.size == centers.size) { "whiteRuledOut must have one entry per center" }
+        val items = centers.map { s ->
+            Item(
+                doubleArrayOf(ColorMath.srgbToLinear(s.r), ColorMath.srgbToLinear(s.g), ColorMath.srgbToLinear(s.b)),
+                booleanArrayOf(s.r >= CLIPPED_LEVEL, s.g >= CLIPPED_LEVEL, s.b >= CLIPPED_LEVEL),
+            )
         }
-        var best = allowed.first()
-        var bestCost = Double.POSITIVE_INFINITY
-        for (color in allowed) {
-            var cost = costs[color.ordinal]
-            if (color == CubeColor.WHITE) {
-                // Calling it white implies the light's cast; beyond a mild warm cast that gets
-                // unlikely, and a light chromatic sticker (peach under cool light) explains it better.
-                val excess = (LiveClassifier.warmth(sample) - MILD_WARMTH).coerceAtLeast(0.0) / WARMTH_SOFTNESS
-                cost += excess * excess
-                if (whiteRuledOut) cost += RULED_OUT
+        return Search(items, allowed, whiteRuledOut, photos = true).run()
+    }
+
+    /** One color to name: linear RGB, and which channels may be clipped (their true value higher). */
+    private class Item(val linear: DoubleArray, val clipped: BooleanArray)
+
+    private val NOT_CLIPPED = BooleanArray(3)
+
+    /**
+     * Exhaustive search over the labellings of [items]. [photos]: items come from separate photos
+     * (see [labelCenters]); otherwise they are colors in one common light (see [labelAll]).
+     */
+    private class Search(
+        private val items: List<Item>,
+        allowed: List<Set<CubeColor>>?,
+        whiteRuledOut: BooleanArray?,
+        private val photos: Boolean,
+    ) {
+        private val n = items.size
+
+        /** allow[k][c]: item k may get the color with ordinal c. */
+        private val allow = Array(n) { k -> BooleanArray(COLORS.size) { c -> allowed?.get(k)?.contains(COLORS[c]) ?: true } }
+
+        /** Cost of calling item k white. */
+        private val whiteCost = DoubleArray(n) { k ->
+            val item = items[k]
+            val cost = if (photos) photoWhiteCost(item.linear, item.clipped) else squared(whiteDistance(item.linear, item.clipped))
+            if (whiteRuledOut?.get(k) == true) cost + RULED_OUT else cost
+        }
+
+        // State of the current white hypothesis: the other items and their balanced colors.
+        private val others = IntArray(n)
+        private var m = 0
+        private val costs = arrayOfNulls<DoubleArray>(n)
+        private val hues = DoubleArray(n)
+        private val lightness = DoubleArray(n)
+
+        // State of the labelling being built: wheel position of each other item.
+        private val wheelOf = IntArray(n)
+        private val used = BooleanArray(WHEEL.size)
+        private val byWheel = DoubleArray(WHEEL.size)
+        private var white = -1
+
+        private var bestCost = Double.POSITIVE_INFINITY
+        private var best: IntArray? = null // color ordinal per item
+
+        fun run(): List<CubeColor>? {
+            // Fewer than six colors need not include white (-1: no white among them).
+            val candidates = (if (n < COLORS.size) listOf(-1) else emptyList()) +
+                (0 until n).filter { allow[it][CubeColor.WHITE.ordinal] }.sortedBy { whiteCost[it] }
+            for (candidate in candidates) {
+                val cost = if (candidate < 0) 0.0 else whiteCost[candidate]
+                if (cost >= bestCost) continue
+                if (!prepare(candidate)) continue
+                assign(0, cost)
             }
-            val w = wheelIndex[color.ordinal]
-            if (w >= 0) {
-                val previous = byWheel[w]
-                byWheel[w] = hue
-                cost += orderCost(byWheel)
-                byWheel[w] = previous
+            return best?.map { COLORS[it] }
+        }
+
+        /** Sets up the hypothesis that item [candidate] is white (none if negative). */
+        private fun prepare(candidate: Int): Boolean {
+            white = candidate
+            m = 0
+            for (k in 0 until n) if (k != candidate) others[m++] = k
+            if (m > WHEEL.size) return false
+            val gains = if (candidate < 0) ONE else neutralizingGains(items[candidate].linear)
+            for (j in 0 until m) {
+                val item = items[others[j]]
+                val r = item.linear[0] * gains[0]
+                val g = item.linear[1] * gains[1]
+                val b = item.linear[2] * gains[2]
+                val lab = ColorMath.linearToLab(r, g, b)
+                val distance = LiveClassifier.whiteDistance(r, g, b, item.clipped[0], item.clipped[1], item.clipped[2])
+                costs[j] = LiveClassifier.costs(distance, lab, followRules = photos)
+                hues[j] = lab.hue.toDouble()
+                lightness[j] = lab.l.toDouble()
+            }
+            return true
+        }
+
+        /** Gives the other items from [j] on wheel colors, depth first, pruning at [bestCost]. */
+        private fun assign(j: Int, cost: Double) {
+            if (j == m) {
+                finish(cost)
+                return
+            }
+            val item = others[j]
+            val itemCosts = costs[j]!!
+            for (p in WHEEL.indices) {
+                if (used[p]) continue
+                val color = WHEEL[p].ordinal
+                if (!allow[item][color]) continue
+                val next = cost + itemCosts[color]
+                if (next >= bestCost) continue
+                used[p] = true
+                wheelOf[j] = p
+                assign(j + 1, next)
+                used[p] = false
+            }
+        }
+
+        /** Adds the order and lightness costs of a complete labelling and keeps it if it is the best. */
+        private fun finish(partial: Double) {
+            byWheel.fill(Double.NaN)
+            var red = -1
+            var orange = -1
+            for (j in 0 until m) {
+                byWheel[wheelOf[j]] = hues[j]
+                if (wheelOf[j] == 0) red = j
+                if (wheelOf[j] == 1) orange = j
+            }
+            var cost = partial + orderCost(byWheel)
+            if (red >= 0 && orange >= 0 && lightness[red] > lightness[orange]) {
+                val x = (lightness[red] - lightness[orange]) / RED_ORANGE_LIGHTNESS_SOFTNESS
+                cost += x * x
             }
             if (cost < bestCost) {
                 bestCost = cost
-                best = color
+                best = IntArray(n).also { labels ->
+                    if (white >= 0) labels[white] = CubeColor.WHITE.ordinal
+                    for (j in 0 until m) labels[others[j]] = WHEEL[wheelOf[j]].ordinal
+                }
             }
         }
-        return best
     }
+
+    private val ONE = doubleArrayOf(1.0, 1.0, 1.0)
+
+    /**
+     * How unlikely it is that [sample], a sticker in a photo under unknown light, is a white sticker:
+     * its squared [LiveClassifier.whiteDistance], plus a cost for the cast that this implies when it
+     * is more than mildly warm (a light warm pastel such as peach or beige is then the likelier
+     * explanation). The cost [labelCenters] gives a white center.
+     */
+    fun photoWhiteCost(sample: StickerSample): Double = photoWhiteCost(
+        doubleArrayOf(ColorMath.srgbToLinear(sample.r), ColorMath.srgbToLinear(sample.g), ColorMath.srgbToLinear(sample.b)),
+        booleanArrayOf(sample.r >= CLIPPED_LEVEL, sample.g >= CLIPPED_LEVEL, sample.b >= CLIPPED_LEVEL),
+    )
+
+    private fun photoWhiteCost(linear: DoubleArray, clipped: BooleanArray): Double {
+        val excess = (LiveClassifier.warmth(linear[0], linear[1], linear[2]) - MILD_WARMTH).coerceAtLeast(0.0) / WARMTH_SOFTNESS
+        return squared(whiteDistance(linear, clipped)) + excess * excess
+    }
+
+    private fun whiteDistance(linear: DoubleArray, clipped: BooleanArray): Double =
+        LiveClassifier.whiteDistance(linear[0], linear[1], linear[2], clipped[0], clipped[1], clipped[2])
+
+    /** [d] squared, or [UNUSABLE] for a color too dark to judge. */
+    private fun squared(d: Double): Double = if (d.isFinite()) d * d else UNUSABLE
 
     /**
      * How badly [hues] (indexed by [WHEEL] position, NaN where absent) break the cyclic order of the
@@ -208,32 +292,10 @@ internal object PaletteLabeler {
         )
     }
 
-    private const val UNUSABLE = 1e6
-
-    /** Extra cost of a color that other evidence rules out (still chosen if it is the only one allowed). */
-    private const val RULED_OUT = 1e3
-
     private fun mod360(x: Double): Double = ((x % 360.0) + 360.0) % 360.0
 
     private fun wrap180(x: Double): Double {
         val m = mod360(x)
         return if (m > 180.0) m - 360.0 else m
-    }
-
-    private fun permutations(n: Int): List<IntArray> {
-        val result = mutableListOf<IntArray>()
-        fun extend(prefix: IntArray, size: Int, used: Int) {
-            if (size == n) {
-                result += prefix.copyOf()
-                return
-            }
-            for (i in 0 until n) {
-                if (used and (1 shl i) != 0) continue
-                prefix[size] = i
-                extend(prefix, size + 1, used or (1 shl i))
-            }
-        }
-        extend(IntArray(n), 0, 0)
-        return result
     }
 }

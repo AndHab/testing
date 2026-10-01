@@ -71,7 +71,7 @@ class ColorArrangementTest {
         val random = Random(2027)
         val report = StringBuilder()
         for ((name, scheme) in listOf("Japanese" to japanese, "mirrored" to mirrored, "permuted" to permuted)) {
-            for (look in listOf(KnockOffCubes.VIVID, KnockOffCubes.PASTEL)) {
+            for (look in listOf(KnockOffCubes.VIVID, KnockOffCubes.PASTEL, KnockOffCubes.LAVENDER)) {
                 val faces = SyntheticFaces(random, look)
                 var exact = 0
                 val cubes = 20

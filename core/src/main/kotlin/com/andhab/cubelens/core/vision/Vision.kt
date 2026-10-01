@@ -11,10 +11,11 @@ import kotlin.math.sqrt
  * The pipeline is:
  *  1. [GridSampler] reads the nine stickers of one face from a camera frame or photo, robustly
  *     (it locks onto the actual stickers inside the guide square and ignores black plastic and glare;
- *     on stickerless and white-bodied cubes it uses the guide's grid).
+ *     on stickerless and white-bodied cubes it fits the grid to where the stickers are uniform).
  *  2. [LiveClassifier] gives an instant per-sticker color guess for the live preview, for standard
  *     vivid cubes and for pastel, candy and muted knock-offs. [AdaptiveLiveClassifier] does better on
- *     the scanning screen: it learns this cube's actual colors from the captured centers.
+ *     the scanning screen: it learns this cube's actual colors from the captured centers, named
+ *     jointly ([AdaptiveLiveClassifier.learnCenters]).
  *  3. [ScanResolver] takes all six scans and classifies the 54 stickers jointly (each color exactly
  *     nine times, per-face lighting compensated), names the colors by how they relate to each other
  *     (so unusual palettes work), places every scan on its face (by center color, or by the scan

@@ -21,7 +21,10 @@ import kotlin.math.ln
  *     assignments the resolver fits a lighting model, linear RGB of a sticker = per-scan channel
  *     gains (exposure and white balance of that photo, von Kries) x per-color cluster mean, by
  *     alternating least squares, and compares colors after undoing each scan's gains. A few rounds
- *     converge. Nothing in this step depends on which color is which.
+ *     converge. Nothing in this step depends on which color is which. If two centers ended up each
+ *     fitting the other's cluster better than their own (they looked alike in their photos, e.g. a
+ *     white center under a cool cast and a light blue one under a warm cast), the two clusters'
+ *     members are exchanged and refitted, and the better explanation of the stickers is kept.
  *  2. The six clusters are named by [PaletteLabeler] from their lighting-compensated colors, by how
  *     they relate to each other (the most white-like one is white, the others follow the order of
  *     the color wheel), not by distance to fixed reference colors, so pastel and other unusual
@@ -44,7 +47,9 @@ import kotlin.math.ln
  * automatically whenever the reading is unambiguous, and are flagged as uncertain when it is not.
  *
  * Only the samples' sRGB values are used (their Lab is recomputed), and malformed input never throws:
- * it yields a result with `isValid == false`.
+ * it yields a result with `isValid == false`. So do scans whose clusters are not six clearly
+ * different colors, five of them (besides white) mostly colored: e.g. one face scanned twice, or six
+ * grey surfaces.
  */
 object ScanResolver {
 
@@ -57,8 +62,25 @@ object ScanResolver {
     private const val MIN_GAIN = 0.2
     private const val MAX_GAIN = 5.0
     private const val SWAP_CANDIDATES = 12
+    private const val MAX_CLUSTER_SWAPS = 3
     private const val MAX_SWAP_COST = 40.0
-    private const val MIN_COLOR_SEPARATION = 4f // deltaE between the cluster colors of a real cube
+
+    /**
+     * Smallest CIEDE2000 distance between two cluster colors of a real cube. The six colors of real
+     * cubes, pastel ones included, are about 15 deltaE or more apart; this only rejects clusters that
+     * are clearly the same color (e.g. one face scanned twice), leaving the rest to validation.
+     */
+    private const val MIN_COLOR_SEPARATION = 4f
+
+    /**
+     * A cluster counts as colored from this CIELAB chroma on (white-balanced on the white cluster and
+     * exposure-normalized, see [PaletteEstimator.normalize]); the light blue of a very pale pastel
+     * cube still has about 8.
+     */
+    private const val MIN_CHROMA = 5f
+
+    /** At least this many of the five non-white clusters must be colored ([MIN_CHROMA]). */
+    private const val MIN_COLORED_CLUSTERS = 4
 
     private val scheme = ColorScheme.STANDARD
 
@@ -84,10 +106,12 @@ object ScanResolver {
         val clusters = cluster(scans)
         val measured = clusters.robustColors()
         val labels = PaletteLabeler.labelAll(measured)
-        val palette = PaletteEstimator.estimate(labels.indices.associate { labels[it] to measured[it] })
+        val byColor = labels.indices.associate { labels[it] to measured[it] }
+        val palette = PaletteEstimator.estimate(byColor)
         val byCenters = facesByCenterColor(labels)
-        if (!areDistinct(measured)) {
-            // E.g. the same face scanned twice: the clusters are arbitrary, so is any cube built from them.
+        if (!areDistinct(measured) || !isColored(byColor)) {
+            // E.g. the same face scanned twice, or something grey: the clusters are arbitrary, and so
+            // would be any cube built from them.
             val raw = clusters.classification(labels, byCenters).colors
             return ScanAnalysis(raw, raw, Face.entries.associateWith { 0 }, false, (0 until Facelets.COUNT).toSet(), palette)
         }
@@ -123,10 +147,7 @@ object ScanResolver {
         }
     }
 
-    /**
-     * Whether the six cluster colors (linear RGB) are clearly different from each other, as the six
-     * colors of a real cube are (at least about 15 deltaE apart even on pastel cubes).
-     */
+    /** Whether the six cluster colors (linear RGB) are clearly different from each other ([MIN_COLOR_SEPARATION]). */
     private fun areDistinct(colors: List<DoubleArray>): Boolean {
         val labs = colors.map { ColorMath.linearToLab(it[0], it[1], it[2]) }
         for (i in labs.indices) {
@@ -135,6 +156,15 @@ object ScanResolver {
             }
         }
         return true
+    }
+
+    /**
+     * Whether the clusters (linear RGB per color) look like the stickers of a cube: besides white,
+     * nearly all of them are clearly colored. Six grey levels, for example, are not.
+     */
+    private fun isColored(linear: Map<CubeColor, DoubleArray>): Boolean {
+        val normalized = PaletteEstimator.normalize(linear).first
+        return normalized.count { (color, lab) -> color != CubeColor.WHITE && lab.chroma >= MIN_CHROMA } >= MIN_COLORED_CLUSTERS
     }
 
     /** The face of each scan when placed by its center's color in the standard scheme. */
@@ -187,13 +217,56 @@ object ScanResolver {
         val assigned = IntArray(Facelets.COUNT) { -1 }
         for (k in 0 until 6) assigned[k * 9 + 4] = k
         model.seedFromCenters()
-        var cost = model.costs()
-        for (round in 0 until MAX_ROUNDS) {
-            if (!assignBalanced(cost, assigned)) break
-            model.fit(assigned)
-            cost = model.costs()
+        var best = converge(model, assigned, model.costs())
+
+        // Repair an unlucky start: when two centers look alike in their photos (a white center under a
+        // cool cast and a light blue one under a warm cast), the other stickers of the two colors can
+        // end up with the wrong center each. Then each center fits the other's cluster better than its
+        // own; exchanging the two clusters' members and refitting must explain the stickers better.
+        val tried = mutableSetOf<Int>()
+        repeat(MAX_CLUSTER_SWAPS) {
+            val pair = swappedPair(best, tried) ?: return best
+            tried += pair
+            val a = pair / 6
+            val b = pair % 6
+            val swapped = best.cluster.copyOf()
+            for (i in NON_CENTERS) {
+                if (swapped[i] == a) swapped[i] = b else if (swapped[i] == b) swapped[i] = a
+            }
+            val trial = LightingModel(linear)
+            trial.fit(swapped)
+            val candidate = converge(trial, swapped, trial.costs())
+            if (candidate.totalCost() < best.totalCost()) best = candidate
         }
-        return Clusters(linear, assigned, cost, model.gain)
+        return best
+    }
+
+    /** Alternates balanced assignment and lighting fits from [assigned] and [cost] until nothing changes. */
+    private fun converge(model: LightingModel, assigned: IntArray, cost: DoubleArray): Clusters {
+        var current = cost
+        for (round in 0 until MAX_ROUNDS) {
+            if (!assignBalanced(current, assigned)) break
+            model.fit(assigned)
+            current = model.costs()
+        }
+        return Clusters(model.linear, assigned, current, model.gain)
+    }
+
+    /**
+     * Two clusters (encoded `a * 6 + b`, `a < b`, not in [tried]) whose centers each fit the other
+     * cluster better than their own, or null.
+     */
+    private fun swappedPair(clusters: Clusters, tried: Set<Int>): Int? {
+        val cost = clusters.cost
+        for (a in 0 until 6) {
+            val centerA = a * 9 + 4
+            for (b in a + 1 until 6) {
+                if (a * 6 + b in tried) continue
+                val centerB = b * 9 + 4
+                if (cost[centerA * 6 + b] < cost[centerA * 6 + a] && cost[centerB * 6 + a] < cost[centerB * 6 + b]) return a * 6 + b
+            }
+        }
+        return null
     }
 
     /**
@@ -210,6 +283,9 @@ object ScanResolver {
         /** Per-scan channel gains of the lighting model. */
         val gain: Array<DoubleArray>,
     ) {
+        /** Sum of every sticker's distance to its cluster: how well the clusters explain the stickers. */
+        fun totalCost(): Double = (0 until Facelets.COUNT).sumOf { cost[it * 6 + cluster[it]] }
+
         /**
          * Each cluster's color in the common light of the lighting model: the per-channel median of
          * its stickers with their scan's gains undone (robust to a highlight or a misread sticker).
@@ -310,7 +386,7 @@ object ScanResolver {
     /**
      * Linear RGB of sticker i of scan k with color (cluster) c is modeled as gain[k] * mean[c] per channel.
      */
-    private class LightingModel(private val linear: Array<DoubleArray>) {
+    private class LightingModel(val linear: Array<DoubleArray>) {
         val gain = Array(6) { DoubleArray(3) { 1.0 } }
         val mean = Array(6) { DoubleArray(3) }
 

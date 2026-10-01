@@ -9,6 +9,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
+import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 class CubePaletteTest {
@@ -66,6 +68,34 @@ class CubePaletteTest {
                     val measured = look.sample(color).lab.hue
                     val shown = StickerSample.ofArgb(argb).lab.hue
                     assertTrue("$look $color: measured hue $measured, shown $shown", hueDifference(measured, shown) <= 10f)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun estimatesOtherPastelPalettes() {
+        // Display colors keep each color's hue: within 10 degrees of what was measured where that
+        // angle means something, and for colors of low chroma (below 20, e.g. a greyish blue, whose
+        // hue angle also moves most when the palette is white-balanced on the cube's off-white)
+        // within a metric hue difference (CIE delta H) of 4.
+        val random = Random(13)
+        for (look in KnockOffCubes.OTHER_PASTELS) {
+            repeat(5) {
+                val analysis = ScanResolver.resolve(idealScans(look, random))
+                assertTrue("$look", analysis.isValid)
+                assertFalse("$look: ${analysis.palette}", analysis.palette.isStandardLike)
+                for ((color, argb) in analysis.palette.colors) {
+                    if (color == CubeColor.WHITE) continue
+                    val measured = look.sample(color).lab
+                    val shown = StickerSample.ofArgb(argb).lab
+                    val angle = hueDifference(measured.hue, shown.hue)
+                    if (measured.chroma >= 20f) {
+                        assertTrue("$look $color: measured hue ${measured.hue}, shown ${shown.hue}", angle <= 10f)
+                    } else {
+                        val deltaH = 2.0 * sqrt(measured.chroma.toDouble() * shown.chroma) * sin(Math.toRadians(angle / 2.0))
+                        assertTrue("$look $color: measured $measured, shown $shown", deltaH <= 4.0)
+                    }
                 }
             }
         }

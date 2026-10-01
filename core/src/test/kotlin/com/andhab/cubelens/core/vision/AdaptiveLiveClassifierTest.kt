@@ -2,8 +2,10 @@ package com.andhab.cubelens.core.vision
 
 import com.andhab.cubelens.core.cube.CubeColor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -133,6 +135,109 @@ class AdaptiveLiveClassifierTest {
         }
     }
 
+    private fun <T> permutations(items: List<T>): List<List<T>> =
+        if (items.size <= 1) listOf(items) else items.flatMap { x -> permutations(items - x).map { listOf(x) + it } }
+
+    @Test
+    fun learnCentersNamesTheCentersOfEveryPaletteJointly() {
+        // Every capture order of the six centers, each photo at its own exposure, in one mild cast per
+        // session. After each capture the names are distinct and are what the classifier learned;
+        // after the sixth they are right, for standard, candy, muted and every pastel palette.
+        // Naming each center once, as it comes in, gets many of them wrong on unusual palettes.
+        val random = Random(31)
+        val orders = permutations(CubeColor.entries)
+        val looks = listOf(KnockOffCubes.VIVID, KnockOffCubes.CANDY, KnockOffCubes.MUTED, pastel) + KnockOffCubes.OTHER_PASTELS
+        val report = StringBuilder()
+        for (look in looks) {
+            var jointWrong = 0
+            var oneByOneWrong = 0
+            for (order in orders) {
+                val gains = mildCasts[random.nextInt(mildCasts.size)]
+                val centers = order.map { sample(look, it, random.nextDouble(0.65, 1.25), gains) }
+                val adaptive = AdaptiveLiveClassifier()
+                var labels = emptyList<CubeColor>()
+                for (k in centers.indices) {
+                    labels = adaptive.learnCenters(centers.subList(0, k + 1))
+                    assertEquals("$look $order: $labels", k + 1, labels.toSet().size)
+                    assertEquals(labels.toSet(), adaptive.learned.keys)
+                }
+                jointWrong += order.indices.count { labels[it] != order[it] }
+                val oneByOne = AdaptiveLiveClassifier()
+                centers.forEachIndexed { k, center ->
+                    val label = oneByOne.labelForCenter(center)
+                    oneByOne.learn(label, center)
+                    if (label != order[k]) oneByOneWrong++
+                }
+            }
+            report.append("$look: jointly $jointWrong wrong, one by one $oneByOneWrong wrong; ")
+            assertEquals("$look: centers named wrong", 0, jointWrong)
+        }
+        println("Center names over all ${orders.size} capture orders (of ${orders.size * 6} each): $report")
+    }
+
+    @Test
+    fun learnCentersRevisesEarlierNames() {
+        // A very light sky-blue center looks white on its own. Once the real white center is
+        // captured, the sky blue is renamed blue, and the classifier learns both under the new names.
+        val look = KnockOffCubes.MINT_SKY
+        val sky = look.sample(CubeColor.BLUE)
+        val white = look.sample(CubeColor.WHITE)
+        val adaptive = AdaptiveLiveClassifier()
+        assertEquals(listOf(CubeColor.WHITE), adaptive.learnCenters(listOf(sky)))
+        assertEquals(listOf(CubeColor.BLUE, CubeColor.WHITE), adaptive.learnCenters(listOf(sky, white)))
+        assertEquals(setOf(CubeColor.BLUE, CubeColor.WHITE), adaptive.learned.keys)
+        assertEquals(CubeColor.BLUE, adaptive.classify(sample(look, CubeColor.BLUE, 0.8)))
+        assertEquals(CubeColor.WHITE, adaptive.classify(sample(look, CubeColor.WHITE, 0.8)))
+        // Named one by one, the first name sticks and the white center must take another one.
+        val oneByOne = AdaptiveLiveClassifier()
+        oneByOne.learn(oneByOne.labelForCenter(sky), sky)
+        assertEquals(setOf(CubeColor.WHITE), oneByOne.learned.keys)
+        assertNotEquals(CubeColor.WHITE, oneByOne.labelForCenter(white))
+        // A rescanned face simply replaces its entry.
+        val rescanned = adaptive.learnCenters(listOf(sample(look, CubeColor.BLUE, 0.7), white, look.sample(CubeColor.RED)))
+        assertEquals(listOf(CubeColor.BLUE, CubeColor.WHITE, CubeColor.RED), rescanned)
+    }
+
+    @Test
+    fun learnCentersHandlesEdgeCases() {
+        val adaptive = AdaptiveLiveClassifier()
+        val pink = StickerSample.ofArgb(0xF2A0B4)
+        adaptive.learn(CubeColor.RED, pink)
+        // No centers: nothing learned.
+        assertEquals(emptyList<CubeColor>(), adaptive.learnCenters(emptyList()))
+        assertTrue(adaptive.learned.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) { adaptive.learnCenters(List(7) { pink }) }
+        assertThrows(IllegalArgumentException::class.java) { adaptive.learnCenters(listOf(pink, pink), listOf(listOf(pink))) }
+        // Nonsense centers still get distinct names.
+        val random = Random(5)
+        val garbage = listOf(
+            List(6) { StickerSample.of(0, 0, 0) },
+            List(6) { StickerSample.of(128, 128, 128) },
+            List(6) { StickerSample.of(255, 255, 255) },
+            List(6) { StickerSample.of(random.nextInt(256), random.nextInt(256), random.nextInt(256)) },
+            List(3) { StickerSample.of(200, 200, 200) },
+        )
+        for (centers in garbage) {
+            val labels = adaptive.learnCenters(centers, centers.map { List(9) { _ -> it } })
+            assertEquals("$centers", centers.size, labels.toSet().size)
+            assertEquals(labels.toSet(), adaptive.learned.keys)
+        }
+    }
+
+    @Test
+    fun aBeigeStickerDoesNotRuleOutAWhiteCenter() {
+        // From a rendered session: a slightly cool white center, and on its face a beige yellow sticker
+        // that lies where a white under a warm cast would. White is still the plausible reading of the
+        // center (the beige would need a strongly warm light), so the face does not rule it out.
+        val white = StickerSample.ofArgb(0xCAC6CC)
+        val beige = StickerSample.ofArgb(0xD1B88F)
+        val face = listOf(beige, beige, white, white, white, beige, white, white, white)
+        assertEquals(CubeColor.WHITE, AdaptiveLiveClassifier().labelForCenter(white, face))
+        val others = listOf(0xCC909D, 0x6A909F, 0x8CAF93, 0xC6B089, 0xD9B597).map { StickerSample.ofArgb(it) }
+        val labels = AdaptiveLiveClassifier().learnCenters(listOf(white) + others, listOf(face) + others.map { List(9) { _ -> it } })
+        assertEquals(CubeColor.WHITE, labels[0])
+    }
+
     @Test
     fun aWhiterStickerOnTheFaceRulesOutWhiteForTheCenter() {
         // Peach under cool, slightly green light reads as white on its own; next to a real white sticker it doesn't.
@@ -143,6 +248,7 @@ class AdaptiveLiveClassifierTest {
         val face = listOf(white, peach, white, peach, peach, peach, peach, white, peach)
         assertEquals(CubeColor.WHITE, AdaptiveLiveClassifier().labelForCenter(peach))
         assertEquals(CubeColor.ORANGE, AdaptiveLiveClassifier().labelForCenter(peach, face))
+        assertEquals(listOf(CubeColor.ORANGE), AdaptiveLiveClassifier().learnCenters(listOf(peach), listOf(face)))
         // A white center stays white among other whites.
         assertEquals(CubeColor.WHITE, AdaptiveLiveClassifier().labelForCenter(white, List(9) { if (it % 2 == 0) white else peach }))
     }
@@ -197,6 +303,7 @@ class AdaptiveLiveClassifierTest {
                     when (random.nextInt(10)) {
                         0 -> adaptive.reset()
                         in 1..3 -> adaptive.forget(color)
+                        in 4..5 -> adaptive.learnCenters(CubeColor.entries.shuffled(random).take(random.nextInt(7)).map { sample(pastel, it) })
                         else -> adaptive.learn(color, sample(pastel, color, random.nextDouble(0.7, 1.2)))
                     }
                 }

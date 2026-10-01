@@ -18,8 +18,14 @@ import kotlin.math.sqrt
  *     feature, `2 * max(r, g, b) - min(r, g, b)`, which is low only for the dark, unsaturated
  *     plastic between stickers (a shaded saturated sticker such as dark blue still scores high), and
  *     splits it into sticker / plastic with Otsu's threshold. If the "plastic" class is not dark
- *     (stickerless cubes, whose colored tiles touch, and white-bodied cubes), there are no gaps to
- *     lock onto and the guide's own grid is used, skipping steps 2 and 3.
+ *     (stickerless cubes, whose colored tiles touch, and white-bodied cubes), there are no dark gaps
+ *     to lock onto, and step 2a replaces steps 2 and 3.
+ *  2a. Faces without dark gaps: finds the global shift and scale of the 3x3 grid at which the nine
+ *     sampling windows are most uniform in color (least sRGB variance, from summed-area tables), so
+ *     that no window reaches into the white plastic or a neighbouring tile. Every grid within a
+ *     tolerance of the best counts as equally good, and of those the one closest to the guide as
+ *     placed is used: the guide itself whenever it is good enough (always on a face of one color),
+ *     otherwise the grid that moves it least.
  *  2. Scores a candidate sticker position as the sticker fraction of a half-cell window there minus
  *     the sticker fraction of a thin square ring at the distance of the gaps between stickers. A
  *     real sticker is a bright patch surrounded by dark plastic, so this is high only on stickers,
@@ -33,7 +39,7 @@ import kotlin.math.sqrt
  *     (bright, washed-out outliers), and takes the per-channel median.
  *
  * Cost is independent of the image size: about 6k pixel reads, under a millisecond on the JVM.
- * Scratch buffers (about 150 KB) are kept per thread and reused, so a camera analyzer calling this
+ * Scratch buffers (about 300 KB) are kept per thread and reused, so a camera analyzer calling this
  * for every frame allocates little more than the returned samples.
  */
 object GridSampler {
@@ -64,6 +70,13 @@ object GridSampler {
     private const val GLARE_LIGHTNESS = 12f // L* above the median that marks a highlight ...
     private const val GLARE_CHROMA_RATIO = 0.5f // ... if its chroma is also below this fraction of the median
     private const val GAP_DARKNESS = 0.5 // gaps are dark: their median brightness is below this fraction of the stickers'
+    private const val UNIFORM_WINDOW = 10 // side of the uniformity window, lattice points (0.625 cell, more than SAMPLE_FRACTION)
+    private const val UNIFORM_SHIFT = 6 // +- lattice steps searched for the grid offset of a face without dark gaps
+    private val UNIFORM_SCALES = doubleArrayOf(0.94, 1.0, 1.06)
+    private val UNIFORM_GRIDS = UNIFORM_SCALES.size * (2 * UNIFORM_SHIFT + 1) * (2 * UNIFORM_SHIFT + 1)
+    private const val UNIFORM_TRIMMED = 2 // cells left out of a grid's score (e.g. specular highlights)
+    private const val UNIFORM_TOLERANCE = 0.1 // a grid is as good as the best within this fraction of the cells' own variance ...
+    private const val UNIFORM_FLOOR = 7 * 3 * 4.0 // ... plus the variance of sensor noise of 2 sRGB levels in 7 windows x 3 channels
 
     /**
      * Samples the 3x3 stickers inside [region] of [source].
@@ -97,6 +110,12 @@ object GridSampler {
         val below = IntArray(9 * STEPS * STEPS)
         val above = IntArray(9 * STEPS * STEPS)
         val histogram = IntArray(FEATURE_LEVELS)
+        val rgb = IntArray(N * N)
+        val uniformity = UniformityMap()
+        val uniformVariance = DoubleArray(9 * UNIFORM_GRIDS)
+        val uniformCellBest = DoubleArray(9)
+        val uniformExcess = DoubleArray(9)
+        val uniformScores = DoubleArray(UNIFORM_GRIDS)
         val map = StickerMap()
         val scores = DoubleArray(LOCAL_SIDE * LOCAL_SIDE)
         val found = DoubleArray(27)
@@ -241,10 +260,12 @@ object GridSampler {
     private fun locateStickers(view: UprightView, work: Workspace): DoubleArray {
         val feature = work.feature
         val brightness = work.brightness
+        val rgb = work.rgb
         for (j in 0 until N) {
             val v = latticeToCell(j.toDouble())
             for (i in 0 until N) {
                 val c = view.argb(latticeToCell(i.toDouble()), v)
+                rgb[j * N + i] = c
                 val r = (c shr 16) and 0xFF
                 val g = (c shr 8) and 0xFF
                 val b = c and 0xFF
@@ -254,7 +275,7 @@ object GridSampler {
             }
         }
         val threshold = otsuThreshold(feature, work.histogram)
-        if (!hasDarkGaps(feature, brightness, threshold, work)) return guideCenters(work)
+        if (!hasDarkGaps(feature, brightness, threshold, work)) return locateByUniformity(work)
         val map = work.map
         map.reset(feature, threshold)
 
@@ -335,17 +356,139 @@ object GridSampler {
     }
 
     /**
-     * The centers of the guide's own 3x3 grid (in [Workspace.centers]), for faces without dark gaps:
-     * the user aligned the face with the guide, and the sampling window ([SAMPLE_FRACTION] of a cell)
-     * stays on its sticker for the slight misalignment of a careful scan.
+     * Step 2a, for faces without dark gaps: the shift and scale of the 3x3 grid that keeps the
+     * windows of [UNIFORM_WINDOW] points inside uniformly colored areas (see the class documentation),
+     * as sticker centers in [Workspace.centers].
+     *
+     * Each grid is scored by how much more varied each cell's window is there than at that cell's
+     * best grid, summed over the cells except the [UNIFORM_TRIMMED] worst: a specular highlight makes
+     * one window varied wherever it covers the highlight, while a misaligned grid moves every window
+     * off its sticker.
      */
-    private fun guideCenters(work: Workspace): DoubleArray {
+    private fun locateByUniformity(work: Workspace): DoubleArray {
+        val map = work.uniformity
+        map.reset(work.rgb)
+        val variance = work.uniformVariance
+        val grids = UNIFORM_GRIDS
+        var g = 0
+        for (scale in UNIFORM_SCALES) {
+            for (dy in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
+                for (dx in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
+                    for (cell in 0 until 9) {
+                        variance[cell * grids + g] = map.variance(cellCenter(cell % 3, scale, dx.toDouble()), cellCenter(cell / 3, scale, dy.toDouble()))
+                    }
+                    g++
+                }
+            }
+        }
+        val cellBest = work.uniformCellBest
+        var noise = 0.0
+        for (cell in 0 until 9) {
+            var min = Double.POSITIVE_INFINITY
+            for (k in 0 until grids) min = minOf(min, variance[cell * grids + k])
+            cellBest[cell] = min
+            noise += min
+        }
+        val scores = work.uniformScores
+        val excess = work.uniformExcess
+        var best = Double.POSITIVE_INFINITY
+        for (k in 0 until grids) {
+            for (cell in 0 until 9) excess[cell] = variance[cell * grids + k] - cellBest[cell]
+            excess.sort()
+            var total = 0.0
+            for (cell in 0 until 9 - UNIFORM_TRIMMED) total += excess[cell]
+            scores[k] = total
+            if (total < best) best = total
+        }
+
+        // Of all grids about as uniform as the best one, the one closest to the guide as placed.
+        val limit = best + UNIFORM_TOLERANCE * noise + UNIFORM_FLOOR
+        var closest = Double.POSITIVE_INFINITY
+        var scale = 1.0
+        var dx = 0.0
+        var dy = 0.0
+        g = 0
+        for (candidateScale in UNIFORM_SCALES) {
+            for (y in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
+                for (x in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
+                    val score = scores[g++]
+                    if (score > limit) continue
+                    // Distance in lattice steps (a scale step moves the outer cells by about one step);
+                    // ties go to the more uniform grid.
+                    val scaleSteps = (candidateScale - 1.0) * STEPS
+                    val distance = (x * x + y * y).toDouble() + scaleSteps * scaleSteps + 1e-3 * score / limit
+                    if (distance < closest) {
+                        closest = distance
+                        scale = candidateScale
+                        dx = x.toDouble()
+                        dy = y.toDouble()
+                    }
+                }
+            }
+        }
         val centers = work.centers
         for (cell in 0 until 9) {
-            centers[2 * cell] = cell % 3 + 0.5
-            centers[2 * cell + 1] = cell / 3 + 0.5
+            centers[2 * cell] = latticeToCell(cellCenter(cell % 3, scale, dx))
+            centers[2 * cell + 1] = latticeToCell(cellCenter(cell / 3, scale, dy))
         }
         return centers
+    }
+
+    /** Summed-area tables of the lattice colors, for the color variance of square windows. */
+    private class UniformityMap {
+        private val stride = N + 1
+        private val sumR = IntArray(stride * stride) // row 0 and column 0 stay zero
+        private val sumG = IntArray(stride * stride)
+        private val sumB = IntArray(stride * stride)
+        private val sumSquares = IntArray(stride * stride) // at most N * N * 3 * 255^2, about 1e9: fits
+
+        /** Rebuilds the tables for the lattice colors [rgb] (0xAARRGGBB, alpha ignored). */
+        fun reset(rgb: IntArray) {
+            for (j in 0 until N) {
+                var r = 0
+                var g = 0
+                var b = 0
+                var squares = 0
+                for (i in 0 until N) {
+                    val c = rgb[j * N + i]
+                    val cr = (c shr 16) and 0xFF
+                    val cg = (c shr 8) and 0xFF
+                    val cb = c and 0xFF
+                    r += cr
+                    g += cg
+                    b += cb
+                    squares += cr * cr + cg * cg + cb * cb
+                    val k = (j + 1) * stride + i + 1
+                    val above = j * stride + i + 1
+                    sumR[k] = sumR[above] + r
+                    sumG[k] = sumG[above] + g
+                    sumB[k] = sumB[above] + b
+                    sumSquares[k] = sumSquares[above] + squares
+                }
+            }
+        }
+
+        /**
+         * Color variance (summed over the three channels, in squared sRGB levels) of the
+         * [UNIFORM_WINDOW]-point square window centered at lattice ([cx], [cy]), clipped to the lattice.
+         */
+        fun variance(cx: Double, cy: Double): Double {
+            // The window has an even side, so its center snaps to round(c - 0.5) + 0.5 as in StickerMap.
+            val x0 = (cx - 0.5).roundToInt() - (UNIFORM_WINDOW - 2) / 2
+            val y0 = (cy - 0.5).roundToInt() - (UNIFORM_WINDOW - 2) / 2
+            val l = x0.coerceIn(0, N)
+            val t = y0.coerceIn(0, N)
+            val r = (x0 + UNIFORM_WINDOW).coerceIn(0, N)
+            val b = (y0 + UNIFORM_WINDOW).coerceIn(0, N)
+            val n = ((r - l) * (b - t)).toDouble()
+            if (n <= 0.0) return 0.0
+            fun sum(table: IntArray): Double =
+                (table[b * stride + r] - table[t * stride + r] - table[b * stride + l] + table[t * stride + l]).toDouble()
+            val mr = sum(sumR) / n
+            val mg = sum(sumG) / n
+            val mb = sum(sumB) / n
+            return sum(sumSquares) / n - mr * mr - mg * mg - mb * mb
+        }
     }
 
     /**

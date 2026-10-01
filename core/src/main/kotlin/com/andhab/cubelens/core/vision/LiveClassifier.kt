@@ -26,24 +26,30 @@ import kotlin.math.sqrt
  *  2. **Light, low-chroma colors** (saturation `C* / (L* + 16)` below [VIVID_SATURATION]): hue bands.
  *     Pastel hues differ from vivid ones (pink "red" near 0 degrees, peach "orange" at 60-70, close
  *     to where a vivid yellow lands under a warm cast), so the orange/yellow boundary moves from 71
- *     degrees for saturated colors up to 80 degrees for pastels, and the red band reaches further
- *     into pink and magenta. The saturation ratio is nearly independent of exposure (both chroma
- *     and `L* + 16` scale with the cube root of the light level).
+ *     degrees for deeply saturated colors up to 79-80 degrees for light ones, and the red band
+ *     reaches further into pink and magenta. The saturation ratio is nearly independent of exposure
+ *     (both chroma and `L* + 16` scale with the cube root of the light level).
  *  3. **Vivid colors**: the nearest [reference] color in [ColorMath.deltaE] decides between blue, the
  *     remaining whites (b* close to the white reference) and the warm-to-green family, and within that
- *     family the CIELAB hue angle decides in fixed bands (red about 25-35 degrees, orange 50-60,
- *     yellow 90-105, green about 145, boundaries with room for color casts).
+ *     family the CIELAB hue angle decides in bands (red about 25-35 degrees, orange 50-75, yellow
+ *     90-105, green about 145, boundaries with room for color casts).
  *
  * Tolerance, measured on rendered faces: standard cubes are read essentially perfectly from about 0.15x
- * of normal exposure upwards and under casts up to about 1.6x red / 0.4x blue gain; pastel cubes in
- * normal light (exposure 0.65-1.25x, mild warm or cool casts) about 98.5% of stickers, candy, muted
- * and stickerless cubes over 99.5%. It fails where a single sample is physically ambiguous: a pastel
- * sticker under a cast of the opposite hue looks white (peach under cool light, baby blue under
- * strong warm light), and very dark orange looks red.
+ * of normal exposure upwards and under casts up to about 1.6x red / 0.4x blue gain; candy, muted and
+ * stickerless cubes in normal light (exposure 0.65-1.25x, mild warm or cool casts) over 99.5% of
+ * stickers. Pastel cubes vary: about 98.5% for the user's daughter's cube, 85-97% for other pastel
+ * palettes (lavender, coral, macaron, light yellow, sky blue), 65-80% for very pale or greyish ones.
+ * It fails where a single sample is physically ambiguous, because one sticker's chromaticity is
+ * exactly that of a white sticker under some plausible light: a pastel sticker under a cast of the
+ * opposite hue (peach under cool light, baby blue under warm light), very light yellows, sky blues and
+ * peaches even in neutral light (they look like a white under a mild warm or cool cast, which the
+ * white region must accept), and lavender under warm light; also very dark orange looks red.
  *
- * This is for the live preview only. [AdaptiveLiveClassifier] learns the actual colors of the cube
- * being scanned from the captured centers; the final colors come from [ScanResolver], which compares
- * the stickers of all six scans with each other and compensates the lighting of each scan.
+ * This is for the live preview only, and only until the scanning screen knows better:
+ * [AdaptiveLiveClassifier] learns the actual colors of the cube being scanned from the captured
+ * centers (over 99% on every palette tested once the six centers are learned); the final colors come
+ * from [ScanResolver], which compares the stickers of all six scans with each other and compensates
+ * the lighting of each scan.
  */
 object LiveClassifier {
 
@@ -88,11 +94,14 @@ object LiveClassifier {
 
     /**
      * Extra half-width near neutral, for green and magenta tints; fades out over [TINT_FADE] along the
-     * locus (on the magenta side only towards warm casts: no pastel sticker is magenta of a cool white).
+     * locus, and on the magenta side towards cool casts over the longer [MAGENTA_COOL_FADE]: whites
+     * under a cool light with a magenta tint reach about +0.3 across at -0.25 along, while lavender
+     * and periwinkle blues lie at +0.3..+0.45 across from about -0.3 along on.
      */
     private const val MAGENTA_TINT_WIDTH = 0.30
     private const val GREEN_TINT_WIDTH = 0.22
     private const val TINT_FADE = 0.26
+    private const val MAGENTA_COOL_FADE = 0.4
 
     /** Extent of the white region along the locus: strong cool to beyond incandescent. */
     private const val WHITE_COOLEST = -0.6
@@ -125,6 +134,17 @@ object LiveClassifier {
     private const val PASTEL_ORANGE_YELLOW_HUE = 80f
     private const val PASTEL_SATURATION = 0.45f
 
+    /**
+     * Orange/yellow boundary of light, moderately saturated colors (saturation up to
+     * [LIGHT_SATURATION]): pastel oranges such as #FFB347 lie at 74 degrees in neutral light and up to
+     * about 80 under a cool cast, while yellows only drop below about 82 degrees under a warm cast,
+     * which also makes them more saturated (0.8 and up). From [LIGHT_SATURATION] the boundary falls
+     * linearly to [ORANGE_YELLOW_HUE] at [DEEP_SATURATION].
+     */
+    private const val LIGHT_ORANGE_YELLOW_HUE = 79f
+    private const val LIGHT_SATURATION = 0.7f
+    private const val DEEP_SATURATION = 0.85f
+
     /** Pastel red/blue boundary on the magenta side: pink "reds" reach about 340 degrees under cool light. */
     private const val PASTEL_MAGENTA_HUE = 310f
 
@@ -134,9 +154,9 @@ object LiveClassifier {
     /** Step 3: b* (above the white reference) at which a light, weakly chromatic sample turns from white to yellow. */
     private const val WHITE_YELLOW_B = 30f
 
-    // Hue bands (degrees) of the warm-to-green family for saturated colors. Orange/yellow: oranges
-    // reach 63-71 degrees on light "candy" cubes under cool light, yellows drop to 76 degrees under
-    // incandescent light.
+    // Hue bands (degrees) of the warm-to-green family for saturated colors. Orange/yellow for deeply
+    // saturated colors: oranges reach 63-66 degrees on "candy" cubes under cool light, yellows drop
+    // to 74 degrees under incandescent light (lighter colors: see LIGHT_ORANGE_YELLOW_HUE).
     private const val RED_ORANGE_HUE = 42f
     private const val ORANGE_YELLOW_HUE = 71f
     private const val YELLOW_GREEN_HUE = 120f
@@ -151,15 +171,20 @@ object LiveClassifier {
     private val references: List<Lab> = colors.map { reference.getValue(it) }
 
     /** The most likely color of [sample]. */
-    fun classify(sample: StickerSample): CubeColor = classify(sample, references)
+    fun classify(sample: StickerSample): CubeColor = classify(whiteDistance(sample), sample.lab, references)
 
     /**
      * [classify] against other reference colors ([references] indexed by [CubeColor.ordinal]), e.g.
      * references re-derived from part of the calibration data. The references only affect vivid samples.
      */
-    internal fun classify(sample: StickerSample, references: List<Lab>): CubeColor {
-        if (whiteDistance(sample) < 1.0) return CubeColor.WHITE
-        val lab = sample.lab
+    internal fun classify(sample: StickerSample, references: List<Lab>): CubeColor = classify(whiteDistance(sample), sample.lab, references)
+
+    /**
+     * [classify] of a color given its [whiteDistance] and CIELAB value [lab], e.g. a sample after
+     * white balancing it.
+     */
+    internal fun classify(whiteDistance: Double, lab: Lab, references: List<Lab> = this.references): CubeColor {
+        if (whiteDistance < 1.0) return CubeColor.WHITE
         val saturation = saturation(lab)
         if (!(saturation >= VIVID_SATURATION)) return lightByHue(lab.hue, saturation)
         var best = colors[0]
@@ -174,8 +199,8 @@ object LiveClassifier {
         return when (best) {
             CubeColor.BLUE -> CubeColor.BLUE
             CubeColor.WHITE, CubeColor.YELLOW ->
-                if (lab.b - references[CubeColor.WHITE.ordinal].b < WHITE_YELLOW_B) CubeColor.WHITE else vividByHue(lab.hue)
-            CubeColor.RED, CubeColor.ORANGE, CubeColor.GREEN -> vividByHue(lab.hue)
+                if (lab.b - references[CubeColor.WHITE.ordinal].b < WHITE_YELLOW_B) CubeColor.WHITE else vividByHue(lab.hue, saturation)
+            CubeColor.RED, CubeColor.ORANGE, CubeColor.GREEN -> vividByHue(lab.hue, saturation)
         }
     }
 
@@ -185,18 +210,17 @@ object LiveClassifier {
      * color 1 plus the squared distance (in units of 20 degrees) of the sample's hue from that color's
      * hue band. Used to rank the alternatives, e.g. when a color is already taken.
      */
-    internal fun costs(sample: StickerSample): DoubleArray {
-        val costs = costs(whiteDistance(sample), sample.lab)
-        val chosen = classify(sample).ordinal
-        val min = costs.min()
-        if (costs[chosen] > min) costs[chosen] = min - TIE_BREAK
-        return costs
-    }
+    internal fun costs(sample: StickerSample): DoubleArray = costs(whiteDistance(sample), sample.lab, followRules = true)
 
     private const val TIE_BREAK = 1e-3
 
-    /** The costs of [costs] for a color with the given [whiteDistance] and CIELAB value [lab], without the classification rules. */
-    internal fun costs(whiteDistance: Double, lab: Lab): DoubleArray {
+    /**
+     * The costs of [costs] for a color with the given [whiteDistance] and CIELAB value [lab]. With
+     * [followRules], the color [classify] returns is made the cheapest (as in [costs]); without, the
+     * costs are the soft hue-band costs alone, e.g. for colors measured in a common light, where the
+     * fixed reference colors of the vivid rules don't apply.
+     */
+    internal fun costs(whiteDistance: Double, lab: Lab, followRules: Boolean = false): DoubleArray {
         val hue = lab.hue.toDouble()
         val saturation = saturation(lab)
         val oy = orangeYellowHue(saturation).toDouble()
@@ -211,6 +235,11 @@ object LiveClassifier {
                 CubeColor.GREEN -> 1.0 + bandCost(hue, YELLOW_GREEN_HUE.toDouble(), GREEN_BLUE_HUE.toDouble())
                 CubeColor.BLUE -> 1.0 + bandCost(hue, GREEN_BLUE_HUE.toDouble(), magenta)
             }
+        }
+        if (followRules) {
+            val chosen = classify(whiteDistance, lab).ordinal
+            val min = costs.min()
+            if (costs[chosen] > min) costs[chosen] = min - TIE_BREAK
         }
         return costs
     }
@@ -267,11 +296,13 @@ object LiveClassifier {
      * white locus in log units (0 neutral, about 0.5 for strong warm and 1 for incandescent light,
      * negative for cool light).
      */
-    internal fun warmth(sample: StickerSample): Double {
-        val r = ColorMath.srgbToLinear(sample.r) + RATIO_EPSILON
-        val g = ColorMath.srgbToLinear(sample.g) + RATIO_EPSILON
-        val b = ColorMath.srgbToLinear(sample.b) + RATIO_EPSILON
-        return ln(r / g) * WARM_U + ln(b / g) * WARM_V
+    internal fun warmth(sample: StickerSample): Double =
+        warmth(ColorMath.srgbToLinear(sample.r), ColorMath.srgbToLinear(sample.g), ColorMath.srgbToLinear(sample.b))
+
+    /** [warmth] of the linear RGB color ([r], [g], [b]). */
+    internal fun warmth(r: Double, g: Double, b: Double): Double {
+        val gg = g + RATIO_EPSILON
+        return ln((r + RATIO_EPSILON) / gg) * WARM_U + ln((b + RATIO_EPSILON) / gg) * WARM_V
     }
 
     /**
@@ -292,7 +323,8 @@ object LiveClassifier {
         val across = u * TINT_U + v * TINT_V
         val fade = exp(-(along / TINT_FADE) * (along / TINT_FADE))
         val width = if (across >= 0.0) {
-            MAGENTA_WIDTH + MAGENTA_TINT_WIDTH * (if (along <= 0.0) 1.0 else fade)
+            val magentaFade = if (along <= 0.0) exp(-(along / MAGENTA_COOL_FADE) * (along / MAGENTA_COOL_FADE)) else fade
+            MAGENTA_WIDTH + MAGENTA_TINT_WIDTH * magentaFade
         } else {
             GREEN_WIDTH + GREEN_TINT_WIDTH * fade
         }
@@ -308,8 +340,18 @@ object LiveClassifier {
     /** Chroma relative to lightness, `C* / (L* + 16)`: about exposure independent. */
     internal fun saturation(lab: Lab): Float = lab.chroma / (lab.l + 16f)
 
-    /** Orange/yellow hue boundary at [saturation]: 71 degrees for vivid colors, up to 80 for pastels. */
-    private fun orangeYellowHue(saturation: Float): Float = interpolate(saturation, PASTEL_ORANGE_YELLOW_HUE, ORANGE_YELLOW_HUE)
+    /**
+     * Orange/yellow hue boundary at [saturation]: 80 degrees for pastels, 79 for light, moderately
+     * saturated colors, falling to 71 for deeply saturated ones.
+     */
+    private fun orangeYellowHue(saturation: Float): Float = when {
+        !(saturation > PASTEL_SATURATION) -> PASTEL_ORANGE_YELLOW_HUE
+        saturation < LIGHT_SATURATION -> PASTEL_ORANGE_YELLOW_HUE +
+            (saturation - PASTEL_SATURATION) / (LIGHT_SATURATION - PASTEL_SATURATION) * (LIGHT_ORANGE_YELLOW_HUE - PASTEL_ORANGE_YELLOW_HUE)
+        saturation < DEEP_SATURATION -> LIGHT_ORANGE_YELLOW_HUE +
+            (saturation - LIGHT_SATURATION) / (DEEP_SATURATION - LIGHT_SATURATION) * (ORANGE_YELLOW_HUE - LIGHT_ORANGE_YELLOW_HUE)
+        else -> ORANGE_YELLOW_HUE
+    }
 
     /** Blue/red hue boundary on the magenta side at [saturation]. */
     private fun magentaHue(saturation: Float): Float = interpolate(saturation, PASTEL_MAGENTA_HUE, MAGENTA_HUE)
@@ -331,10 +373,13 @@ object LiveClassifier {
         else -> CubeColor.BLUE
     }
 
-    /** Step 3: the red, orange, yellow or green vivid sticker with CIELAB hue angle [hue] (degrees). */
-    private fun vividByHue(hue: Float): CubeColor = when {
+    /**
+     * Step 3: the red, orange, yellow or green vivid sticker with CIELAB hue angle [hue] (degrees) and
+     * the given [saturation].
+     */
+    private fun vividByHue(hue: Float, saturation: Float): CubeColor = when {
         hue < RED_ORANGE_HUE || hue >= MAGENTA_HUE -> CubeColor.RED
-        hue < ORANGE_YELLOW_HUE -> CubeColor.ORANGE
+        hue < orangeYellowHue(saturation) -> CubeColor.ORANGE
         hue < YELLOW_GREEN_HUE -> CubeColor.YELLOW
         else -> CubeColor.GREEN
     }

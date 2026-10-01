@@ -114,6 +114,28 @@ class LiveClassifierTest {
     }
 
     @Test
+    fun readsOtherPastelShades() {
+        // Shades of other pastel cubes that sit next to white or next to another color: a lavender
+        // blue (pinkish under warm light, so neutral and cool light only), a saturated pastel orange
+        // close to yellow (#FFB347) and a coral pink red, from full brightness down to under half.
+        val cases = listOf(
+            Triple(0xC8B6E2, CubeColor.BLUE, listOf("neutral", "cool")),
+            Triple(0xFFB347, CubeColor.ORANGE, listOf("neutral", "warm", "cool")),
+            Triple(0xFFA54F, CubeColor.ORANGE, listOf("neutral", "warm", "cool")),
+            Triple(0xF88379, CubeColor.RED, listOf("neutral", "warm", "cool")),
+        )
+        for ((rgb, color, lights) in cases) {
+            val srgb = intArrayOf((rgb shr 16) and 0xFF, (rgb shr 8) and 0xFF, rgb and 0xFF)
+            for (exposure in listOf(0.45, 0.55, 0.7, 0.85, 1.0)) {
+                for (cast in lights) {
+                    val sample = sampleOf(srgb, exposure, casts.getValue(cast))
+                    assertEquals("%06X at exposure $exposure, $cast: $sample".format(rgb), color, LiveClassifier.classify(sample))
+                }
+            }
+        }
+    }
+
+    @Test
     fun separatesThePastelHardPairs() {
         // White vs lemon, pink vs peach, and white vs each pastel, as designed.
         for ((color, rgb) in KnockOffCubes.PASTEL_HEX) assertEquals("%06X".format(rgb), color, LiveClassifier.classify(StickerSample.ofArgb(rgb)))

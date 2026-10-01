@@ -9,13 +9,29 @@ import kotlin.math.sin
 import kotlin.random.Random
 
 /**
- * Renders photo-like images of one cube face for tests: rounded stickers on black plastic, per-photo
- * exposure and white balance, uneven illumination, sensor noise, specular highlights, and a face that
- * is shifted, scaled, rotated and slightly in perspective relative to the scanning guide.
+ * Renders photo-like images of one cube face for tests: rounded stickers on black plastic (or the
+ * body of [CubeLook.body]), per-photo exposure and white balance, uneven illumination, sensor noise,
+ * specular highlights, and a face that is shifted, scaled, rotated and slightly in perspective
+ * relative to the scanning guide.
  *
- * Stickers have the colors of [palette] in neutral light.
+ * Stickers have the colors of [look] in neutral light.
  */
-class SyntheticFaces(private val random: Random, private val palette: Palette = Palette.NOMINAL) {
+class SyntheticFaces(private val random: Random, private val look: CubeLook) {
+
+    /** A renderer for a standard black-bodied cube with the colors of [palette]. */
+    constructor(random: Random, palette: Palette = Palette.NOMINAL) : this(random, palette.look)
+
+    /** What shows between the stickers. */
+    enum class Body {
+        /** Black plastic gaps (the usual stickered cube). */
+        BLACK,
+
+        /** White plastic gaps (white-bodied cubes). */
+        WHITE,
+
+        /** No gaps: colored plastic tiles that touch, with thin seams of the same or a slightly darker color. */
+        STICKERLESS,
+    }
 
     /** A cube's sticker colors as a phone camera captures them in neutral light. */
     enum class Palette(
@@ -61,6 +77,9 @@ class SyntheticFaces(private val random: Random, private val palette: Palette = 
 
         /** An ideal (noise-free, neutral light) sample of [color]. */
         fun sample(color: CubeColor): StickerSample = srgb.getValue(color).let { StickerSample.of(it[0], it[1], it[2]) }
+
+        /** This palette on a black-bodied cube. */
+        val look: CubeLook get() = CubeLook(name, srgb)
     }
 
     /** Lighting and pose of one rendered photo. */
@@ -123,6 +142,9 @@ class SyntheticFaces(private val random: Random, private val palette: Palette = 
         val highlightCells = (0 until 9).shuffled(random).take(conditions.highlights).toSet()
         val highlight = Array(9) { doubleArrayOf(random.nextDouble(-0.2, 0.2), random.nextDouble(-0.2, 0.2), random.nextDouble(0.08, 0.16)) }
         val background = doubleArrayOf(random.nextDouble(0.05, 0.4), random.nextDouble(0.05, 0.4), random.nextDouble(0.03, 0.3))
+        // Only other bodies draw more random numbers here, so black-bodied renders stay as they were.
+        val seamShade = if (look.body == Body.STICKERLESS) (if (random.nextBoolean()) 1.0 else random.nextDouble(0.55, 0.9)) else 1.0
+        val whiteBody = if (look.body == Body.WHITE) random.nextDouble(0.5, 0.68) else 0.0
 
         val cx = guide.left + guide.size / 2.0 + conditions.shift.first * guide.size
         val cy = guide.top + guide.size / 2.0 + conditions.shift.second * guide.size
@@ -153,8 +175,13 @@ class SyntheticFaces(private val random: Random, private val palette: Palette = 
                     val k = row * 3 + col
                     val lx = fx + 1.5 - col - 0.5 - jitterX[k]
                     val ly = fy + 1.5 - row - 0.5 - jitterY[k]
-                    if (insideRoundedSquare(lx, ly, stickerHalf[k], 0.09)) {
-                        val base = palette.linear.getValue(colors[k])
+                    val inSticker = if (look.body == Body.STICKERLESS) {
+                        abs(fx + 1.0 - col) < 0.5 - SEAM && abs(fy + 1.0 - row) < 0.5 - SEAM
+                    } else {
+                        insideRoundedSquare(lx, ly, stickerHalf[k], 0.09)
+                    }
+                    if (inSticker) {
+                        val base = look.linear.getValue(colors[k])
                         for (ch in 0 until 3) linear[ch] = base[ch] * tint[k][ch]
                         if (k in highlightCells) {
                             val h = highlight[k]
@@ -165,8 +192,20 @@ class SyntheticFaces(private val random: Random, private val palette: Palette = 
                             }
                         }
                     } else {
-                        val plastic = 0.012 + 0.006 * random.nextDouble()
-                        for (ch in 0 until 3) linear[ch] = plastic
+                        when (look.body) {
+                            Body.BLACK -> {
+                                val plastic = 0.012 + 0.006 * random.nextDouble()
+                                for (ch in 0 until 3) linear[ch] = plastic
+                            }
+                            Body.WHITE -> {
+                                val plastic = whiteBody * (0.97 + 0.06 * random.nextDouble())
+                                for (ch in 0 until 3) linear[ch] = plastic
+                            }
+                            Body.STICKERLESS -> {
+                                val base = look.linear.getValue(colors[k])
+                                for (ch in 0 until 3) linear[ch] = base[ch] * seamShade
+                            }
+                        }
                     }
                 }
                 val light = conditions.brightness * (1.0 + conditions.gradient.first * fx / 3.0 + conditions.gradient.second * fy / 3.0)
@@ -179,6 +218,11 @@ class SyntheticFaces(private val random: Random, private val palette: Palette = 
             }
         }
         return image to guide
+    }
+
+    private companion object {
+        /** Half-width of the seam between two stickerless tiles, in cells. */
+        const val SEAM = 0.025
     }
 
     private fun insideRoundedSquare(x: Double, y: Double, half: Double, radius: Double): Boolean {

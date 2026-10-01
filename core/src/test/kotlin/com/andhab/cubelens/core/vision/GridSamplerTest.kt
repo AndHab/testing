@@ -11,6 +11,7 @@ import java.lang.management.ManagementFactory
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 class GridSamplerTest {
@@ -116,6 +117,59 @@ class GridSamplerTest {
                 assertEquals("cell $k v", expectedV, centers[2 * k + 1], 0.15)
             }
             assertEquals(colors, GridSampler.sample(img, guide).map(LiveClassifier::classify))
+        }
+    }
+
+    @Test
+    fun findsStickersOnFacesWithoutDarkGaps() {
+        // White-bodied cubes (white plastic between the stickers) and stickerless cubes (tiles that
+        // touch) have no dark gaps to lock onto. The grid is moved to where the sampling windows are
+        // uniform, so a guide off by up to 0.3 of a cell still reads every sticker right; on white
+        // bodies, stickers that stand out from the plastic are located within 0.2 of a cell. Dim to
+        // bright light, with specular highlights.
+        val random = Random(41)
+        val looks = listOf(
+            KnockOffCubes.WHITE_BODY,
+            CubeLook("pastel, white body", KnockOffCubes.PASTEL.srgb, SyntheticFaces.Body.WHITE),
+            KnockOffCubes.STICKERLESS,
+            CubeLook("pastel, stickerless", KnockOffCubes.PASTEL.srgb, SyntheticFaces.Body.STICKERLESS),
+        )
+        for (look in looks) {
+            val faces = SyntheticFaces(random, look)
+            var worst = 0.0
+            repeat(40) { n ->
+                val colors = List(9) { CubeColor.entries[random.nextInt(6)] }
+                val shift = random.nextDouble(-0.1, 0.1) to random.nextDouble(-0.1, 0.1)
+                val conditions = faces.randomConditions().copy(
+                    brightness = random.nextDouble(0.2, 1.25),
+                    shift = shift,
+                    scale = 1.0,
+                    rotationDegrees = 0.0,
+                    keystone = 0.0 to 0.0,
+                )
+                val (image, guide) = faces.render(colors, conditions, imageSize = 160)
+                val centers = GridSampler.stickerCenters(image, guide)
+                val samples = GridSampler.sample(image, guide)
+                for (k in 0 until 9) {
+                    val u = k % 3 + 0.5 + 3 * shift.first
+                    val v = k / 3 + 0.5 + 3 * shift.second
+                    val error = sqrt((centers[2 * k] - u) * (centers[2 * k] - u) + (centers[2 * k + 1] - v) * (centers[2 * k + 1] - v))
+                    val standsOut = look.body == SyntheticFaces.Body.WHITE && colors[k] != CubeColor.WHITE
+                    if (standsOut) {
+                        worst = maxOf(worst, error)
+                        assertTrue("$look face $n cell $k: off by $error cells", error <= 0.2)
+                    }
+                    // The sample is nearest to its own sticker color as rendered there.
+                    val light = conditions.brightness * (1.0 + conditions.gradient.first * (k % 3 - 1) / 3.0 + conditions.gradient.second * (k / 3 - 1) / 3.0)
+                    val nearest = CubeColor.entries.minBy { c ->
+                        val lin = look.linear.getValue(c)
+                        val rendered = IntArray(3) { ColorMath.linearToSrgb(lin[it] * light * conditions.whiteBalance[it]) }
+                        ColorMath.deltaE(samples[k].lab, StickerSample.of(rendered[0], rendered[1], rendered[2]).lab)
+                    }
+                    assertEquals("$look face $n cell $k (center off by $error cells): ${samples[k]}", colors[k], nearest)
+                }
+            }
+            println("Faces without dark gaps, $look: stickers standing out located within ${"%.2f".format(worst)} cells (guide off by up to 0.42)")
         }
     }
 

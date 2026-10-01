@@ -88,6 +88,79 @@ class LiveClassifierTest {
     }
 
     @Test
+    fun readsKnockOffColors() {
+        // Design colors of knock-off and standard cubes, as a camera sees them from full brightness down
+        // to under half, in neutral light and under the mild casts auto white balance usually leaves.
+        val palettes = mapOf(
+            "pastel" to KnockOffCubes.PASTEL_HEX,
+            "candy" to KnockOffCubes.CANDY_HEX,
+            "dark candy" to KnockOffCubes.DARK_CANDY_HEX,
+            "muted" to KnockOffCubes.MUTED_HEX,
+            "stickerless" to KnockOffCubes.STICKERLESS_HEX,
+            "brand" to KnockOffCubes.BRAND_HEX,
+        )
+        val mild = listOf("neutral", "warm", "cool").associateWith { casts.getValue(it) }
+        for ((name, hex) in palettes) {
+            for ((color, rgb) in hex) {
+                val srgb = intArrayOf((rgb shr 16) and 0xFF, (rgb shr 8) and 0xFF, rgb and 0xFF)
+                for (exposure in listOf(0.45, 0.55, 0.7, 0.85, 1.0)) {
+                    for ((cast, wb) in mild) {
+                        val sample = sampleOf(srgb, exposure, wb)
+                        assertEquals("$name $color (%06X) at exposure $exposure, $cast: $sample".format(rgb), color, LiveClassifier.classify(sample))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun readsOtherPastelShades() {
+        // Shades of other pastel cubes that sit next to white or next to another color: a lavender
+        // blue (pinkish under warm light, so neutral and cool light only), a saturated pastel orange
+        // close to yellow (#FFB347) and a coral pink red, from full brightness down to under half.
+        val cases = listOf(
+            Triple(0xC8B6E2, CubeColor.BLUE, listOf("neutral", "cool")),
+            Triple(0xFFB347, CubeColor.ORANGE, listOf("neutral", "warm", "cool")),
+            Triple(0xFFA54F, CubeColor.ORANGE, listOf("neutral", "warm", "cool")),
+            Triple(0xF88379, CubeColor.RED, listOf("neutral", "warm", "cool")),
+        )
+        for ((rgb, color, lights) in cases) {
+            val srgb = intArrayOf((rgb shr 16) and 0xFF, (rgb shr 8) and 0xFF, rgb and 0xFF)
+            for (exposure in listOf(0.45, 0.55, 0.7, 0.85, 1.0)) {
+                for (cast in lights) {
+                    val sample = sampleOf(srgb, exposure, casts.getValue(cast))
+                    assertEquals("%06X at exposure $exposure, $cast: $sample".format(rgb), color, LiveClassifier.classify(sample))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun separatesThePastelHardPairs() {
+        // White vs lemon, pink vs peach, and white vs each pastel, as designed.
+        for ((color, rgb) in KnockOffCubes.PASTEL_HEX) assertEquals("%06X".format(rgb), color, LiveClassifier.classify(StickerSample.ofArgb(rgb)))
+        // Darker "candy" reds and oranges, and a raspberry pink.
+        assertEquals(CubeColor.RED, LiveClassifier.classify(StickerSample.ofArgb(0xD81B60)))
+        assertEquals(CubeColor.RED, LiveClassifier.classify(StickerSample.ofArgb(0xFF4F81)))
+        assertEquals(CubeColor.ORANGE, LiveClassifier.classify(StickerSample.ofArgb(0xFF8F3F)))
+        assertEquals(CubeColor.ORANGE, LiveClassifier.classify(StickerSample.ofArgb(0xE8743B)))
+        // A greyish, slightly warm white vs a light lemon.
+        assertEquals(CubeColor.WHITE, LiveClassifier.classify(StickerSample.of(214, 208, 196)))
+        assertEquals(CubeColor.YELLOW, LiveClassifier.classify(StickerSample.of(214, 206, 140)))
+    }
+
+    @Test
+    fun costsRankTheClassifiedColorFirst() {
+        val random = Random(23)
+        repeat(5000) {
+            val sample = StickerSample.of(random.nextInt(256), random.nextInt(256), random.nextInt(256))
+            val costs = LiveClassifier.costs(sample)
+            val chosen = LiveClassifier.classify(sample)
+            assertTrue("$sample", costs.indices.all { costs[it] >= costs[chosen.ordinal] })
+        }
+    }
+
+    @Test
     fun separatesTheHardPairs() {
         // Dark, shaded red (real photo) vs a dim orange; greyish shaded white vs a dull yellow.
         assertEquals(CubeColor.RED, LiveClassifier.classify(StickerSample.of(107, 12, 17)))

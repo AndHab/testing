@@ -17,7 +17,7 @@ borders. Primary actions are glowing sunset-gradient pills. Motion is springy an
 | `Brand.Ink` | `#0A0A10` | App background |
 | `Brand.Surface` / `SurfaceHigh` | `#17171F` / `#1F1F2A` | Cards, sheets (usually translucent over the aurora) |
 | `Brand.Hairline` | white 10% | 1dp borders on glass cards |
-| `Brand.TextPrimary` / `Secondary` / `Tertiary` | `#F6F3FF` / `#ADA8C2` / `#6F6A86` | Text hierarchy |
+| `Brand.TextPrimary` / `Secondary` / `Tertiary` | `#F6F3FF` / `#ADA8C2` / `#8A85A3` | Text hierarchy |
 | `Brand.SunsetBrush` | `#FF2E63 → #FF7A18 → #FFC93C` | Primary CTAs, highlights, gradient headline words, progress |
 | `Brand.Mint` | `#2EE6A6` | Success / "valid cube" / captured states |
 | `Brand.Amber` | `#FFB547` | Warnings |
@@ -32,6 +32,8 @@ button) rather than grey drop shadows.
 
 * **Space Grotesk** (Bold/Medium): display & headline text, numbers, move notation (`R'`, `U2`).
   Tight letter-spacing at large sizes. Headlines may highlight one key word with the sunset gradient.
+  Show notation through `displayNotation()`: it swaps the apostrophe (a comma-like glyph in Space
+  Grotesk) for a true prime, `R′`.
 * **Outfit**: body, labels, buttons. Friendly and round.
 * Small caps-style overlines (labelSmall, letter-spaced, `TextTertiary` or accent) above titles.
 
@@ -40,7 +42,8 @@ button) rather than grey drop shadows.
 * Corner radii: 12dp (small chips), 20dp (cards), 28dp (sheets/hero cards), full pill for buttons.
 * Glass cards: `Surface` at ~70–80% alpha + 1dp `Hairline` border + subtle top highlight gradient.
 * Cube stickers: rounded squares (≈18% corner radius) on a black body, with a gentle top-left
-  highlight so they read as glossy plastic.
+  highlight so they read as glossy plastic. Flagged stickers never rely on color alone: a `Danger`
+  ring separated from the sticker by a dark gap, plus a "!" badge on the corner.
 
 ## Motion
 

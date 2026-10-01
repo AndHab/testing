@@ -143,7 +143,7 @@ class DesignGalleryScreenshotTest {
                             Spacer(Modifier.height(6.dp))
                             Text("Turn the right face back", style = MaterialTheme.typography.titleMedium)
                         }
-                        GradientText("R'", style = NotationStyle.copy(fontSize = 56.sp, lineHeight = 56.sp))
+                        GradientText(displayNotation("R'"), style = NotationStyle.copy(fontSize = 56.sp, lineHeight = 56.sp))
                     }
                     Spacer(Modifier.height(16.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -173,10 +173,10 @@ class DesignGalleryScreenshotTest {
                 GlassCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         StickerGrid(SampleFace, Modifier.width(112.dp))
-                        StickerGrid(SampleFace.mapIndexed { i, c -> if (i == 8) null else c }, Modifier.width(112.dp), highlighted = setOf(2, 6))
+                        StickerGrid(SampleFace.mapIndexed { i, c -> if (i == 8) null else c }, Modifier.width(112.dp), highlighted = setOf(0, 3))
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("Front", style = MaterialTheme.typography.titleMedium)
-                            Text("Glossy stickers, flagged ones glow red.", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
+                            Text("Flagged stickers get a ring and a badge.", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
                         }
                     }
                 }

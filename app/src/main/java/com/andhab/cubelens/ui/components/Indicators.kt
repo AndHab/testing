@@ -113,9 +113,9 @@ private fun StepDot(state: StepState) {
     )
     val color by animateColorAsState(
         targetValue = when (state) {
-            StepState.Done -> Brand.TextPrimary.copy(alpha = 0.55f)
+            StepState.Done -> Brand.TextPrimary.copy(alpha = 0.6f)
             StepState.Active -> Brand.Tangerine
-            StepState.Upcoming -> Brand.TextPrimary.copy(alpha = 0.16f)
+            StepState.Upcoming -> Brand.TextPrimary.copy(alpha = 0.3f)
         },
         animationSpec = CubeLensMotion.select(),
         label = "stepDotColor",

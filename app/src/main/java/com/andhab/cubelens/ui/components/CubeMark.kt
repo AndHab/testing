@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -27,6 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubePalette
@@ -71,6 +74,7 @@ fun CubeMark(
 
 /**
  * Logo lockup: [CubeMark] followed by the "CubeLens" wordmark with "Lens" in the sunset gradient.
+ * Screen readers hear it as one word, the app name.
  */
 @Composable
 fun BrandLockup(
@@ -83,7 +87,12 @@ fun BrandLockup(
         fontSize = (markSize.value * 0.72f).sp,
         letterSpacing = (-0.02).em,
     )
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+    val appName = stringResource(R.string.app_name)
+    Row(
+        // The two-tone wordmark is two Text nodes; without this TalkBack stops on "Cube", then "Lens".
+        modifier = modifier.clearAndSetSemantics { contentDescription = appName },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         CubeMark(Modifier.size(markSize), glow = false)
         Spacer(Modifier.width(markSize * 0.34f))
         Text("Cube", style = style, color = Brand.TextPrimary)

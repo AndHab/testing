@@ -9,10 +9,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -26,6 +28,7 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.unit.IntSize
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.theme.CubePalette
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
 import kotlin.math.PI
 import kotlin.math.abs
@@ -35,9 +38,15 @@ import kotlin.math.sin
 import kotlin.random.Random
 
 /**
- * Celebration overlay. Each time [trigger] changes to a new non-null value, a burst of confetti in
- * the six sticker colors explodes from the upper middle of the overlay, tumbles under gravity and
- * air drag, and fades out after about three seconds. A new trigger during a burst adds to it.
+ * Celebration overlay. When [trigger] becomes a non-null value other than the last one that fired,
+ * a burst of confetti in the six sticker colors explodes from the upper middle of the overlay,
+ * tumbles under gravity and air drag, and fades out after about three seconds. A new trigger
+ * during a burst adds to it.
+ *
+ * The last fired trigger survives recreation and back navigation (it is kept by its hash code in
+ * saved state), so returning to a screen or rotating it does not replay the celebration; use a
+ * fresh value per celebration, such as the time the cube was solved or a counter. The burst runs
+ * at the system animator speed, and with "Remove animations" turned on it does not play at all.
  *
  * Fills its parent (place it last in a `Box` so it draws on top), never intercepts touches and
  * draws nothing while idle. In inspection mode a non-null [trigger] renders a frozen mid-flight
@@ -59,12 +68,17 @@ fun ConfettiBurst(trigger: Any?, modifier: Modifier = Modifier) {
     val simulation = remember { ConfettiSimulation() }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var bursts by remember { mutableIntStateOf(0) }
+    var lastFiredKey by rememberSaveable { mutableStateOf<Int?>(null) }
     // Bumped every simulated frame; read in the draw phase so only drawing is invalidated.
     var frameNanos by remember { mutableLongStateOf(0L) }
     val density = LocalDensity.current.density
 
     LaunchedEffect(trigger) {
         if (trigger == null) return@LaunchedEffect
+        val key = trigger.hashCode()
+        if (key == lastFiredKey) return@LaunchedEffect
+        lastFiredKey = key
+        if (motionScale() == 0f) return@LaunchedEffect
         val bounds = snapshotFlow { canvasSize }.first { it.width > 0 && it.height > 0 }
         simulation.burst(
             originX = bounds.width / 2f,
@@ -78,8 +92,15 @@ fun ConfettiBurst(trigger: Any?, modifier: Modifier = Modifier) {
         if (bursts == 0) return@LaunchedEffect
         var last = withFrameNanos { it }
         while (!simulation.isIdle) {
+            // Follow the animator duration scale: 2x slows the burst down; 0 (animations turned
+            // off mid-burst) ends it at once.
+            val scale = motionScale()
+            if (scale == 0f) {
+                simulation.clear()
+                break
+            }
             withFrameNanos { now ->
-                simulation.step((now - last) / 1_000_000_000f, canvasSize.height.toFloat())
+                simulation.step((now - last) / 1_000_000_000f / scale, canvasSize.height.toFloat())
                 last = now
                 frameNanos = now
             }
@@ -95,6 +116,9 @@ fun ConfettiBurst(trigger: Any?, modifier: Modifier = Modifier) {
         if (frameNanos != 0L) drawConfetti(simulation)
     }
 }
+
+/** The system animator duration scale; 0 when the user turned animations off. */
+private suspend fun motionScale(): Float = currentCoroutineContext()[MotionDurationScale]?.scaleFactor ?: 1f
 
 /** Vertical position of the burst origin, as a fraction of the overlay height. */
 private const val BurstOriginY = 0.36f
@@ -187,6 +211,9 @@ internal class ConfettiSimulation(private val random: Random = Random.Default) {
 
     /** True when nothing is left to draw. */
     val isIdle: Boolean get() = live.isEmpty()
+
+    /** Removes every particle at once. */
+    fun clear() = live.clear()
 
     private var dpToPx = 1f
 

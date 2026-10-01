@@ -246,7 +246,13 @@ fun TextAction(
         if (icon != null) {
             Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
         }
-        Text(text, style = ButtonTextStyle.copy(fontSize = 15.sp), color = color, maxLines = 1)
+        Text(
+            text = text,
+            style = ButtonTextStyle.copy(fontSize = 15.sp),
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

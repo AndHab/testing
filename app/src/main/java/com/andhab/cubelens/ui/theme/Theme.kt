@@ -13,7 +13,8 @@ import androidx.compose.ui.unit.dp
 
 private val CubeLensColorScheme = darkColorScheme(
     primary = Brand.Magenta,
-    onPrimary = Brand.TextPrimary,
+    // White on magenta is only 3.6:1; the wine-black OnAccent keeps text on accents above 5:1.
+    onPrimary = Brand.OnAccent,
     primaryContainer = Brand.SurfaceHigh,
     onPrimaryContainer = Brand.TextPrimary,
     secondary = Brand.Tangerine,
@@ -36,7 +37,7 @@ private val CubeLensColorScheme = darkColorScheme(
     outline = Brand.HairlineStrong,
     outlineVariant = Brand.Hairline,
     error = Brand.Danger,
-    onError = Brand.TextPrimary,
+    onError = Brand.OnAccent,
     scrim = Brand.Ink,
 )
 

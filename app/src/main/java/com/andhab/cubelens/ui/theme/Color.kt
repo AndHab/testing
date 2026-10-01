@@ -28,7 +28,9 @@ object Brand {
     // Text
     val TextPrimary = Color(0xFFF6F3FF)
     val TextSecondary = Color(0xFFADA8C2)
-    val TextTertiary = Color(0xFF6F6A86)
+
+    /** Lowest-emphasis text (overlines, captions, step numbers): still ≥ 5:1 on Ink and Surface. */
+    val TextTertiary = Color(0xFF8A85A3)
 
     /**
      * Text and icons placed on the sunset gradient. A deep wine-black rather than white: it keeps

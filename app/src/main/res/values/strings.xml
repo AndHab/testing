@@ -1,3 +1,18 @@
 <resources>
     <string name="app_name">CubeLens</string>
+
+    <!-- Accessibility labels used by the shared UI components. -->
+    <string name="cd_back">Back</string>
+    <string name="state_loading">Loading</string>
+    <string name="step_progress">Step %1$d of %2$d</string>
+    <string name="sticker_description">Row %1$d, column %2$d: %3$s</string>
+
+    <!-- Sticker color names. -->
+    <string name="color_white">White</string>
+    <string name="color_yellow">Yellow</string>
+    <string name="color_green">Green</string>
+    <string name="color_blue">Blue</string>
+    <string name="color_red">Red</string>
+    <string name="color_orange">Orange</string>
+    <string name="color_not_set">Not set</string>
 </resources>

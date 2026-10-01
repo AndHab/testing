@@ -7,6 +7,7 @@ import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.onRoot
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.CubeError
+import com.andhab.cubelens.core.cube.CubieCube
 import com.andhab.cubelens.core.cube.FaceletCube
 import com.andhab.cubelens.ui.review.ReviewCheck
 import com.andhab.cubelens.ui.review.ReviewSource
@@ -38,6 +39,16 @@ fun impossibleEdgeSwap(): Pair<List<CubeColor>, Set<Int>> {
         }
     }
     error("No swap of two edge stickers gives an impossible edge")
+}
+
+/** The user's cube with one corner twisted in place: every piece is real, but no real cube looks like this. */
+fun twistedCorner(): List<CubeColor> {
+    val (a, b, c) = CubieCube.CORNER_FACELET[0].toList()
+    return UserCubeColors.toMutableList().also {
+        it[a] = UserCubeColors[c]
+        it[b] = UserCubeColors[a]
+        it[c] = UserCubeColors[b]
+    }
 }
 
 /**

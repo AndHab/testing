@@ -31,7 +31,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -49,7 +52,8 @@ import kotlinx.coroutines.delay
 /**
  * The whole app: shows the [AppViewModel]'s current screen, slides between screens (forward
  * moves come in from the right, back moves from the left), routes system back through
- * [AppViewModel.back] and floats short-lived error messages over the top.
+ * [AppViewModel.back] and floats short-lived error messages over the top. A screen on its way out
+ * ignores touches, so a quick second tap can't act on the screen being left.
  */
 @Composable
 fun CubeLensApp(
@@ -71,33 +75,13 @@ fun CubeLensApp(
             transitionSpec = { screenTransition() },
             label = "screen",
         ) { screen ->
-            when (screen) {
-                Screen.Home -> HomeScreen(
-                    onScan = viewModel::openScan,
-                    onManualEntry = viewModel::openManualEntry,
-                    onRandomScramble = viewModel::playRandomScramble,
-                    scrambling = state.scrambling,
-                )
-                Screen.Scan -> ScanScreen(
-                    onScanned = viewModel::onScanned,
-                    onBack = { viewModel.back() },
-                    onManualEntry = viewModel::openManualEntry,
-                )
-                is Screen.Review -> ReviewScreen(
-                    review = screen.review,
-                    onBack = { viewModel.back() },
-                    onRescan = viewModel::rescan,
-                    onStickerTap = viewModel::onStickerTap,
-                    onColorTap = viewModel::onColorTap,
-                    onUndo = viewModel::undo,
-                    onSolve = viewModel::solve,
-                )
-                is Screen.Solve -> SolveScreen(
-                    startColors = screen.startColors,
-                    moves = screen.moves,
-                    onBack = { viewModel.back() },
-                    onDone = viewModel::onSolveDone,
-                )
+            val leaving = screen::class != state.screen::class
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .ignoreInputWhen(leaving),
+            ) {
+                ScreenContent(screen, state, viewModel)
             }
         }
         MessageBanner(
@@ -107,6 +91,60 @@ fun CubeLensApp(
         )
     }
 }
+
+/** The composable for [screen], wired to [viewModel]. */
+@Composable
+private fun ScreenContent(screen: Screen, state: AppUiState, viewModel: AppViewModel) {
+    when (screen) {
+        Screen.Home -> HomeScreen(
+            onScan = viewModel::openScan,
+            onManualEntry = viewModel::openManualEntry,
+            onRandomScramble = viewModel::playRandomScramble,
+            scrambling = state.scrambling,
+        )
+        is Screen.Scan -> ScanScreen(
+            onScanned = viewModel::onScanned,
+            onBack = { viewModel.back() },
+            onManualEntry = viewModel::openManualEntry,
+        )
+        is Screen.Review -> ReviewScreen(
+            review = screen.review,
+            onBack = { viewModel.back() },
+            onRescan = viewModel::rescan,
+            onStickerTap = viewModel::onStickerTap,
+            onColorTap = viewModel::onColorTap,
+            onUndo = viewModel::undo,
+            onSolve = viewModel::solve,
+            onLeave = viewModel::leaveReview,
+            onStay = viewModel::keepEditing,
+        )
+        is Screen.Solve -> SolveScreen(
+            startColors = screen.startColors,
+            moves = screen.moves,
+            onBack = { viewModel.back() },
+            onDone = viewModel::onSolveDone,
+        )
+    }
+}
+
+/**
+ * While [ignore] is true, swallows every pointer event before the content sees it and hides the
+ * content from accessibility services.
+ */
+private fun Modifier.ignoreInputWhen(ignore: Boolean): Modifier =
+    if (!ignore) {
+        this
+    } else {
+        this
+            .clearAndSetSemantics {}
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                    }
+                }
+            }
+    }
 
 /** Slide plus fade, in the direction of travel through Home → Scan → Review → Solve. */
 private fun AnimatedContentTransitionScope<Screen>.screenTransition(): ContentTransform {

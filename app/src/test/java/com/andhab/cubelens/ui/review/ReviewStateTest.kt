@@ -8,6 +8,7 @@ import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.vision.ScanAnalysis
 import com.andhab.cubelens.ui.UserCubeColors
 import com.andhab.cubelens.ui.impossibleEdgeSwap
+import com.andhab.cubelens.ui.twistedCorner
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -41,9 +42,29 @@ class ReviewStateTest {
     }
 
     @Test
+    fun entryGoesFaceByFaceInNetOrder() {
+        val order = ReviewState.ENTRY_ORDER
+        assertEquals((0 until Facelets.COUNT).toSet(), order.toSet())
+        assertEquals(
+            listOf(Face.U, Face.L, Face.F, Face.R, Face.B, Face.D),
+            order.chunked(9).map { face -> Facelets.faceOf(face.first()) },
+        )
+        // After the eight stickers of the top face, entry carries on at the left face's first sticker.
+        var review = ReviewState.manual()
+        repeat(8) { review = review.tapColor(CubeColor.WHITE) }
+        assertEquals(Facelets.index(Face.L, 0, 0), review.selected)
+        // Filling the very last sticker out of turn wraps around to the first gap.
+        review = review.tapSticker(Facelets.index(Face.D, 2, 2)).tapColor(CubeColor.YELLOW)
+        assertEquals(Facelets.index(Face.L, 0, 0), review.selected)
+        // From the back face, entry moves down to the bottom face.
+        review = review.tapSticker(Facelets.index(Face.B, 2, 2)).tapColor(CubeColor.BLUE)
+        assertEquals(Facelets.index(Face.D, 0, 0), review.selected)
+    }
+
+    @Test
     fun copyingTheWholeCubeMakesItValid() {
         var review = ReviewState.manual()
-        for (i in 0 until Facelets.COUNT) {
+        for (i in ReviewState.ENTRY_ORDER) {
             if (!ReviewState.isCenter(i)) review = review.tapColor(UserCubeColors[i])
         }
         assertEquals(UserCubeColors, review.colors)
@@ -142,10 +163,36 @@ class ReviewStateTest {
     @Test
     fun anImpossibleEdgeIsFlagged() {
         val (colors, swapped) = impossibleEdgeSwap()
-        val check = ReviewState(colors, ReviewSource.Scan).check
+        val review = ReviewState(colors, ReviewSource.Scan)
+        val check = review.check
         assertTrue(check is ReviewCheck.Invalid && check.error is CubeError.ImpossibleEdge)
-        val flagged = (check as ReviewCheck.Invalid).flagged
-        assertTrue("flagged $flagged should include one of $swapped", swapped.any { it in flagged })
+        val invalid = check as ReviewCheck.Invalid
+        assertTrue("flagged ${invalid.flagged} should include one of $swapped", swapped.any { it in invalid.flagged })
+        assertEquals(invalid.flagged, review.flagged)
+        // Swapping two edge stickers breaks both edges; the title counts them.
+        assertEquals(invalid.errors.count { it is CubeError.ImpossibleEdge }, invalid.sameKindCount)
+        assertEquals(2, invalid.sameKindCount)
+    }
+
+    @Test
+    fun problemsWithoutStickersPointAtTheHardToReadOnes() {
+        val colors = twistedCorner()
+        val plain = ReviewState(colors, ReviewSource.Scan)
+        val check = plain.check
+        assertTrue(check is ReviewCheck.Invalid && check.error == CubeError.TwistedCorner)
+        assertTrue((check as ReviewCheck.Invalid).flagged.isEmpty())
+        assertTrue("nothing to point at", plain.flagged.isEmpty())
+
+        val unsure = setOf(0, 18)
+        assertEquals(unsure, plain.copy(uncertain = unsure).flagged)
+    }
+
+    @Test
+    fun onlyWorkInProgressNeedsAConfirmationToLeave() {
+        assertFalse(ReviewState.manual().hasWorkToLose)
+        assertTrue(ReviewState.manual().tapColor(CubeColor.RED).hasWorkToLose)
+        assertFalse(ReviewState.manual().tapColor(CubeColor.RED).undo().hasWorkToLose)
+        assertTrue("a scan took effort too", scanned().hasWorkToLose)
     }
 
     @Test

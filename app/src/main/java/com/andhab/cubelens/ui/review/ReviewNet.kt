@@ -7,17 +7,21 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -48,7 +52,8 @@ import kotlin.math.roundToInt
  *  - a subtle amber dot on the corner of each [uncertain] sticker, the ones worth a second look
  *    (stickers that are [flagged] already carry the stronger danger ring instead).
  *
- * A small legend for the marks sits in the empty corner beside the bottom face.
+ * A small legend for the marks sits in the empty corner beside the bottom face. Inside a scrolling
+ * parent, the face of the [selected] sticker is scrolled into view whenever the selection moves.
  */
 @Composable
 internal fun ReviewNet(
@@ -62,6 +67,14 @@ internal fun ReviewNet(
     val placement = remember { NetPlacement() }
     val lock = rememberVectorPainter(Icons.Rounded.Lock)
     val dots = uncertain.filter { it in 0 until Facelets.COUNT && it !in flagged }
+    val bringIntoView = remember { BringIntoViewRequester() }
+    LaunchedEffect(selected) {
+        val metrics = placement.metrics ?: return@LaunchedEffect
+        if (selected == null) return@LaunchedEffect
+        val face = Facelets.faceOf(selected)
+        val topLeft = Offset(placement.offsetX + metrics.plateX(face), metrics.plateY(face))
+        bringIntoView.bringIntoView(Rect(topLeft, Size(metrics.plate, metrics.plate)))
+    }
     Layout(
         content = {
             CubeNet(
@@ -72,20 +85,22 @@ internal fun ReviewNet(
             )
             NetLegend(lock = lock, showDots = dots.isNotEmpty(), showFlags = flagged.isNotEmpty())
         },
-        modifier = modifier.drawWithContent {
-            drawContent()
-            val metrics = placement.metrics ?: return@drawWithContent
-            translate(left = placement.offsetX) {
-                for (face in Face.entries) {
-                    val center = Facelets.center(face)
-                    drawLock(lock, Offset(metrics.stickerX(center), metrics.stickerY(center)), metrics.sticker)
+        modifier = modifier
+            .bringIntoViewRequester(bringIntoView)
+            .drawWithContent {
+                drawContent()
+                val metrics = placement.metrics ?: return@drawWithContent
+                translate(left = placement.offsetX) {
+                    for (face in Face.entries) {
+                        val center = Facelets.center(face)
+                        drawLock(lock, Offset(metrics.stickerX(center), metrics.stickerY(center)), metrics.sticker)
+                    }
+                    for (index in dots) {
+                        val corner = Offset(metrics.stickerX(index) + metrics.sticker, metrics.stickerY(index))
+                        drawUncertainDot(corner + Offset(-DotRadius.toPx() - DotInset.toPx(), DotRadius.toPx() + DotInset.toPx()))
+                    }
                 }
-                for (index in dots) {
-                    val corner = Offset(metrics.stickerX(index) + metrics.sticker, metrics.stickerY(index))
-                    drawUncertainDot(corner + Offset(-DotRadius.toPx() - DotInset.toPx(), DotRadius.toPx() + DotInset.toPx()))
-                }
-            }
-        },
+            },
     ) { measurables, constraints ->
         // The same metrics CubeNet computes from the same constraints, so the marks line up exactly.
         val metrics = NetMetrics.fit(constraints)

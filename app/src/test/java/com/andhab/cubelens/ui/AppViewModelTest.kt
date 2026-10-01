@@ -65,14 +65,98 @@ class AppViewModelTest {
         assertFalse("back on Home leaves the app", vm.back())
 
         vm.openScan()
-        assertEquals(Screen.Scan, vm.state.value.screen)
+        assertEquals(Screen.Scan(), vm.state.value.screen)
         assertTrue(vm.back())
         assertEquals(Screen.Home, vm.state.value.screen)
 
         vm.openManualEntry()
         assertTrue(vm.state.value.screen is Screen.Review)
-        assertTrue(vm.back())
+        assertTrue("nothing entered yet, so nothing to lose", vm.back())
         assertEquals(Screen.Home, vm.state.value.screen)
+    }
+
+    @Test
+    fun backFromAReviewWithWorkInItAsksFirst() = runTest(dispatcher) {
+        val vm = viewModel(FakeSolver())
+        vm.openManualEntry()
+        vm.onColorTap(CubeColor.RED)
+
+        assertTrue(vm.back())
+        assertTrue("asks before dropping the cube", review(vm).confirmingLeave)
+        assertTrue(vm.back())
+        assertFalse("back again keeps editing", review(vm).confirmingLeave)
+        assertEquals(CubeColor.RED, review(vm).colors[0])
+
+        vm.back()
+        vm.keepEditing()
+        assertFalse(review(vm).confirmingLeave)
+
+        vm.back()
+        vm.leaveReview()
+        assertEquals(Screen.Home, vm.state.value.screen)
+    }
+
+    @Test
+    fun backFromAScannedReviewAsksEvenWithoutEdits() = runTest(dispatcher) {
+        val vm = viewModel(FakeSolver())
+        vm.openScan()
+        vm.onScanned(scansOf(UserCubeColors))
+        advanceUntilIdle()
+        assertFalse(review(vm).canUndo)
+        vm.back()
+        assertTrue(review(vm).confirmingLeave)
+    }
+
+    @Test
+    fun scanningAgainAndBackingOutKeepsTheReview() = runTest(dispatcher) {
+        val vm = viewModel(FakeSolver())
+        vm.openScan()
+        vm.onScanned(scansOf(UserCubeColors))
+        advanceUntilIdle()
+        vm.onStickerTap(10)
+        vm.onColorTap(CubeColor.WHITE)
+        val edited = review(vm)
+
+        vm.rescan()
+        val scan = vm.state.value.screen as Screen.Scan
+        assertEquals(edited.colors, scan.returnTo?.review?.colors)
+        assertTrue(vm.back())
+        assertEquals("back from the camera returns to the edited review", edited.colors, review(vm).colors)
+        assertTrue(review(vm).canUndo)
+
+        // Typing colors in instead of scanning also returns to that review, ready to edit by hand.
+        vm.rescan()
+        vm.openManualEntry()
+        assertEquals(edited.colors, review(vm).colors)
+        assertEquals(ReviewSource.Scan, review(vm).source)
+    }
+
+    @Test
+    fun aNewScanReplacesTheReviewItWasStartedFrom() = runTest(dispatcher) {
+        val vm = viewModel(FakeSolver())
+        vm.openScan()
+        vm.onScanned(scansOf(UserCubeColors))
+        advanceUntilIdle()
+        vm.onStickerTap(10)
+        vm.onColorTap(CubeColor.WHITE)
+        vm.rescan()
+        vm.onScanned(scansOf(UserCubeColors))
+        advanceUntilIdle()
+        assertEquals(UserCubeColors, review(vm).colors)
+        assertFalse(review(vm).canUndo)
+    }
+
+    @Test
+    fun actionsOfOtherScreensAreIgnored() = runTest(dispatcher) {
+        val vm = viewModel(FakeSolver())
+        vm.openManualEntry()
+        val review = vm.state.value.screen
+        // E.g. a late tap on Home's buttons while the review slides in.
+        vm.openScan()
+        vm.playRandomScramble()
+        vm.onSolveDone()
+        assertEquals(review, vm.state.value.screen)
+        assertFalse(vm.state.value.scrambling)
     }
 
     @Test
@@ -94,7 +178,7 @@ class AppViewModelTest {
         val vm = viewModel(FakeSolver())
         vm.openScan()
         vm.onScanned(scansOf(UserCubeColors))
-        assertEquals("resolving runs in the background", Screen.Scan, vm.state.value.screen)
+        assertEquals("resolving runs in the background", Screen.Scan(), vm.state.value.screen)
         advanceUntilIdle()
         val review = review(vm)
         assertEquals(ReviewSource.Scan, review.source)
@@ -210,14 +294,20 @@ class AppViewModelTest {
     }
 
     @Test
-    fun leavingWhileSolvingCancelsTheSolve() = runTest(dispatcher) {
-        val vm = viewModel(FakeSolver())
+    fun backWhileSolvingCancelsTheSolveAndAsks() = runTest(dispatcher) {
+        val solver = FakeSolver()
+        val vm = viewModel(solver)
         vm.openScan()
         vm.onScanned(scansOf(UserCubeColors))
         advanceUntilIdle()
         vm.solve()
         vm.back()
         advanceUntilIdle()
+        assertTrue(vm.state.value.screen is Screen.Review)
+        assertFalse(review(vm).solving)
+        assertTrue(review(vm).confirmingLeave)
+        assertEquals("the solve never ran", listOf("prepare"), solver.calls)
+        vm.leaveReview()
         assertEquals(Screen.Home, vm.state.value.screen)
     }
 
@@ -228,7 +318,7 @@ class AppViewModelTest {
         vm.onScanned(scansOf(UserCubeColors))
         advanceUntilIdle()
         vm.rescan()
-        assertEquals(Screen.Scan, vm.state.value.screen)
+        assertTrue(vm.state.value.screen is Screen.Scan)
         vm.onScanned(scansOf(UserCubeColors))
         advanceUntilIdle()
         vm.solve()

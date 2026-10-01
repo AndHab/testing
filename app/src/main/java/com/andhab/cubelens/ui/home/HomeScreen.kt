@@ -7,12 +7,15 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,7 +24,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.CameraAlt
@@ -37,12 +42,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
@@ -68,6 +77,10 @@ import com.andhab.cubelens.ui.theme.DisplayFont
  * flung, a punchy headline, a three-step "how it works" strip and the ways in: scan, type the
  * colors, or watch a random scramble get solved. Everything enters in a quick staggered cascade.
  *
+ * The hero takes whatever height the rest leaves free. On short screens the "how it works" strip
+ * makes way for it, and if even then the hero would drop below a comfortable size, the page
+ * scrolls instead (and the hero stops taking drags, so they scroll the page).
+ *
  * @param scrambling a random scramble is being prepared; its action shows progress and is disabled.
  * @param heroColors the cube on show (54 colors, facelet order).
  */
@@ -81,75 +94,151 @@ fun HomeScreen(
     heroColors: List<CubeColor> = HeroCubeColors,
 ) {
     AuroraBackground(modifier.fillMaxSize()) {
-        Column(
+        BoxWithConstraints(
             Modifier
                 .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.systemBars)
-                .padding(horizontal = 24.dp),
+                .windowInsetsPadding(WindowInsets.systemBars),
         ) {
-            Reveal(index = 0) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    BrandLockup()
-                }
-            }
-            Reveal(
-                index = 1,
+            val scroll = rememberScrollState()
+            // maxValue is Int.MAX_VALUE until the first layout, so the hero starts out still.
+            val fits = scroll.maxValue == 0
+            HomeLayout(
+                viewportHeight = maxHeight,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
-                offset = 28.dp,
-            ) {
-                HeroCube(heroColors, Modifier.fillMaxSize())
+                    .verticalScroll(scroll)
+                    .padding(horizontal = 24.dp),
+                brand = {
+                    Reveal(index = 0) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            BrandLockup()
+                        }
+                    }
+                },
+                hero = {
+                    Reveal(index = 1, offset = 28.dp) {
+                        HeroCube(heroColors, interactive = fits, modifier = Modifier.fillMaxSize())
+                    }
+                },
+                intro = {
+                    Column {
+                        Reveal(index = 2) {
+                            Column {
+                                Overline(stringResource(R.string.home_overline))
+                                Spacer(Modifier.height(10.dp))
+                                Headline()
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Reveal(index = 3) {
+                            Text(
+                                text = stringResource(R.string.home_subtitle),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = Brand.TextSecondary,
+                            )
+                        }
+                    }
+                },
+                steps = {
+                    Column {
+                        Spacer(Modifier.height(20.dp))
+                        Reveal(index = 4) { HowItWorks() }
+                    }
+                },
+                actions = {
+                    Column {
+                        Spacer(Modifier.height(22.dp))
+                        Reveal(index = 5) {
+                            PrimaryButton(
+                                text = stringResource(R.string.home_scan),
+                                onClick = onScan,
+                                icon = Icons.Rounded.CameraAlt,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Reveal(index = 6) {
+                            SecondaryButton(
+                                text = stringResource(R.string.home_manual),
+                                onClick = onManualEntry,
+                                icon = Icons.Rounded.GridView,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Reveal(index = 7, modifier = Modifier.fillMaxWidth()) {
+                            RandomScrambleAction(
+                                scrambling = scrambling,
+                                onClick = onRandomScramble,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                },
+            )
+        }
+    }
+}
+
+/** The hero never gets smaller than this; below it, the page scrolls instead. */
+private val MinHeroHeight = 200.dp
+
+/** The "how it works" strip only stays while the hero keeps at least this much height. */
+private val ComfortableHeroHeight = 240.dp
+
+/**
+ * Stacks [brand], [hero], [intro], [steps] and [actions] top to bottom, each at full width. The
+ * hero gets the height the others leave free in [viewportHeight], but never less than
+ * [MinHeroHeight]; [steps] are left out (not placed) when keeping them would squeeze the hero below
+ * [ComfortableHeroHeight]. The result is taller than the viewport only when the smallest hero
+ * doesn't fit, so the caller should let it scroll.
+ */
+@Composable
+private fun HomeLayout(
+    viewportHeight: Dp,
+    brand: @Composable () -> Unit,
+    hero: @Composable () -> Unit,
+    intro: @Composable () -> Unit,
+    steps: @Composable () -> Unit,
+    actions: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Layout(
+        contents = listOf(brand, hero, intro, steps, actions),
+        modifier = modifier,
+    ) { (brandSlot, heroSlot, introSlot, stepsSlot, actionsSlot), constraints ->
+        val width = constraints.maxWidth
+        val anyHeight = Constraints(minWidth = width, maxWidth = width)
+        val above = brandSlot.map { it.measure(anyHeight) }
+        val below = introSlot.map { it.measure(anyHeight) }
+        val stepRow = stepsSlot.map { it.measure(anyHeight) }
+        val bottom = actionsSlot.map { it.measure(anyHeight) }
+
+        val viewport = viewportHeight.roundToPx()
+        val fixedHeight = (above + below + bottom).sumOf { it.height }
+        val stepsHeight = stepRow.sumOf { it.height }
+        val showSteps = viewport - fixedHeight - stepsHeight >= ComfortableHeroHeight.roundToPx()
+        val othersHeight = fixedHeight + if (showSteps) stepsHeight else 0
+        val heroHeight = maxOf(MinHeroHeight.roundToPx(), viewport - othersHeight)
+        val heroes = heroSlot.map { it.measure(Constraints.fixed(width, heroHeight)) }
+
+        layout(width, othersHeight + heroHeight) {
+            var y = 0
+            fun stack(placeables: List<Placeable>) = placeables.forEach {
+                it.place(0, y)
+                y += it.height
             }
-            Reveal(index = 2) {
-                Column {
-                    Overline(stringResource(R.string.home_overline))
-                    Spacer(Modifier.height(10.dp))
-                    Headline()
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            Reveal(index = 3) {
-                Text(
-                    text = stringResource(R.string.home_subtitle),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Brand.TextSecondary,
-                )
-            }
-            Spacer(Modifier.height(20.dp))
-            Reveal(index = 4) { HowItWorks() }
-            Spacer(Modifier.height(22.dp))
-            Reveal(index = 5) {
-                PrimaryButton(
-                    text = stringResource(R.string.home_scan),
-                    onClick = onScan,
-                    icon = Icons.Rounded.CameraAlt,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            Reveal(index = 6) {
-                SecondaryButton(
-                    text = stringResource(R.string.home_manual),
-                    onClick = onManualEntry,
-                    icon = Icons.Rounded.GridView,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Reveal(index = 7, modifier = Modifier.fillMaxWidth()) {
-                RandomScrambleAction(
-                    scrambling = scrambling,
-                    onClick = onRandomScramble,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
+            stack(above)
+            stack(heroes)
+            stack(below)
+            if (showSteps) stack(stepRow)
+            stack(bottom)
         }
     }
 }
@@ -158,9 +247,11 @@ fun HomeScreen(
 internal val HeroCubeColors: List<CubeColor> =
     FaceletCube.parse("DLLRURUDLBFFLRUFDDRRUFFBRDLULDLDBFUBBBFBLDDFBUULFBURRR").toColors()
 
-/** The idling, draggable hero cube, lit from behind by a soft sunset bloom. */
+/**
+ * The idling hero cube, lit from behind by a soft sunset bloom; draggable when [interactive].
+ */
 @Composable
-private fun HeroCube(colors: List<CubeColor>, modifier: Modifier = Modifier) {
+private fun HeroCube(colors: List<CubeColor>, interactive: Boolean, modifier: Modifier = Modifier) {
     val state = rememberCubeViewState(colors, initialYaw = -44f, initialPitch = 26f)
     Cube3D(
         state = state,
@@ -172,7 +263,7 @@ private fun HeroCube(colors: List<CubeColor>, modifier: Modifier = Modifier) {
                 drawSoftGlow(Brand.Tangerine, alpha = 0.10f, center = center + Offset(0f, radius * 0.25f), radiusX = radius * 0.7f)
             }
             .padding(vertical = 4.dp),
-        interactive = true,
+        interactive = interactive,
         autoRotate = true,
     )
 }
@@ -194,10 +285,13 @@ private fun Headline() {
     }
 }
 
-/** Three glass cards: scan, check, solve. */
+/** Three glass cards of equal height: scan, check, solve. */
 @Composable
 private fun HowItWorks() {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(
+        modifier = Modifier.height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         StepCard(1, Icons.Rounded.CameraAlt, stringResource(R.string.home_step_scan), stringResource(R.string.home_step_scan_caption))
         StepCard(2, Icons.Rounded.AutoFixHigh, stringResource(R.string.home_step_check), stringResource(R.string.home_step_check_caption))
         StepCard(3, Icons.Rounded.ViewInAr, stringResource(R.string.home_step_solve), stringResource(R.string.home_step_solve_caption))
@@ -210,6 +304,7 @@ private fun RowScope.StepCard(step: Int, icon: ImageVector, title: String, capti
     GlassCard(
         modifier = Modifier
             .weight(1f)
+            .fillMaxHeight()
             .semantics(mergeDescendants = true) {},
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 14.dp),
     ) {
@@ -231,12 +326,12 @@ private fun RowScope.StepCard(step: Int, icon: ImageVector, title: String, capti
             )
         }
         Spacer(Modifier.height(12.dp))
-        Text(title, style = MaterialTheme.typography.titleSmall, color = Brand.TextPrimary, maxLines = 1)
+        Text(title, style = MaterialTheme.typography.titleSmall, color = Brand.TextPrimary)
         Text(
             text = caption,
             style = MaterialTheme.typography.bodySmall,
             color = Brand.TextSecondary,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
     }

@@ -16,8 +16,13 @@ sealed interface Screen {
         override val depth = 0
     }
 
-    /** Scanning the six faces with the camera. */
-    data object Scan : Screen {
+    /**
+     * Scanning the six faces with the camera.
+     *
+     * @param returnTo the review this scan was started from ("Scan again"), which back returns to
+     *   with every edit intact; `null` when scanning from Home.
+     */
+    data class Scan(val returnTo: Review? = null) : Screen {
         override val depth = 1
     }
 

@@ -28,7 +28,7 @@
     <string name="home_overline">Rubik\'s cube solver</string>
     <string name="home_headline">Snap. Solve.</string>
     <string name="home_headline_accent">Twist.</string>
-    <string name="home_subtitle">Point your camera at a scrambled cube and get the shortest path back to solved.</string>
+    <string name="home_subtitle">Point your camera at a scrambled cube and get a quick path back to solved.</string>
     <string name="home_scan">Scan my cube</string>
     <string name="home_manual">Enter colors manually</string>
     <string name="home_random">Try a random scramble</string>
@@ -49,20 +49,20 @@
     <string name="review_heading_scan">Does this match your cube?</string>
     <string name="review_heading_manual">Copy your cube\'s colors</string>
     <string name="review_body_scan">We read all 54 stickers. Fix anything that looks off.</string>
-    <string name="review_body_manual">Tap colors in reading order and we\'ll hop to the next sticker.</string>
+    <string name="review_body_manual">Pick colors face by face and we\'ll hop to the next sticker.</string>
     <plurals name="review_straightened">
         <item quantity="one">We straightened %d face</item>
         <item quantity="other">We straightened %d faces</item>
     </plurals>
     <string name="review_hold_manual">White top, green front</string>
-    <plurals name="review_double_check">
-        <item quantity="one">%d sticker to double-check</item>
-        <item quantity="other">%d stickers to double-check</item>
+    <plurals name="review_hard_to_read">
+        <item quantity="one">%d unclear sticker</item>
+        <item quantity="other">%d unclear stickers</item>
     </plurals>
 
     <!-- Review: marks on the net. -->
-    <string name="review_legend_flagged">Needs a fix</string>
-    <string name="review_legend_uncertain">Double-check</string>
+    <string name="review_legend_flagged">Needs a look</string>
+    <string name="review_legend_uncertain">Hard to read</string>
     <string name="review_legend_locked">Fixed center</string>
 
     <!-- Review: palette and editing tips. -->
@@ -70,7 +70,7 @@
     <string name="review_count_description">%1$s, %2$d of 9</string>
     <string name="review_swatch_painting">Painting</string>
     <string name="review_tip_idle">Tap a sticker, then a color. Or pick a color to paint.</string>
-    <string name="review_tip_selected">Now pick its color.</string>
+    <string name="review_tip_selected">Hold %1$s toward you, %2$s on top. Now pick a color.</string>
     <string name="review_tip_brush">Painting with %1$s. Tap stickers, or tap %1$s again to stop.</string>
     <string name="review_tip_center">Centers set each face\'s color, so they stay put.</string>
     <string name="review_undo">Undo</string>
@@ -90,19 +90,39 @@
     <string name="review_error_too_many">Too many %1$s stickers</string>
     <string name="review_error_too_few">Not enough %1$s stickers</string>
     <string name="review_error_count_message">Found %1$d. A cube has 9 of each color.</string>
-    <string name="review_error_corner">One corner can\'t exist</string>
-    <string name="review_error_corner_message">Its colors never meet on a real cube. Check the marked stickers.</string>
-    <string name="review_error_edge">One edge can\'t exist</string>
-    <string name="review_error_edge_message">Its colors never meet on a real cube. Check the marked stickers.</string>
-    <string name="review_error_duplicate_corner">A corner shows up twice</string>
-    <string name="review_error_duplicate_edge">An edge shows up twice</string>
+    <string name="review_error_count_uncertain">Found %1$d, not 9. The marked stickers were hard to read.</string>
+    <plurals name="review_error_corner">
+        <item quantity="one">One corner can\'t exist</item>
+        <item quantity="other">%d corners can\'t exist</item>
+    </plurals>
+    <plurals name="review_error_edge">
+        <item quantity="one">One edge can\'t exist</item>
+        <item quantity="other">%d edges can\'t exist</item>
+    </plurals>
+    <string name="review_error_impossible_message">Those colors never meet on a real cube. Check the marked stickers.</string>
+    <plurals name="review_error_duplicate_corner">
+        <item quantity="one">A corner is repeated</item>
+        <item quantity="other">%d corners are repeated</item>
+    </plurals>
+    <plurals name="review_error_duplicate_edge">
+        <item quantity="one">An edge is repeated</item>
+        <item quantity="other">%d edges are repeated</item>
+    </plurals>
     <string name="review_error_duplicate_message">Every piece is one of a kind. Check the marked stickers.</string>
+    <string name="review_error_marked">The marked stickers were hard to read. Start there.</string>
     <string name="review_error_twisted">One corner looks twisted</string>
-    <string name="review_error_twisted_message">A corner sticker may be misread. Check the corners.</string>
+    <string name="review_error_twisted_message">One corner sticker is probably off. Check the corners.</string>
     <string name="review_error_flipped">One edge looks flipped</string>
-    <string name="review_error_flipped_message">An edge sticker may be misread. Check the edges.</string>
+    <string name="review_error_flipped_message">One edge sticker is probably off. Check the edges.</string>
     <string name="review_error_swapped">Two pieces look swapped</string>
     <string name="review_error_swapped_message">Look closely at similar colors, like red and orange.</string>
+
+    <!-- Review: leaving with unsaved work. -->
+    <string name="review_leave_title">Leave this cube?</string>
+    <string name="review_leave_message_manual">The colors you\'ve entered will be lost.</string>
+    <string name="review_leave_message_scan">Your scan and any fixes will be lost.</string>
+    <string name="review_leave_stay">Keep editing</string>
+    <string name="review_leave_confirm">Leave</string>
 
     <!-- App-wide messages. -->
     <string name="message_solve_failed">Couldn\'t solve that one</string>

@@ -5,6 +5,7 @@ import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.CubeError
 import com.andhab.cubelens.core.cube.CubeValidator
+import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.vision.ScanAnalysis
 
@@ -35,10 +36,21 @@ sealed interface ReviewCheck {
     /**
      * Every sticker has a color but no real cube looks like this.
      *
-     * @param error the problem to tell the user about first.
-     * @param flagged stickers involved in any problem found, to highlight.
+     * @param errors every problem found, most basic first (never empty).
+     * @param flagged stickers involved in any of the [errors]; empty when none of them can be pinned
+     *   to particular stickers (e.g. a twisted corner).
      */
-    data class Invalid(val error: CubeError, val flagged: Set<Int>) : ReviewCheck
+    data class Invalid(val errors: List<CubeError>, val flagged: Set<Int>) : ReviewCheck {
+        init {
+            require(errors.isNotEmpty()) { "An invalid cube has at least one problem" }
+        }
+
+        /** The problem to tell the user about. */
+        val error: CubeError get() = errors.first()
+
+        /** How many problems of the same kind as [error] there are (e.g. two impossible edges). */
+        val sameKindCount: Int get() = errors.count { it::class == error::class }
+    }
 
     /** A real, solvable cube. */
     data object Valid : ReviewCheck
@@ -57,8 +69,8 @@ data class ReviewEdit(val index: Int, val previous: CubeColor?, val wasUncertain
  *
  * Editing works two ways, and both are always available:
  *  - **Select, then color**: tap a sticker to select it, then tap a color to paint it. In manual
- *    entry, painting an empty sticker hops on to the next empty one, so a face can be copied with
- *    nothing but taps on the palette.
+ *    entry, painting an empty sticker hops on to the next empty one in [ENTRY_ORDER], so a face can
+ *    be copied with nothing but taps on the palette.
  *  - **Paint**: with nothing selected, tap a color to pick it up as a [brush], then tap stickers to
  *    paint them. Tapping the same color again puts the brush down.
  *
@@ -72,6 +84,7 @@ data class ReviewEdit(val index: Int, val previous: CubeColor?, val wasUncertain
  * @property brush the color being painted with, if any (never set while [selected] is).
  * @property history undoable edits, oldest first (at most [MAX_HISTORY]).
  * @property solving a solution is being computed; edits are paused meanwhile.
+ * @property confirmingLeave the user asked to leave and is being asked whether to drop this cube.
  */
 @Immutable
 data class ReviewState(
@@ -84,16 +97,19 @@ data class ReviewState(
     val history: List<ReviewEdit> = emptyList(),
     val hint: ReviewHint? = null,
     val solving: Boolean = false,
+    val confirmingLeave: Boolean = false,
 ) {
     init {
         require(colors.size == Facelets.COUNT) { "Need ${Facelets.COUNT} sticker colors, got ${colors.size}" }
     }
 
     /** How many stickers currently have each color. */
-    val counts: Map<CubeColor, Int> = CubeColor.entries.associateWith { color -> colors.count { it == color } }
+    val counts: Map<CubeColor, Int> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        CubeColor.entries.associateWith { color -> colors.count { it == color } }
+    }
 
     /** Validation of the current colors. */
-    val check: ReviewCheck = checkColors(colors)
+    val check: ReviewCheck by lazy(LazyThreadSafetyMode.PUBLICATION) { checkColors(colors) }
 
     /** Whether the cube can be solved as it stands. */
     val canSolve: Boolean get() = check == ReviewCheck.Valid
@@ -101,18 +117,38 @@ data class ReviewState(
     /** Whether there is an edit to take back. */
     val canUndo: Boolean get() = history.isNotEmpty()
 
-    /** Stickers to highlight strongly: those involved in a validation problem. */
-    val flagged: Set<Int> get() = (check as? ReviewCheck.Invalid)?.flagged.orEmpty()
+    /** Whether leaving now would throw away work worth a second thought: any edit, or a scan. */
+    val hasWorkToLose: Boolean get() = canUndo || source == ReviewSource.Scan
+
+    /**
+     * Stickers to highlight strongly: those involved in a validation problem. When the problem
+     * can't be pinned to particular stickers (a twisted corner, a wrong color count…), the stickers
+     * the scanner was unsure about stand in: they are the likeliest culprits.
+     */
+    val flagged: Set<Int>
+        get() = when (val check = check) {
+            is ReviewCheck.Invalid -> check.flagged.ifEmpty { uncertain }
+            else -> emptySet()
+        }
 
     companion object {
         /** Longest undo history kept. */
         const val MAX_HISTORY = 64
 
+        /**
+         * The order manual entry walks the stickers in: face by face as the net lays them out (top;
+         * then left, front, right and back, as when turning the cube around; then bottom), each face
+         * row by row.
+         */
+        val ENTRY_ORDER: List<Int> = listOf(Face.U, Face.L, Face.F, Face.R, Face.B, Face.D).flatMap { face ->
+            (0 until 9).map { Facelets.index(face, it / 3, it % 3) }
+        }
+
         /** A blank cube for manual entry: only the centers are set, and the first sticker is selected. */
         fun manual(): ReviewState = ReviewState(
             colors = List(Facelets.COUNT) { i -> if (isCenter(i)) centerColor(i) else null },
             source = ReviewSource.Manual,
-            selected = 0,
+            selected = ENTRY_ORDER.first(),
         )
 
         /** The resolved colors of a scan, with its unsure stickers marked for a second look. */
@@ -135,7 +171,7 @@ data class ReviewState(
             return if (result.isValid) {
                 ReviewCheck.Valid
             } else {
-                ReviewCheck.Invalid(result.errors.first(), result.flaggedFacelets)
+                ReviewCheck.Invalid(result.errors, result.flaggedFacelets)
             }
         }
     }
@@ -200,8 +236,11 @@ private fun ReviewState.paint(index: Int, color: CubeColor): ReviewState {
     )
 }
 
-/** The next sticker without a color after [index] in reading order (wrapping around), if any. */
-private fun ReviewState.nextEmptyAfter(index: Int): Int? =
-    (1 until Facelets.COUNT)
-        .map { (index + it) % Facelets.COUNT }
+/** The next sticker without a color after [index] in [ReviewState.ENTRY_ORDER] (wrapping around), if any. */
+private fun ReviewState.nextEmptyAfter(index: Int): Int? {
+    val order = ReviewState.ENTRY_ORDER
+    val position = order.indexOf(index)
+    return (1 until order.size)
+        .map { order[(position + it) % order.size] }
         .firstOrNull { colors[it] == null }
+}

@@ -10,6 +10,8 @@ import com.andhab.cubelens.core.vision.ScanAnalysis
 import com.andhab.cubelens.ui.UserCubeColors
 import com.andhab.cubelens.ui.impossibleEdgeSwap
 import com.andhab.cubelens.ui.screenshot
+import com.andhab.cubelens.ui.twistedCorner
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -44,12 +46,29 @@ class ReviewScreenshotTest {
 
     @Test
     fun manualPartlyFilled() {
-        // The top face and part of the right face copied in reading order.
-        var review = ReviewState.manual()
-        for (i in 0 until 15) {
-            if (!ReviewState.isCenter(i)) review = review.tapColor(UserCubeColors[i])
-        }
-        compose.screenshot("review_manual_partial", advanceMillis = 1600) { Review(review) }
+        compose.screenshot("review_manual_partial", advanceMillis = 1600) { Review(manualEntry(stickers = 19)) }
+    }
+
+    /** A small phone: the palette stays pinned under the net, the preview shrinks. */
+    @Test
+    @Config(qualifiers = "w360dp-h640dp-xxhdpi")
+    fun manualOnASmallPhone() {
+        compose.screenshot("review_compact_manual", advanceMillis = 1600) { Review(manualEntry(stickers = 30)) }
+    }
+
+    @Test
+    fun leaving() {
+        val review = manualEntry(stickers = 19).copy(confirmingLeave = true)
+        compose.screenshot("review_leave", advanceMillis = 600) { Review(review) }
+    }
+
+    @Test
+    fun twistedCornerPointsAtHardToReadStickers() {
+        val review = ReviewState(colors = twistedCorner(), source = ReviewSource.Scan, uncertain = setOf(0, 20, 51))
+        val check = review.check
+        assertTrue(check is ReviewCheck.Invalid && check.error == CubeError.TwistedCorner)
+        assertEquals(review.uncertain, review.flagged)
+        compose.screenshot("review_error_twist", advanceMillis = 300) { Review(review) }
     }
 
     @Test
@@ -76,7 +95,18 @@ class ReviewScreenshotTest {
             onColorTap = {},
             onUndo = {},
             onSolve = {},
+            onLeave = {},
+            onStay = {},
         )
+    }
+
+    /** Manual entry with the first [stickers] editable stickers copied from the user's cube, in entry order. */
+    private fun manualEntry(stickers: Int): ReviewState {
+        var review = ReviewState.manual()
+        for (i in ReviewState.ENTRY_ORDER.filterNot(ReviewState::isCenter).take(stickers)) {
+            review = review.tapColor(UserCubeColors[i])
+        }
+        return review
     }
 
     private fun swappedIntoImpossibleEdge(): List<CubeColor> = impossibleEdgeSwap().first

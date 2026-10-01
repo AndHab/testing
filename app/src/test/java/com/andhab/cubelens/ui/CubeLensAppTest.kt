@@ -64,6 +64,32 @@ class CubeLensAppTest {
     }
 
     @Test
+    fun backWithWorkInProgressAsksFirst() {
+        compose.mainClock.autoAdvance = false
+        compose.setContent { CubeLensTheme { CubeLensApp(viewModel = viewModel) } }
+        settle()
+        compose.onNodeWithText("Enter colors manually").performClick()
+        settle()
+        compose.onNodeWithContentDescription("Red, 1 of 9").performClick()
+        settle()
+
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        settle()
+        compose.onNodeWithText("Leave this cube?").assertExists()
+        compose.onNodeWithText("Keep editing").performClick()
+        settle()
+        compose.onNodeWithText("Leave this cube?").assertDoesNotExist()
+        compose.onNodeWithText("47 stickers to go").assertExists()
+
+        compose.onNodeWithContentDescription("Back").performClick()
+        settle()
+        compose.onNodeWithText("Leave").performClick()
+        settle()
+        assertEquals(Screen.Home, viewModel.state.value.screen)
+        compose.onNodeWithText("Scan my cube").assertExists()
+    }
+
+    @Test
     fun topBarBackLeavesTheReview() {
         compose.mainClock.autoAdvance = false
         compose.setContent { CubeLensTheme { CubeLensApp(viewModel = viewModel) } }

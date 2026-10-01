@@ -70,34 +70,45 @@ class AppViewModel(
 
     /** Home → camera scan. */
     fun openScan() {
+        if (_state.value.screen != Screen.Home) return
         cancelWork()
-        _state.update { it.copy(screen = Screen.Scan, scrambling = false) }
+        _state.update { it.copy(screen = Screen.Scan(), scrambling = false) }
     }
 
-    /** Home or Scan → manual entry on a blank cube. */
+    /**
+     * Home or Scan → manual entry on a blank cube. When the scan was started from a review ("Scan
+     * again"), that review comes back instead: its colors can be edited by hand right there.
+     */
     fun openManualEntry() {
+        val target = when (val screen = _state.value.screen) {
+            Screen.Home -> Screen.Review(ReviewState.manual())
+            is Screen.Scan -> screen.returnTo ?: Screen.Review(ReviewState.manual())
+            else -> return
+        }
         cancelWork()
-        _state.update { it.copy(screen = Screen.Review(ReviewState.manual()), scrambling = false) }
+        _state.update { it.copy(screen = target, scrambling = false) }
     }
 
-    /** Review → scan the cube again. */
+    /** Review → scan the cube again; backing out of the camera returns to this review, edits intact. */
     fun rescan() {
-        if (_state.value.screen !is Screen.Review) return
+        val review = (_state.value.screen as? Screen.Review)?.review ?: return
         cancelWork()
-        _state.update { it.copy(screen = Screen.Scan) }
+        val returnTo = Screen.Review(review.clearTools().copy(solving = false, confirmingLeave = false))
+        _state.update { it.copy(screen = Screen.Scan(returnTo)) }
     }
 
     /**
      * The camera delivered all six faces: resolves them into a cube (in the background) and moves on
      * to the review, even when the colors are not a valid cube yet; the review shows what to fix.
+     * A new scan replaces the review it was started from, if any.
      */
     fun onScanned(scans: List<List<StickerSample>>) {
-        if (_state.value.screen != Screen.Scan) return
+        if (_state.value.screen !is Screen.Scan) return
         cancelWork()
         work = viewModelScope.launch {
             val analysis = withContext(workDispatcher) { ScanResolver.resolve(scans) }
             _state.update {
-                if (it.screen == Screen.Scan) it.copy(screen = Screen.Review(ReviewState.fromScan(analysis))) else it
+                if (it.screen is Screen.Scan) it.copy(screen = Screen.Review(ReviewState.fromScan(analysis))) else it
             }
         }
     }
@@ -166,26 +177,48 @@ class AppViewModel(
 
     /** Solve → the user finished (or wants another cube): back to Home. */
     fun onSolveDone() {
+        if (_state.value.screen !is Screen.Solve) return
         cancelWork()
         _state.update { it.copy(screen = Screen.Home) }
     }
 
     /**
-     * System back: Solve → Review (or Home after a random scramble), Review → Home, Scan → Home.
+     * System back (and the top bar's back button):
+     *  - Solve → the review it came from (Home after a random scramble);
+     *  - Scan → the review it was started from, or Home;
+     *  - Review → Home, but when that would throw away work (any edit, or a scan) it first asks
+     *    (see [ReviewState.confirmingLeave]); back while asking means "keep editing".
      *
      * @return false on Home, where back should leave the app.
      */
     fun back(): Boolean {
-        val screen = _state.value.screen
-        val target = when (screen) {
+        val target = when (val screen = _state.value.screen) {
             Screen.Home -> return false
-            Screen.Scan, is Screen.Review -> Screen.Home
+            is Screen.Scan -> screen.returnTo ?: Screen.Home
+            is Screen.Review -> {
+                val review = screen.review
+                when {
+                    review.confirmingLeave -> Screen.Review(review.copy(confirmingLeave = false))
+                    review.hasWorkToLose -> Screen.Review(review.copy(solving = false, confirmingLeave = true))
+                    else -> Screen.Home
+                }
+            }
             is Screen.Solve -> screen.returnTo ?: Screen.Home
         }
         cancelWork()
         _state.update { it.copy(screen = target, scrambling = false) }
         return true
     }
+
+    /** Review → Home, dropping the cube: the answer to "Leave this cube?". */
+    fun leaveReview() {
+        if (_state.value.screen !is Screen.Review) return
+        cancelWork()
+        _state.update { it.copy(screen = Screen.Home) }
+    }
+
+    /** Stays on the review: the other answer to "Leave this cube?". */
+    fun keepEditing() = updateReview { it.copy(confirmingLeave = false) }
 
     /** Hides the current [AppUiState.message]. */
     fun dismissMessage() = _state.update { it.copy(message = null) }

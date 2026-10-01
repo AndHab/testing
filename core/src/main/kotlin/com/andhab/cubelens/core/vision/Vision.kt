@@ -2,6 +2,22 @@ package com.andhab.cubelens.core.vision
 
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
+import kotlin.math.atan2
+import kotlin.math.sqrt
+
+/*
+ * Camera color vision: turning images of the six faces into sticker colors.
+ *
+ * The pipeline is:
+ *  1. [GridSampler] reads the nine stickers of one face from a camera frame or photo, robustly
+ *     (it locks onto the actual stickers inside the guide square and ignores black plastic and glare).
+ *  2. [LiveClassifier] gives an instant per-sticker color guess for the live preview.
+ *  3. [ScanResolver] takes all six scans and classifies the 54 stickers jointly (each color exactly
+ *     nine times, per-face lighting compensated), places every scan on its face and fixes face
+ *     rotations with [OrientationFixer].
+ *
+ * Colors are compared with [ColorMath.deltaE].
+ */
 
 /** Read-only view of an image, e.g. a camera frame or a decoded photo. */
 interface PixelSource {
@@ -13,11 +29,30 @@ interface PixelSource {
 }
 
 /** CIELAB color (D65), L in 0..100. */
-data class Lab(val l: Float, val a: Float, val b: Float)
+data class Lab(val l: Float, val a: Float, val b: Float) {
+    /** CIE chroma C*ab, the distance from the neutral axis. */
+    val chroma: Float get() = sqrt(a * a + b * b)
+
+    /** CIE hue angle h_ab in degrees, 0 until 360 (0 for neutral colors). */
+    val hue: Float
+        get() {
+            if (a == 0f && b == 0f) return 0f
+            val h = Math.toDegrees(atan2(b.toDouble(), a.toDouble())).toFloat()
+            return if (h < 0f) h + 360f else h
+        }
+}
 
 /** Robust color reading of a single sticker. */
 data class StickerSample(val r: Int, val g: Int, val b: Int, val lab: Lab) {
     val argb: Int get() = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+
+    companion object {
+        /** A sample of the sRGB color ([r], [g], [b]), each 0..255. */
+        fun of(r: Int, g: Int, b: Int): StickerSample = StickerSample(r, g, b, ColorMath.srgbToLab(r, g, b))
+
+        /** A sample of the sRGB color [argb] (0xAARRGGBB, alpha ignored). */
+        fun ofArgb(argb: Int): StickerSample = of((argb shr 16) and 0xFF, (argb shr 8) and 0xFF, argb and 0xFF)
+    }
 }
 
 /** An axis-aligned square in source pixel coordinates. */
@@ -37,54 +72,9 @@ data class ScanAnalysis(
     val faceRotations: Map<Face, Int>,
     /** Whether [colors] is a valid, solvable cube. */
     val isValid: Boolean,
-    /** Facelets whose color assignment was uncertain; the UI may highlight these for review. */
+    /**
+     * Facelets whose color assignment was uncertain; the UI may highlight these for review.
+     * Indices refer to positions in [colors].
+     */
     val uncertain: Set<Int>,
 )
-
-/** sRGB / CIELAB conversions and color distances. STUB bodies. */
-object ColorMath {
-    fun srgbToLab(r: Int, g: Int, b: Int): Lab = TODO()
-
-    /** Perceptual distance between two colors. */
-    fun deltaE(x: Lab, y: Lab): Float = TODO()
-}
-
-/** Samples the nine stickers of a face from an image. STUB body. */
-object GridSampler {
-    /**
-     * Samples the 3x3 stickers inside [region] of [source].
-     *
-     * [rotationDegrees] (0, 90, 180 or 270) is the clockwise rotation that makes [source] upright as
-     * the user sees it (CameraX `ImageInfo.rotationDegrees`). The returned nine samples are
-     * row-major as the user sees the face on screen.
-     */
-    fun sample(source: PixelSource, region: GridRegion, rotationDegrees: Int = 0): List<StickerSample> = TODO()
-}
-
-/** Fast single-sticker classification for live feedback while scanning. STUB body. */
-object LiveClassifier {
-    fun classify(sample: StickerSample): CubeColor = TODO()
-}
-
-/** Turns all scanned faces into a validated cube. STUB body. */
-object ScanResolver {
-    /**
-     * [scans] are the six faces in any order, each nine samples row-major as seen on screen, each
-     * captured at any rotation. Centers decide which face each scan is (standard color scheme: white
-     * up, green front, red right); all 54 stickers are then classified jointly (each color exactly
-     * nine times) and face rotations are fixed automatically when the scan doesn't form a valid cube.
-     */
-    fun resolve(scans: List<List<StickerSample>>): ScanAnalysis = TODO()
-}
-
-/** Finds face rotations that turn a mis-oriented scan into a valid cube. STUB bodies. */
-object OrientationFixer {
-    /** Rotates one face's 3x3 grid by [quarterTurns] clockwise quarter turns (center unchanged). */
-    fun rotateFace(colors: List<CubeColor>, face: Face, quarterTurns: Int): List<CubeColor> = TODO()
-
-    /**
-     * Searches all combinations of face rotations for a valid cube, preferring the fewest rotated
-     * faces. Returns the fixed colors and the rotation applied to each face, or null if none is valid.
-     */
-    fun fix(colors: List<CubeColor>): Pair<List<CubeColor>, Map<Face, Int>>? = TODO()
-}

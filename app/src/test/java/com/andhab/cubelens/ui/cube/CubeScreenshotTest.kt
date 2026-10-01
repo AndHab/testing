@@ -92,12 +92,22 @@ class CubeScreenshotTest {
     }
 
     @Test
-    fun heroAutoRotate() = shot("cube_hero") {
+    fun heroAutoRotate() = shot("cube_hero", advanceMillis = 1200) {
+        // 1.2 s of idle: about 19 degrees of spin and close to the top of the float.
         val state = rememberCubeViewState(scrambled)
         Cube3D(state, Modifier.fillMaxSize().padding(12.dp), autoRotate = true)
     }
 
-    private fun shot(name: String, width: Int = 360, height: Int = 360, content: @Composable () -> Unit) {
+    /**
+     * Captures [content] on an ink stage after [advanceMillis] of animation time (at least one frame).
+     */
+    private fun shot(
+        name: String,
+        width: Int = 360,
+        height: Int = 360,
+        advanceMillis: Long = 0,
+        content: @Composable () -> Unit,
+    ) {
         // Infinite animations (the highlight pulse) never let the UI go idle, so drive the clock by hand.
         compose.mainClock.autoAdvance = false
         compose.setContent {
@@ -106,6 +116,7 @@ class CubeScreenshotTest {
             }
         }
         compose.mainClock.advanceTimeByFrame()
+        if (advanceMillis > 0) compose.mainClock.advanceTimeBy(advanceMillis)
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
     }
 

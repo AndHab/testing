@@ -44,6 +44,8 @@ import kotlin.math.sin
  * space, sized to fit any orientation, and sits above a soft warm glow.
  *
  * @param interactive drag to orbit the camera; releasing with speed keeps it spinning with inertia.
+ *   Drags past touch slop are consumed in every direction, so inside a vertically scrolling
+ *   container the page does not scroll while the drag starts on the cube.
  * @param autoRotate slow idle spin and a gentle float (the Home hero). Pauses while the user drags.
  * @param highlightFacelets stickers outlined with a pulsing [com.andhab.cubelens.ui.theme.Brand.Danger] ring.
  * @param focusFace show this face at full brightness and dim the others; set [CubeViewState.yaw]
@@ -145,6 +147,7 @@ private class OrbitController(private val state: CubeViewState, private val scop
         state.pitch += deltaPitch
     }
 
+    /** Ends a touch; a non-zero velocity (degrees per second) keeps the cube coasting. */
     fun onRelease(yawVelocity: Float, pitchVelocity: Float) {
         dragging = false
         if (yawVelocity == 0f && pitchVelocity == 0f) return
@@ -175,32 +178,38 @@ private class OrbitController(private val state: CubeViewState, private val scop
     }
 }
 
-/** Drag to orbit: a touch catches a coasting cube, a drag past touch slop turns it, a release flings. */
+/**
+ * Drag to orbit: a touch catches a coasting cube, a drag past touch slop turns it, a release flings.
+ *
+ * The release always runs, even when the gesture coroutine is cancelled mid-drag without a lift
+ * (e.g. a density or configuration change resets the pointer input). That way the controller never
+ * stays busy and the idle spin always resumes.
+ */
 private suspend fun PointerInputScope.orbitGestures(orbit: OrbitController) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         orbit.onTouch()
-        val degreesPerPx = DEGREES_PER_SIZE / min(size.width, size.height).coerceAtLeast(1)
-        val tracker = VelocityTracker()
-        tracker.addPosition(down.uptimeMillis, down.position)
-        var slop = Offset.Zero
-        val start = awaitTouchSlopOrCancellation(down.id) { change, over ->
-            change.consume()
-            slop = over
+        var release = Velocity.Zero
+        try {
+            val degreesPerPx = DEGREES_PER_SIZE / min(size.width, size.height).coerceAtLeast(1)
+            val tracker = VelocityTracker()
+            tracker.addPosition(down.uptimeMillis, down.position)
+            var slop = Offset.Zero
+            val start = awaitTouchSlopOrCancellation(down.id) { change, over ->
+                change.consume()
+                slop = over
+            } ?: return@awaitEachGesture
+            orbit.rotateBy(slop.x * degreesPerPx, slop.y * degreesPerPx)
+            tracker.addPosition(start.uptimeMillis, start.position)
+            val completed = drag(start.id) { change ->
+                val delta = change.positionChange()
+                orbit.rotateBy(delta.x * degreesPerPx, delta.y * degreesPerPx)
+                tracker.addPosition(change.uptimeMillis, change.position)
+                change.consume()
+            }
+            if (completed) release = tracker.calculateVelocity() * degreesPerPx
+        } finally {
+            orbit.onRelease(release.x, release.y)
         }
-        if (start == null) {
-            orbit.onRelease(0f, 0f)
-            return@awaitEachGesture
-        }
-        orbit.rotateBy(slop.x * degreesPerPx, slop.y * degreesPerPx)
-        tracker.addPosition(start.uptimeMillis, start.position)
-        val completed = drag(start.id) { change ->
-            val delta = change.positionChange()
-            orbit.rotateBy(delta.x * degreesPerPx, delta.y * degreesPerPx)
-            tracker.addPosition(change.uptimeMillis, change.position)
-            change.consume()
-        }
-        val velocity = if (completed) tracker.calculateVelocity() else Velocity.Zero
-        orbit.onRelease(velocity.x * degreesPerPx, velocity.y * degreesPerPx)
     }
 }

@@ -19,7 +19,9 @@ import com.andhab.cubelens.core.solver.SolverTables.Companion.PHASE2_MOVES
  * U-D axis, each both as given and inverted. Views are interleaved by phase 1 depth, so the shortest
  * phase 1 solutions of all views are tried first. Every phase 1 solution is followed by an IDA*
  * phase 2 search bounded by the best total length found so far, which keeps improving until
- * [targetLength] is reached, the deadline passes, or the search space is exhausted.
+ * [targetLength] is reached, the deadline passes, or the search space is exhausted. Reaching
+ * [targetLength] only ends the search after the cheap phase 1 depths (up to
+ * [EXHAUSTIVE_PHASE1_DEPTH]) have been searched, so nearly solved cubes get optimal solutions.
  *
  * @param deadlineNanos [System.nanoTime] after which the search stops, once it has any solution.
  *   Interrupting the searching thread has the same effect.
@@ -74,6 +76,7 @@ internal class TwoPhaseSearch(
         val views = buildViews(cube)
         var depth = views.minOf { it.distance }
         while (!stopped && depth <= bound && depth <= MAX_LENGTH) {
+            if (targetReached() && depth > EXHAUSTIVE_PHASE1_DEPTH) break
             for (v in views) {
                 if (stopped || depth > bound) break
                 if (v.distance > depth) continue
@@ -225,9 +228,13 @@ internal class TwoPhaseSearch(
         val oriented = if (view.inverse) moves.asReversed().map { it.inverse } else moves
         best = oriented.map { CubeRotation.unrotate(it, view.rotation) }
         bound = moves.size - 1
-        // Done if good enough, or if no longer solution can exist at this or any deeper phase 1 depth.
-        if (moves.size <= targetLength || bound < depth1) stopped = true
+        // A shorter solution would need phase 1 to end at a depth that has already been searched.
+        if (bound < depth1) stopped = true
+        // Good enough, once the cheap shallow phase 1 depths have had their chance (see solve()).
+        if (targetReached() && depth1 > EXHAUSTIVE_PHASE1_DEPTH) stopped = true
     }
+
+    private fun targetReached(): Boolean = best.let { it != null && it.size <= targetLength }
 
     private fun phase2Cap(depth1: Int): Int =
         if (best == null && depth1 > FIRST_SOLUTION_PHASE1_LIMIT) MAX_PHASE2 else maxOf(PHASE2_CAP, MAX_PHASE2 - depth1)
@@ -259,6 +266,21 @@ internal class TwoPhaseSearch(
          * makes finding a first solution certain (phase 1 never needs more than 12 moves).
          */
         private const val FIRST_SOLUTION_PHASE1_LIMIT = 14
+
+        /**
+         * Phase 1 depths up to this one are always searched completely (within the bound and the
+         * deadline), even after a solution of at most `targetLength` moves has been found.
+         *
+         * Without this, a nearly solved cube would get whatever its first solution is, often a short
+         * phase 1 with a long phase 2 (e.g. 9 moves for a 2-move scramble), as that already meets a
+         * target of 20. Any solution of n <= 8 moves splits into a phase 1 part of at most n moves
+         * and a phase 2 part well below the phase 2 cap, so completing these depths finds it: a cube
+         * that can be solved in 8 moves or fewer gets an optimal solution (9-move scrambles also
+         * all got at most 9 moves in tests). Searching these depths is cheap: usually a few
+         * milliseconds, at worst about 300 ms on a desktop JVM (for a cube a quarter turn or two
+         * away from a deep phase 2 position). Depth 9 would cost about five times as much.
+         */
+        private const val EXHAUSTIVE_PHASE1_DEPTH = 8
 
         /** Shortest detour out of H and back that phase 2 moves cannot replace. */
         private const val MIN_DETOUR = 5

@@ -9,6 +9,10 @@ import com.andhab.cubelens.core.solver.Coordinates.N_SLICE
 import com.andhab.cubelens.core.solver.Coordinates.N_SLICE_PERM
 import com.andhab.cubelens.core.solver.Coordinates.N_SLICE_SORTED
 import com.andhab.cubelens.core.solver.Coordinates.N_TWIST
+import java.nio.ByteBuffer
+import java.util.zip.CRC32
+import kotlin.math.abs
+import kotlin.random.Random
 
 /**
  * Move and pruning tables of the two-phase algorithm. Immutable once built, so one instance is
@@ -66,6 +70,62 @@ internal class SolverTables(
         charTables.zip(other.charTables).all { (a, b) -> a.contentEquals(b) } &&
             byteTables.zip(other.byteTables).all { (a, b) -> a.contentEquals(b) }
 
+    /**
+     * Spot check against the cubie model: follows a fixed pseudo-random walk of [steps] moves for
+     * each phase, comparing every coordinate from the move tables with the one computed from the
+     * actual [CubieCube], and checking that no pruning value changes by more than one per move.
+     * Takes well under a millisecond. Catches tables made for another move geometry, and damage
+     * that a checksum did not.
+     */
+    fun agreesWithCubieModel(steps: Int = 300): Boolean {
+        val random = Random(SPOT_CHECK_SEED)
+
+        var cube = CubieCube.SOLVED
+        var twist = 0
+        var flip = 0
+        var sliceSorted = 0
+        repeat(steps) {
+            val m = random.nextInt(N_MOVES)
+            cube = cube.apply(Move.entries[m])
+            val nTwist = twistMove[twist * N_MOVES + m].code
+            val nFlip = flipMove[flip * N_MOVES + m].code
+            val nSorted = sliceSortedMove[sliceSorted * N_MOVES + m].code
+            if (nTwist != Coordinates.twist(cube.co) || nFlip != Coordinates.flip(cube.eo)) return false
+            if (nSorted != Coordinates.sliceSorted(cube.ep)) return false
+            val slice = sliceSorted / N_SLICE_PERM
+            val nSlice = nSorted / N_SLICE_PERM
+            if (!adjacent(sliceTwistPrune, slice * N_TWIST + twist, nSlice * N_TWIST + nTwist)) return false
+            if (!adjacent(sliceFlipPrune, slice * N_FLIP + flip, nSlice * N_FLIP + nFlip)) return false
+            if (!adjacent(twistFlipPrune, twist * N_FLIP + flip, nTwist * N_FLIP + nFlip)) return false
+            twist = nTwist
+            flip = nFlip
+            sliceSorted = nSorted
+        }
+
+        cube = CubieCube.SOLVED
+        var cornerPerm = 0
+        var edgePerm = 0
+        var slicePerm = 0
+        repeat(steps) {
+            val k = random.nextInt(N_PHASE2_MOVES)
+            cube = cube.apply(Move.entries[PHASE2_MOVES[k]])
+            val nCorner = cornerPermMove[cornerPerm * N_PHASE2_MOVES + k].code
+            val nEdge = udEdgePermMove[edgePerm * N_PHASE2_MOVES + k].code
+            val nSlice = slicePermMove[slicePerm * N_PHASE2_MOVES + k].code
+            if (nCorner != Coordinates.cornerPerm(cube.cp) || nEdge != Coordinates.udEdgePerm(cube.ep)) return false
+            if (nSlice != Coordinates.slicePerm(cube.ep)) return false
+            val corner = cornerPerm * N_SLICE_PERM + slicePerm
+            if (!adjacent(cornerSlicePrune, corner, nCorner * N_SLICE_PERM + nSlice)) return false
+            if (!adjacent(edgeSlicePrune, edgePerm * N_SLICE_PERM + slicePerm, nEdge * N_SLICE_PERM + nSlice)) {
+                return false
+            }
+            cornerPerm = nCorner
+            edgePerm = nEdge
+            slicePerm = nSlice
+        }
+        return true
+    }
+
     companion object {
         /** Number of moves in phase 1 (all face turns). */
         const val N_MOVES = 18
@@ -100,6 +160,17 @@ internal class SolverTables(
             .filter { it.face == Face.U || it.face == Face.D || it.turns == 2 }
             .map { it.ordinal }
             .toIntArray()
+
+        /**
+         * Checksum of everything outside this class that the table contents depend on: the order and
+         * geometry of the 18 moves (from [CubieCube.moveCube]), the phase 2 move set, the table sizes
+         * and the coordinate encodings (sampled along a fixed move sequence). [TableCache] stores it
+         * in the file header, so a cache written by an app version with a different cube model is
+         * rebuilt even if nobody remembered to bump [TableCache.VERSION].
+         */
+        val FINGERPRINT: Long by lazy { computeFingerprint() }
+
+        private const val SPOT_CHECK_SEED = 0x5EED
 
         /** Builds all tables from scratch. Takes well under a second on a desktop JVM. */
         fun build(): SolverTables {
@@ -194,6 +265,41 @@ internal class SolverTables(
                 ),
             )
         }
+
+        private fun computeFingerprint(): Long {
+            val data = ArrayList<Int>()
+            data += listOf(N_MOVES, N_PHASE2_MOVES)
+            data += PHASE2_MOVES.toList()
+            data += CHAR_TABLE_SIZES.toList()
+            data += BYTE_TABLE_SIZES.toList()
+            for (move in Move.entries) {
+                data += listOf(move.face.ordinal, move.turns)
+                val mc = CubieCube.moveCube(move)
+                for (array in listOf(mc.cp, mc.co, mc.ep, mc.eo)) data += array.toList()
+            }
+            // Coordinates of the states along a fixed sequence that visits every move in turn.
+            var cube = CubieCube.SOLVED
+            for (i in 0 until 2 * N_MOVES) {
+                cube = cube.apply(Move.entries[i * 5 % N_MOVES])
+                data += listOf(
+                    Coordinates.twist(cube.co),
+                    Coordinates.flip(cube.eo),
+                    Coordinates.sliceSorted(cube.ep),
+                    Coordinates.cornerPerm(cube.cp),
+                )
+            }
+            cube = CubieCube.SOLVED
+            for (i in 0 until 2 * N_PHASE2_MOVES) {
+                cube = cube.apply(Move.entries[PHASE2_MOVES[i * 3 % N_PHASE2_MOVES]])
+                data += listOf(Coordinates.udEdgePerm(cube.ep), Coordinates.slicePerm(cube.ep))
+            }
+            val buffer = ByteBuffer.allocate(data.size * Int.SIZE_BYTES)
+            data.forEach(buffer::putInt)
+            return CRC32().apply { update(buffer.array()) }.value
+        }
+
+        /** Whether the pruning values at indices [a] and [b], one move apart, differ by at most one. */
+        private fun adjacent(table: ByteArray, a: Int, b: Int): Boolean = abs(table[a] - table[b]) <= 1
 
         private const val UNVISITED: Byte = -1
 

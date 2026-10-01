@@ -1,5 +1,6 @@
 package com.andhab.cubelens.core.solver
 
+import com.andhab.cubelens.core.cube.Move
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -67,6 +68,8 @@ class TableCacheTest {
             "flipped payload byte" to { f -> flipByte(f, TableCache.FILE_BYTES / 2) },
             "flipped checksum byte" to { f -> flipByte(f, TableCache.FILE_BYTES - 1) },
             "wrong version" to { f -> flipByte(f, 7) },
+            "other cube model fingerprint" to { f -> flipByte(f, 12) },
+            "wrong payload length" to { f -> flipByte(f, 20) },
             "wrong magic" to { f -> flipByte(f, 0) },
             "truncated" to { f -> RandomAccessFile(f, "rw").use { it.setLength(TableCache.FILE_BYTES - 1000) } },
             "too long" to { f -> f.appendBytes(ByteArray(10)) },
@@ -92,6 +95,44 @@ class TableCacheTest {
                 assertTrue(name, TableCache.read(file)?.contentEquals(tables) == true)
             }
         }
+    }
+
+    @Test
+    fun staleCacheIsNotMistakenForACurrentOne() {
+        val file = File(temp.root, "tables.bin")
+        TableCache.write(tables, file)
+        // Same version and a valid checksum, but written for another cube model.
+        flipByte(file, 12)
+        assertFalse(TableCache.looksValid(file))
+        assertNull(TableCache.read(file))
+    }
+
+    @Test
+    fun tablesWithAValidChecksumButWrongContentAreRejected() {
+        // Moves of the wrong geometry: every value in range, and write() computes a matching CRC.
+        val file = File(temp.root, "swapped.bin")
+        TableCache.write(SolverFixture.tablesWithSwappedTwistMoves(), file)
+        assertTrue(TableCache.looksValid(file))
+        assertNull(TableCache.read(file))
+        assertSame(tables, TableCache.loadOrBuild(file) { tables })
+        assertTrue(TableCache.read(file)?.contentEquals(tables) == true)
+
+        // A second goal state in a pruning table.
+        val prune = tables.sliceFlipPrune.copyOf().also { it[12345] = 0 }
+        TableCache.write(SolverFixture.copyOfTables(sliceFlipPrune = prune), file)
+        assertNull(TableCache.read(file))
+    }
+
+    @Test
+    fun spotCheckAcceptsBuiltTablesOnly() {
+        assertTrue(tables.agreesWithCubieModel())
+        assertFalse(SolverFixture.tablesWithSwappedTwistMoves().agreesWithCubieModel())
+
+        val phase2 = SolverTables.PHASE2_MOVES
+        val u = phase2.indexOf(Move.U1.ordinal)
+        val d = phase2.indexOf(Move.D1.ordinal)
+        val cornerPermMove = SolverFixture.swapColumns(tables.cornerPermMove, phase2.size, u, d)
+        assertFalse(SolverFixture.copyOfTables(cornerPermMove = cornerPermMove).agreesWithCubieModel())
     }
 
     @Test

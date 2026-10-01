@@ -19,19 +19,24 @@ import java.util.zip.CRC32
 /**
  * Stores [SolverTables] in a file so that later app starts can skip building them.
  *
- * Layout (big-endian): magic `"CLTP"`, format [VERSION], payload length (long), the payload (all
- * char tables as 16-bit values, then all byte tables, in [SolverTables] serialization order) and a
- * CRC-32 of the payload (long). A file that does not match in every respect is treated as absent,
- * so a stale, truncated or corrupted cache simply gets rebuilt. Files are written to a temporary
- * file next to the target and renamed into place, so readers never see a half-written cache.
+ * Layout (big-endian): magic `"CLTP"`, format [VERSION], the cube model's
+ * [SolverTables.FINGERPRINT] (long), payload length (long), the payload (all char tables as 16-bit
+ * values, then all byte tables, in [SolverTables] serialization order) and a CRC-32 of the payload
+ * (long). A file that does not match in every respect, or whose tables fail
+ * [SolverTables.agreesWithCubieModel], is treated as absent, so a stale, truncated or corrupted
+ * cache simply gets rebuilt. Files are written to a temporary file next to the target and renamed
+ * into place, so readers never see a half-written cache.
  */
 internal object TableCache {
     private const val MAGIC = 0x434C5450 // "CLTP"
 
-    /** Bump whenever the coordinates, table layout or table contents change. */
-    const val VERSION = 1
+    /**
+     * Bump whenever the file layout or the way tables are computed changes. Changes to the cube
+     * model itself are also caught by [SolverTables.FINGERPRINT].
+     */
+    const val VERSION = 2
 
-    private const val HEADER_BYTES = 16L
+    private const val HEADER_BYTES = 24L
     private const val TRAILER_BYTES = 8L
 
     /** Payload size in bytes. */
@@ -52,13 +57,15 @@ internal object TableCache {
         return tables
     }
 
-    /** Reads the tables, or returns null if the file is missing, stale or damaged in any way. */
+    /**
+     * Reads the tables, or returns null if the file is missing, stale or damaged in any way.
+     * Never throws.
+     */
     fun read(file: File): SolverTables? {
-        if (!file.isFile || file.length() != FILE_BYTES) return null
         return try {
+            if (!file.isFile || file.length() != FILE_BYTES) return null
             DataInputStream(BufferedInputStream(FileInputStream(file), 1 shl 16)).use { input ->
-                if (input.readInt() != MAGIC || input.readInt() != VERSION) return null
-                if (input.readLong() != PAYLOAD_BYTES) return null
+                if (!readHeader(input)) return null
                 val crc = CRC32()
                 val chars = CHAR_TABLE_SIZES.map { size ->
                     val raw = ByteArray(size * 2)
@@ -86,7 +93,7 @@ internal object TableCache {
                     twistFlipPrune = bytes[2],
                     cornerSlicePrune = bytes[3],
                     edgeSlicePrune = bytes[4],
-                )
+                ).takeIf { it.agreesWithCubieModel() }
             }
         } catch (_: IOException) {
             null
@@ -99,18 +106,22 @@ internal object TableCache {
 
     /**
      * Cheap check (header and size only) whether [file] looks like a current cache. A damaged
-     * payload is still caught by [read].
+     * payload is still caught by [read]. Never throws.
      */
-    fun looksValid(file: File): Boolean {
-        if (!file.isFile || file.length() != FILE_BYTES) return false
-        return try {
-            DataInputStream(FileInputStream(file)).use { input ->
-                input.readInt() == MAGIC && input.readInt() == VERSION && input.readLong() == PAYLOAD_BYTES
-            }
-        } catch (_: IOException) {
-            false
-        }
+    fun looksValid(file: File): Boolean = try {
+        file.isFile && file.length() == FILE_BYTES && DataInputStream(FileInputStream(file)).use(::readHeader)
+    } catch (_: IOException) {
+        false
+    } catch (_: SecurityException) {
+        false
     }
+
+    /** Reads the header and returns whether it is the one [write] writes for the current tables. */
+    private fun readHeader(input: DataInputStream): Boolean =
+        input.readInt() == MAGIC &&
+            input.readInt() == VERSION &&
+            input.readLong() == SolverTables.FINGERPRINT &&
+            input.readLong() == PAYLOAD_BYTES
 
     /** Atomically writes [tables] to [file], replacing any existing file. */
     fun write(tables: SolverTables, file: File) {
@@ -123,6 +134,7 @@ internal object TableCache {
                 val out = DataOutputStream(BufferedOutputStream(stream, 1 shl 16))
                 out.writeInt(MAGIC)
                 out.writeInt(VERSION)
+                out.writeLong(SolverTables.FINGERPRINT)
                 out.writeLong(PAYLOAD_BYTES)
                 val crc = CRC32()
                 for (table in tables.charTables) {
@@ -140,7 +152,12 @@ internal object TableCache {
                 stream.fd.sync()
             }
             try {
-                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                Files.move(
+                    temp.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
             } catch (_: AtomicMoveNotSupportedException) {
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
@@ -173,8 +190,12 @@ internal object TableCache {
             for (c in table) if (c.code >= size) return false
         }
         for (table in bytes) {
+            // Exact distances to the goal: zero exactly at index 0, the goal itself.
             if (table[0] != 0.toByte()) return false
-            for (b in table) if (b < 0 || b > MAX_PRUNING_DEPTH) return false
+            for (i in 1 until table.size) {
+                val distance = table[i]
+                if (distance < 1 || distance > MAX_PRUNING_DEPTH) return false
+            }
         }
         return true
     }

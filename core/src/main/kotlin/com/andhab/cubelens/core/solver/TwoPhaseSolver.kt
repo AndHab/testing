@@ -29,9 +29,12 @@ class UnsolvableCubeException(val errors: List<CubeError>) :
  *
  * Typical results for random cubes on a desktop JVM: a first solution of 20 to 21 moves within
  * about 5 ms, 21 moves or fewer within about 5 ms on average, and 20 moves or fewer for nearly all
- * cubes within the default time budget (about 40 ms on average).
+ * cubes within the default time budget (about 40 ms on average). Cubes that can be solved in 8
+ * moves or fewer get an optimal solution.
  *
- * All functions are thread-safe; [solve] may be called concurrently from several threads.
+ * All functions are thread-safe; [solve] may be called concurrently from several threads. [prepare]
+ * and [solve] block the calling thread for up to seconds, so call them off the main thread (e.g. on
+ * `Dispatchers.Default`, with [solve] inside `runInterruptible` to make it cancellable).
  */
 object TwoPhaseSolver {
 
@@ -41,6 +44,9 @@ object TwoPhaseSolver {
     @Volatile
     private var tables: SolverTables? = null
 
+    /** The cache file [tables] were loaded from, or null if they were built by this process. */
+    private var loadedFrom: File? = null // Guarded by this object's monitor.
+
     /** True once move and pruning tables are ready. */
     val isPrepared: Boolean
         get() = tables != null
@@ -49,9 +55,13 @@ object TwoPhaseSolver {
      * Builds the move and pruning tables, or loads them from [cacheFile] when present and valid
      * (writing them there after building otherwise). Thread-safe and idempotent.
      *
+     * Blocks the calling thread: building takes well under a second on a desktop JVM and a few
+     * seconds on a slow phone, loading a cache (about 11 MB) a fraction of that. Call it early, off
+     * the main thread, so that the first [solve] does not have to wait.
+     *
      * A missing, outdated, truncated or corrupted cache file is rebuilt and replaced; a cache that
-     * cannot be written is skipped. If the tables are already in memory, this only (re)writes
-     * [cacheFile] when it does not look like a current cache.
+     * cannot be written is skipped. This never fails because of the file. If the tables are already
+     * in memory, this only (re)writes [cacheFile] when it does not look like a current cache.
      */
     @Synchronized
     fun prepare(cacheFile: File? = null) {
@@ -60,7 +70,10 @@ object TwoPhaseSolver {
             if (cacheFile != null && !TableCache.looksValid(cacheFile)) TableCache.tryWrite(current, cacheFile)
             return
         }
-        tables = TableCache.loadOrBuild(cacheFile)
+        var built = false
+        val prepared = TableCache.loadOrBuild(cacheFile) { SolverTables.build().also { built = true } }
+        loadedFrom = if (built) null else cacheFile
+        tables = prepared
     }
 
     /**
@@ -68,17 +81,29 @@ object TwoPhaseSolver {
      * moves is found or [timeoutMillis] has elapsed, then returns the shortest found so far.
      * Prepares tables first if needed.
      *
-     * A solution is always returned for a valid cube: if the time runs out before any solution has
-     * been found, the search continues until the first one (typically a few milliseconds). The
-     * timeout does not include building the tables if [prepare] has not run yet. Interrupting the
+     * Reaching [targetLength] does not end the search before all short phase 1 candidates have
+     * been tried (a few milliseconds, at most a few hundred), so a nearly solved cube is not given
+     * a solution longer than needed: one that can be solved in 8 moves or fewer gets an optimal
+     * solution, unless [timeoutMillis] runs out first.
+     *
+     * Blocks the calling thread for up to [timeoutMillis] (usually far less: about 40 ms for a
+     * random cube on a desktop JVM), plus the time [prepare] takes if it has not run yet. A solution
+     * is always returned for a valid cube: if the time runs out before any solution has been found,
+     * the search continues until the first one (typically a few milliseconds). Interrupting the
      * calling thread (e.g. a cancelled `runInterruptible` coroutine) ends the search like a timeout.
      *
+     * Every solution is applied to [cube] before it is returned. Should that check fail with tables
+     * loaded from a cache file, the tables are rebuilt (and the file rewritten) and the search is
+     * run once more.
+     *
      * @throws UnsolvableCubeException if [cube] is not a valid cube.
+     * @throws IllegalStateException only on an internal error (a bug in the solver), never because
+     *   of the input or a damaged cache file.
      */
     fun solve(cube: FaceletCube, targetLength: Int = 20, timeoutMillis: Long = 2_000): Solution {
         requireSolvable(cube)
         if (cube.isSolved) return Solution(emptyList())
-        return search(preparedTables(), cube, targetLength, timeoutMillis)
+        return solveWithRecovery(preparedTables(), cube, targetLength, timeoutMillis, ::replaceCachedTables)
     }
 
     /** The shared tables, preparing them (without a cache file) if needed. */
@@ -93,6 +118,46 @@ object TwoPhaseSolver {
         return search(tables, cube, targetLength, timeoutMillis)
     }
 
+    /**
+     * Searches with [tables]. If that gives no verified solution (only possible with wrong tables),
+     * asks [replace] for replacement tables and, if it provides any, searches once more with them
+     * and a fresh time budget.
+     *
+     * @throws IllegalStateException if no verified solution was found.
+     */
+    internal fun solveWithRecovery(
+        tables: SolverTables,
+        cube: FaceletCube,
+        targetLength: Int,
+        timeoutMillis: Long,
+        replace: (failed: SolverTables) -> SolverTables?,
+    ): Solution = try {
+        search(tables, cube, targetLength, timeoutMillis)
+    } catch (e: IllegalStateException) {
+        val replacement = replace(tables) ?: throw e
+        search(replacement, cube, targetLength, timeoutMillis)
+    }
+
+    /**
+     * Called after a search with [failed] gave no verified solution. If [failed] are the shared
+     * tables and were loaded from a cache file that slipped past [TableCache]'s checks, rebuilds them,
+     * rewrites the file and returns the new tables. If another thread already replaced them, returns
+     * the current tables. Returns null if [failed] were built by this process: rebuilding would not
+     * change anything.
+     */
+    @Synchronized
+    internal fun replaceCachedTables(failed: SolverTables): SolverTables? {
+        val current = tables
+        if (current != null && current !== failed) return current
+        val file = loadedFrom ?: return null
+        val rebuilt = SolverTables.build()
+        TableCache.tryWrite(rebuilt, file)
+        loadedFrom = null
+        tables = rebuilt
+        return rebuilt
+    }
+
+    /** @throws IllegalStateException if the search ends without a solution that solves [cube]. */
     private fun search(tables: SolverTables, cube: FaceletCube, targetLength: Int, timeoutMillis: Long): Solution {
         val deadline = System.nanoTime() + timeoutMillis.coerceIn(0, MAX_TIMEOUT_MILLIS) * 1_000_000
         val moves = TwoPhaseSearch(tables, targetLength, deadline).solve(cube)

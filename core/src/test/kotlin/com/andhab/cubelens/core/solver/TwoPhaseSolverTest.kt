@@ -8,6 +8,7 @@ import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.cube.Move
 import com.andhab.cubelens.core.solver.SolverFixture.assertSolves
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -46,6 +47,27 @@ class TwoPhaseSolverTest {
     }
 
     @Test
+    fun nearlySolvedCubesGetOptimalSolutionsWithDefaultSettings() {
+        // With the default target of 20, the first solution found (e.g. 9 moves) used to be accepted.
+        for (sequence in listOf("B' L", "R' D", "F U R", "L2 B D' R")) {
+            val cube = FaceletCube.scrambled(Move.parseSequence(sequence))
+            val solution = TwoPhaseSolver.solve(cube)
+            assertSolves(cube, solution)
+            assertEquals("'$solution' for '$sequence'", Move.parseSequence(sequence).size, solution.length)
+        }
+        val random = Random(12)
+        for (length in 1..8) {
+            repeat(25) {
+                val scramble = Scrambler.randomMoves(length, random)
+                val cube = FaceletCube.scrambled(scramble)
+                val solution = TwoPhaseSolver.solve(cube)
+                assertSolves(cube, solution)
+                assertTrue("'$solution' is longer than '${Move.format(scramble)}'", solution.length <= length)
+            }
+        }
+    }
+
+    @Test
     fun shortScramblesGetSolutionsNoLongerThanTheScramble() {
         val random = Random(11)
         for (length in 2..10) {
@@ -59,27 +81,44 @@ class TwoPhaseSolverTest {
         }
     }
 
+    // The bulk tests use target 21 (about 5 ms per cube instead of about 40 ms with target 20) to
+    // keep `:core:test` fast; SolverBenchmark reports the default settings on 500 cubes.
+
     @Test
     fun randomMoveScramblesAreSolved() {
         val random = Random(2024)
         val cubes = List(300) { FaceletCube.scrambled(Scrambler.randomMoves(25, random)) }
-        assertShortSolutions("300 random-move scrambles", cubes)
+        assertShortSolutions("300 random-move scrambles, target 21", cubes, targetLength = 21, maxAverage = 21.5)
     }
 
     @Test
     fun randomStatesAreSolved() {
         val random = Random(1982)
         val cubes = List(300) { Scrambler.randomState(random) }
-        assertShortSolutions("300 random states", cubes)
+        assertShortSolutions("300 random states, target 21", cubes, targetLength = 21, maxAverage = 21.5)
     }
 
-    /** Solves [cubes] with the default target and timeout, like the app does. */
-    private fun assertShortSolutions(label: String, cubes: List<FaceletCube>) {
+    @Test
+    fun randomStatesAreSolvedWithDefaultSettings() {
+        val random = Random(1983)
+        val cubes = List(40) { Scrambler.randomState(random) }
+        assertShortSolutions("40 random states, default settings", cubes, targetLength = null, maxAverage = 20.5)
+    }
+
+    /**
+     * Solves [cubes] with the default timeout, like the app does, and the given [targetLength] (null
+     * for the default).
+     */
+    private fun assertShortSolutions(label: String, cubes: List<FaceletCube>, targetLength: Int?, maxAverage: Double) {
         var totalLength = 0
         var longest = 0
         val start = System.nanoTime()
         for (cube in cubes) {
-            val solution = TwoPhaseSolver.solve(cube)
+            val solution = if (targetLength == null) {
+                TwoPhaseSolver.solve(cube)
+            } else {
+                TwoPhaseSolver.solve(cube, targetLength)
+            }
             assertSolves(cube, solution)
             assertTrue("'$solution' has ${solution.length} moves", solution.length <= 23)
             totalLength += solution.length
@@ -88,7 +127,7 @@ class TwoPhaseSolverTest {
         val average = totalLength.toDouble() / cubes.size
         val millis = (System.nanoTime() - start) / 1e6 / cubes.size
         println("$label: average %.2f moves, longest %d, %.1f ms per cube".format(average, longest, millis))
-        assertTrue("average length $average", average <= 21.5)
+        assertTrue("average length $average", average <= maxAverage)
     }
 
     @Test
@@ -165,6 +204,38 @@ class TwoPhaseSolverTest {
             assertSolves(cube, solution)
         } finally {
             Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun wrongTablesAreReplacedAndTheSearchRetried() {
+        val damaged = SolverFixture.tablesWithSwappedTwistMoves()
+        val random = Random(9)
+        val failing = mutableListOf<FaceletCube>()
+        repeat(30) {
+            val cube = Scrambler.randomState(random)
+            var replaced = false
+            val solution = TwoPhaseSolver.solveWithRecovery(damaged, cube, 30, 2_000) {
+                assertSame(damaged, it)
+                replaced = true
+                SolverFixture.tables
+            }
+            assertSolves(cube, solution)
+            if (replaced) failing += cube
+        }
+        assertTrue("the damaged tables never gave a wrong solution", failing.isNotEmpty())
+
+        // The shared tables were built by this process, so a failure with them is a bug that a
+        // rebuild cannot fix; tables other than the shared ones are replaced by the shared ones.
+        assertNull(TwoPhaseSolver.replaceCachedTables(SolverFixture.tables))
+        assertSame(SolverFixture.tables, TwoPhaseSolver.replaceCachedTables(damaged))
+        for (cube in failing) {
+            // Without replacement tables, a wrong solution surfaces as an error, never as a result.
+            assertThrows(IllegalStateException::class.java) {
+                TwoPhaseSolver.solveWithRecovery(damaged, cube, 30, 2_000) { null }
+            }
+            val solution = TwoPhaseSolver.solveWithRecovery(damaged, cube, 30, 2_000, TwoPhaseSolver::replaceCachedTables)
+            assertSolves(cube, solution)
         }
     }
 

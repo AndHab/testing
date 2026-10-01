@@ -42,8 +42,8 @@ class SolveScreenTest {
         show { SolveScreen(UserCube.startColors, moves, onBack = {}, onDone = {}) }
         compose.onNodeWithText("Hold green toward you, white on top").assertExists()
         compose.onNodeWithText("Move 1 of 20").assertExists()
-        // The move panel reads as one sentence.
-        compose.onNodeWithContentDescription("Move 1 of 20: L, Left face · clockwise").assertExists()
+        // The move panel reads as one sentence, with where to look from for a face pointing away.
+        compose.onNodeWithContentDescription("Move 1 of 20: L, Left face · clockwise. Seen from the left").assertExists()
         compose.onNodeWithContentDescription("Previous move").assertIsNotEnabled()
     }
 
@@ -108,11 +108,41 @@ class SolveScreenTest {
         compose.onNodeWithText("Scan another cube").performClick()
         assertEquals(1, done)
 
+        // Replay starts over and plays the solution again straight away.
         compose.onNodeWithText("Replay").performClick()
-        settle()
+        compose.mainClock.advanceTimeByFrame()
+        assertTrue(playback.isPlaying)
         assertEquals(0, playback.position)
-        assertEquals(UserCube.startColors, cube.colors)
-        compose.onNodeWithText("Move 1 of 20").assertExists()
+        compose.onNodeWithContentDescription("Pause").assertExists()
+        compose.mainClock.advanceTimeBy(SolvePlayback.TURN_MILLIS + 200L)
+        assertEquals(1, playback.position)
+        assertEquals(UserCube.colorsAfter(1), cube.colors)
+        compose.onNodeWithText("Move 2 of 20").assertExists()
+    }
+
+    @Test
+    fun aPausedCubeNudgesTheLayerThatTurnsNext() {
+        showStage(frozen = false)
+        // The first move's layer nudges; the cube itself is unchanged.
+        awaitNudge(moves[0], UserCube.startColors)
+
+        // Stepping on takes over cleanly from the nudge, and the next move gets its own nudge.
+        compose.onNodeWithContentDescription("Next move").performClick()
+        compose.mainClock.advanceTimeBy(SolvePlayback.TURN_MILLIS + 100L)
+        assertEquals(1, playback.position)
+        assertEquals(UserCube.colorsAfter(1), cube.colors)
+        awaitNudge(moves[1], UserCube.colorsAfter(1))
+
+        // Playing never nudges.
+        compose.onNodeWithContentDescription("Play").performClick()
+        repeat(40) {
+            compose.mainClock.advanceTimeBy(97)
+            val turning = cube.animatingMove
+            assertTrue("only real turns while playing: $turning", turning == null || turning == moves[playback.position])
+        }
+        compose.onNodeWithContentDescription("Pause").performClick()
+        settle()
+        assertEquals(UserCube.colorsAfter(playback.position), cube.colors)
     }
 
     @Test
@@ -131,12 +161,26 @@ class SolveScreenTest {
         assertEquals(1, back)
     }
 
-    /** Shows [SolveContent] on a playback this test can inspect. */
+    /** Advances the clock until [move]'s layer nudges, checking the cube keeps showing [colors]. */
+    private fun awaitNudge(move: Move, colors: List<CubeColor>) {
+        val limit = TurnHint.FIRST_DELAY_MILLIS + TurnHint.INTERVAL_MILLIS + TurnHint.NUDGE_MILLIS
+        var waited = 0L
+        while (cube.animatingMove != move) {
+            assertTrue("no nudge of $move within ${limit}ms", waited < limit)
+            assertEquals(colors, cube.colors)
+            compose.mainClock.advanceTimeBy(NUDGE_POLL_MILLIS)
+            waited += NUDGE_POLL_MILLIS
+        }
+        assertEquals(colors, cube.colors)
+    }
+
+    /** Shows [SolveContent] on a playback this test can inspect; [frozen] as in [show]. */
     private fun showStage(
         position: Int = 0,
         start: List<CubeColor> = UserCube.startColors,
         onDone: () -> Unit = {},
-    ) = show {
+        frozen: Boolean = true,
+    ) = show(frozen) {
         val scope = rememberCoroutineScope()
         cube = remember { CubeViewState(start) }
         playback = remember {
@@ -146,13 +190,14 @@ class SolveScreenTest {
     }
 
     /**
-     * Renders [content] with the backdrop frozen; the clock is advanced by hand because the solved
-     * cube's victory spin never lets the UI go idle.
+     * Renders [content], [frozen] (inspection mode: still backdrop, no nudges) unless asked
+     * otherwise; the clock is advanced by hand because the solved cube's victory spin never lets the
+     * UI go idle.
      */
-    private fun show(content: @Composable () -> Unit) {
+    private fun show(frozen: Boolean = true, content: @Composable () -> Unit) {
         compose.mainClock.autoAdvance = false
         compose.setContent {
-            CompositionLocalProvider(LocalInspectionMode provides true) {
+            CompositionLocalProvider(LocalInspectionMode provides frozen) {
                 CubeLensTheme(content)
             }
         }
@@ -161,4 +206,8 @@ class SolveScreenTest {
 
     /** Long enough for any turn, transition or scroll to finish. */
     private fun settle() = compose.mainClock.advanceTimeBy(1_500)
+
+    private companion object {
+        const val NUDGE_POLL_MILLIS = 50L
+    }
 }

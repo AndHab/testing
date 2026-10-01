@@ -271,6 +271,66 @@ class SolvePlaybackTest {
     }
 
     @Test
+    fun playAfterQuickStepsBackDropsTheBacklog() = runTest {
+        val (playback, animator) = playback()
+        playback.jumpTo(8)
+        repeat(4) { playback.previous() }
+        runCurrent()
+        advanceTimeBy(60)
+        // One undo is turning, three more are queued.
+        assertEquals(moves[7].inverse, animator.inFlight)
+        assertEquals(4, playback.target)
+
+        playback.play()
+        // Only the undo in flight is kept; then playback heads forward from there.
+        assertEquals(7, playback.target)
+        advanceTimeBy(SolvePlayback.CATCH_UP_TURN_MILLIS.toLong())
+        assertEquals(7, playback.position)
+        runCurrent()
+        assertEquals(listOf(moves[7].inverse, moves[7]), animator.turnedMoves)
+        assertTrue(playback.isPlaying)
+
+        advanceUntilIdle()
+        assertTrue(playback.isFinished)
+        assertEquals(listOf(moves[7].inverse) + moves.drop(7), animator.turnedMoves)
+    }
+
+    @Test
+    fun playWithStepsBackQueuedButNoTurnYetStaysPut() = runTest {
+        val (playback, animator) = playback()
+        playback.jumpTo(5)
+        playback.previous()
+        playback.previous()
+        // Nothing has started turning yet: play cancels both steps back.
+        playback.play()
+        assertEquals(5, playback.target)
+        runCurrent()
+        assertEquals(listOf(moves[5]), animator.turnedMoves)
+    }
+
+    @Test
+    fun waitingIndexIsSetOnlyWhileStandingStill() = runTest {
+        val (playback, _) = playback()
+        assertEquals(0, playback.waitingIndex)
+        playback.next()
+        // Turning: not waiting.
+        assertNull(playback.waitingIndex)
+        advanceUntilIdle()
+        assertEquals(1, playback.waitingIndex)
+
+        playback.play()
+        assertNull(playback.waitingIndex)
+        advanceTimeBy(SolvePlayback.TURN_MILLIS + 100L)
+        // In the pause between played moves: still not waiting for the person.
+        assertNull(playback.waitingIndex)
+        playback.pause()
+        assertEquals(2, playback.waitingIndex)
+
+        playback.jumpTo(n)
+        assertNull(playback.waitingIndex)
+    }
+
+    @Test
     fun rapidTapsQueueUpAndCatchUpQuickly() = runTest {
         val (playback, animator) = playback()
         repeat(5) { playback.next() }
@@ -399,6 +459,51 @@ class SolvePlaybackTest {
         assertEquals(1, restored.celebration)
         // The restored playback puts the cube where it left off.
         assertEquals(UserCube.colorsAfter(6), restoredAnimator.colors)
+    }
+
+    @Test
+    fun savedStateResumesPlayingOnceShown() = runTest {
+        val (playback, _) = playback()
+        playback.jumpTo(3)
+        playback.play()
+        runCurrent()
+        advanceTimeBy(100)
+        val saved = with(SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), this)) {
+            SaverScope { true }.save(playback)
+        }!!
+        playback.pause()
+        advanceUntilIdle()
+
+        val restoredAnimator = FakeAnimator()
+        val restored = SolvePlayback.saver(UserCube.startColors, moves, restoredAnimator, this).restore(saved)!!
+        restoredAnimator.playback = restored
+        // Restored where the last finished turn left the cube, and not playing until shown.
+        assertEquals(3, restored.position)
+        assertFalse(restored.isPlaying)
+
+        restored.resumeAfterRestore()
+        assertTrue(restored.isPlaying)
+        runCurrent()
+        assertEquals(listOf(moves[3]), restoredAnimator.turnedMoves)
+        // Only once.
+        restored.pause()
+        restored.resumeAfterRestore()
+        assertFalse(restored.isPlaying)
+        advanceUntilIdle()
+        assertEquals(UserCube.colorsAfter(restored.position), restoredAnimator.colors)
+    }
+
+    @Test
+    fun aPausedSavedStateStaysPaused() = runTest {
+        val (playback, _) = playback()
+        playback.jumpTo(3)
+        val saved = with(SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), this)) {
+            SaverScope { true }.save(playback)
+        }!!
+        val restored = SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), this).restore(saved)!!
+        restored.resumeAfterRestore()
+        assertFalse(restored.isPlaying)
+        assertEquals(3, restored.position)
     }
 
     @Test(expected = IllegalArgumentException::class)

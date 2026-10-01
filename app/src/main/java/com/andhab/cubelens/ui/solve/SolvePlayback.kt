@@ -1,6 +1,7 @@
 package com.andhab.cubelens.ui.solve
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -70,7 +71,8 @@ enum class PlaybackSpeed(val factor: Float) {
  *    (as a further step of the target) and the backlog plays out in quicker turns.
  *  - [jumpTo] and [restart] cancel any running turn and snap the cube to the state after `moves[0 until k]`.
  *  - [play] advances on its own with a short pause between moves and stops at the end. Any manual
- *    command while playing pauses playback first.
+ *    command while playing pauses playback first. Pressing play drops a backlog of queued steps
+ *    back: only the turn in flight finishes before the cube heads forward again.
  *
  * When the system animator duration scale is 0 ("Remove animations"), turns are snapped instead of
  * animated; the pause between auto-played moves is kept so each move can still be read.
@@ -85,6 +87,8 @@ enum class PlaybackSpeed(val factor: Float) {
  * @param initialPosition the number of moves already applied, e.g. when restoring saved state.
  * @param initialSpeed the starting [speed].
  * @param initialCelebration restored value of [celebration].
+ * @param resumePlaying true when restoring a state that was auto-playing; [resumeAfterRestore]
+ *   then starts playing again.
  * @param motionScale returns the current animator duration scale; the default reads Compose's
  *   [MotionDurationScale] from the calling coroutine's context.
  */
@@ -97,6 +101,7 @@ class SolvePlayback(
     initialPosition: Int = 0,
     initialSpeed: PlaybackSpeed = PlaybackSpeed.Normal,
     initialCelebration: Int? = null,
+    resumePlaying: Boolean = false,
     private val motionScale: suspend () -> Float = ::contextMotionScale,
 ) {
     /** Number of moves in the solution. */
@@ -155,6 +160,13 @@ class SolvePlayback(
     val canGoBack: Boolean
         get() = target > 0
 
+    /**
+     * Index of the move the cube is waiting for while playback stands still (paused, nothing in
+     * flight or queued, moves left); null while turning, while auto-playing and once finished.
+     */
+    val waitingIndex: Int?
+        get() = if (!isPlaying && target == position && position < moveCount) position else null
+
     private var driver: Job? = null
 
     /** Bumped whenever the driver is replaced or cancelled; a stale driver stops touching state. */
@@ -165,6 +177,12 @@ class SolvePlayback(
 
     /** Skips the pause before the first move after [play], so pressing play responds at once. */
     private var playJustStarted = false
+
+    /** The position the turn in flight lands on, or null when no turn is in flight. */
+    private var turningTo: Int? = null
+
+    /** Set when restored mid-play; cleared by [resumeAfterRestore]. */
+    private var playWhenResumed = resumePlaying
 
     init {
         animator.snapTo(states[initialPosition])
@@ -209,13 +227,17 @@ class SolvePlayback(
     /** Back to the scrambled cube, ready to go again. */
     fun restart() = jumpTo(0)
 
-    /** Starts auto-playing from the current move; from the solved end it starts over. */
+    /**
+     * Starts auto-playing from the current move; from the solved end it starts over. Steps back that
+     * are still queued are dropped: the turn in flight finishes and playback heads forward from there.
+     */
     fun play() {
         if (isPlaying) return
         if (isFinished) {
             if (moveCount == 0) return
             jumpTo(0)
         }
+        if (target < position) target = turningTo ?: position
         isPlaying = true
         playJustStarted = true
         ensureDriver()
@@ -231,6 +253,17 @@ class SolvePlayback(
 
     /** [pause] when playing, [play] otherwise. */
     fun togglePlay() = if (isPlaying) pause() else play()
+
+    /**
+     * Picks auto-play back up if this state was restored from one that was playing (see the
+     * `resumePlaying` constructor parameter); does nothing otherwise or when called again. Call it
+     * once the screen is shown, e.g. from a `LaunchedEffect`, not during composition.
+     */
+    fun resumeAfterRestore() {
+        if (!playWhenResumed) return
+        playWhenResumed = false
+        if (position < moveCount) play()
+    }
 
     /** Moves to the next speed, wrapping around (0.5× → 1× → 2× → 0.5×). */
     fun cycleSpeed() {
@@ -248,6 +281,7 @@ class SolvePlayback(
         driver?.cancel()
         driver = null
         waiting = false
+        turningTo = null
     }
 
     /**
@@ -264,8 +298,10 @@ class SolvePlayback(
                         val to = if (forward) from + 1 else from - 1
                         val move = if (forward) moves[from] else moves[from - 1].inverse
                         val backlog = abs(target - from) > 1
+                        turningTo = to
                         turn(move, to, backlog)
                         if (token != driverGeneration) return
+                        turningTo = null
                         position = to
                         if (to == moveCount && target == moveCount) celebration++
                     }
@@ -294,6 +330,7 @@ class SolvePlayback(
                 // Normally a no-op; after an unexpected failure it leaves a consistent, idle state.
                 driver = null
                 waiting = false
+                turningTo = null
                 target = position
                 isPlaying = false
             }
@@ -320,8 +357,9 @@ class SolvePlayback(
         const val PAUSE_MILLIS = 620L
 
         /**
-         * Saves position, speed and celebration count; restoring creates a playback for the same
-         * [startColors] and [moves] that drives [animator] in [scope].
+         * Saves position, speed, celebration count and whether it was playing; restoring creates a
+         * playback for the same [startColors] and [moves] that drives [animator] in [scope] and
+         * resumes playing on [resumeAfterRestore].
          */
         fun saver(
             startColors: List<CubeColor>,
@@ -329,7 +367,7 @@ class SolvePlayback(
             animator: CubeAnimator,
             scope: CoroutineScope,
         ): Saver<SolvePlayback, IntArray> = Saver(
-            save = { intArrayOf(it.position, it.speed.ordinal, it.celebration) },
+            save = { intArrayOf(it.position, it.speed.ordinal, it.celebration, if (it.isPlaying) 1 else 0) },
             restore = { saved ->
                 SolvePlayback(
                     startColors = startColors,
@@ -339,6 +377,7 @@ class SolvePlayback(
                     initialPosition = saved[0].coerceIn(0, moves.size),
                     initialSpeed = PlaybackSpeed.entries.getOrElse(saved[1]) { PlaybackSpeed.Normal },
                     initialCelebration = saved[2],
+                    resumePlaying = saved.getOrElse(3) { 0 } == 1,
                 )
             },
         )
@@ -346,9 +385,9 @@ class SolvePlayback(
 }
 
 /**
- * Remembers the [SolvePlayback] for [moves] on [startColors], driving [cubeState]. Position, speed
- * and the celebration count survive configuration changes and process death; playback stops when
- * this leaves the composition.
+ * Remembers the [SolvePlayback] for [moves] on [startColors], driving [cubeState]. Position, speed,
+ * the celebration count and auto-play survive configuration changes and process death; playback
+ * stops when this leaves the composition.
  */
 @Composable
 fun rememberSolvePlayback(
@@ -358,7 +397,7 @@ fun rememberSolvePlayback(
 ): SolvePlayback {
     val scope = rememberCoroutineScope()
     val animator = remember(cubeState) { CubeViewAnimator(cubeState) }
-    return rememberSaveable(
+    val playback = rememberSaveable(
         startColors,
         moves,
         animator,
@@ -366,6 +405,8 @@ fun rememberSolvePlayback(
     ) {
         SolvePlayback(startColors, moves, animator, scope)
     }
+    LaunchedEffect(playback) { playback.resumeAfterRestore() }
+    return playback
 }
 
 /** Plays turns on the 3D cube. */

@@ -17,6 +17,11 @@
     <string name="solve_turn_counter_clockwise">counter-clockwise</string>
     <string name="solve_turn_half">half turn</string>
 
+    <!-- Where "clockwise" is judged from, for the faces pointing away from the person holding the cube. -->
+    <string name="solve_view_b">Seen from behind</string>
+    <string name="solve_view_d">Seen from below</string>
+    <string name="solve_view_l">Seen from the left</string>
+
     <!-- "Right face · clockwise" -->
     <string name="solve_move_description">%1$s · %2$s</string>
     <string name="solve_move_counter">Move %1$d of %2$d</string>
@@ -26,6 +31,8 @@
     </plurals>
     <!-- Spoken summary of the current move: "Move 3 of 19: R prime, Right face · counter-clockwise". -->
     <string name="solve_current_move_spoken">%1$s: %2$s, %3$s</string>
+    <!-- As above, plus where to look from: "Move 17 of 20: B prime, Back face · counter-clockwise. Seen from behind". -->
+    <string name="solve_current_move_spoken_viewpoint">%1$s: %2$s, %3$s. %4$s</string>
 
     <!-- Timeline and controls. -->
     <string name="solve_timeline">Solution moves</string>

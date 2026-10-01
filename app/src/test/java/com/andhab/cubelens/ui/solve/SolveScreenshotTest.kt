@@ -67,6 +67,31 @@ class SolveScreenshotTest {
     @Test
     fun smallPhone() = shot("solve_small_phone", qualifiers = "w360dp-h740dp-xxhdpi") { Stage(position = 3) }
 
+    // The longest instruction (D′: "Bottom face", "Counter-clockwise", "Seen from below") with the
+    // system text size turned up: the words wrap instead of being cut off.
+    @Test
+    fun largeText() = shot("solve_large_text", qualifiers = "w360dp-h740dp-xxhdpi", fontScale = 1.3f) {
+        Stage(position = moves.indexOf(Move.D3))
+    }
+
+    // The narrowest phones (or "Display size: Large"): compact panel and controls inside the gutter.
+    @Test
+    fun narrowPhone() = shot("solve_narrow", qualifiers = "w320dp-h640dp-xxhdpi") {
+        Stage(position = moves.indexOf(Move.D2))
+    }
+
+    @Test
+    fun narrowPhoneLargeText() = shot("solve_narrow_large_text", qualifiers = "w320dp-h640dp-xxhdpi", fontScale = 1.3f) {
+        Stage(position = moves.indexOf(Move.B3))
+    }
+
+    // Paused on B′: the back layer caught at the height of its "this way" nudge.
+    @Test
+    fun turnHint() = shot("solve_hint") {
+        val move = Move.B3
+        Stage(position = moves.indexOf(move), turnProgress = TurnHint.progressFor(move, TurnHint.DEGREES))
+    }
+
     /** A playback frozen at [position], optionally with the next move [turnProgress] of the way through. */
     @Composable
     private fun Stage(
@@ -86,15 +111,17 @@ class SolveScreenshotTest {
 
     /**
      * Renders [content] frozen (inspection mode, paused clock), lets it settle for [settleMillis] and
-     * captures it, optionally on a device with other [qualifiers].
+     * captures it, optionally on a device with other [qualifiers] or system [fontScale].
      */
     private fun shot(
         name: String,
         qualifiers: String? = null,
+        fontScale: Float? = null,
         settleMillis: Long = 1_500,
         content: @Composable () -> Unit,
     ) {
         if (qualifiers != null) RuntimeEnvironment.setQualifiers(qualifiers)
+        if (fontScale != null) RuntimeEnvironment.setFontScale(fontScale)
         compose.mainClock.autoAdvance = false
         compose.setContent {
             CompositionLocalProvider(LocalInspectionMode provides true) {

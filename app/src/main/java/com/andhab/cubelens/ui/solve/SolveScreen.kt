@@ -1,6 +1,5 @@
 package com.andhab.cubelens.ui.solve
 
-import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -14,8 +13,13 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,20 +27,36 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded._3dRotation
 import androidx.compose.material.icons.rounded.ViewInAr
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.LineBreak
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
@@ -52,17 +72,20 @@ import com.andhab.cubelens.ui.components.colorName
 import com.andhab.cubelens.ui.cube.Cube3D
 import com.andhab.cubelens.ui.cube.CubeViewState
 import com.andhab.cubelens.ui.cube.rememberCubeViewState
+import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubePalette
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * Step-by-step animated solution playback.
  *
  * The scrambled cube turns in 3D at the top (drag to look around); below it the current move is
  * spelled out big, the whole solution runs along a tappable timeline, and transport controls step,
- * play and pace it. Reaching the end celebrates with confetti and offers to scan another cube.
- * A solution with no moves celebrates straight away.
+ * play and pace it. While paused, the layer that turns next gives a little nudge the way it will
+ * turn every few seconds. Reaching the end celebrates with confetti and offers to scan another
+ * cube or replay the solution. A solution with no moves celebrates straight away.
  *
  * @param startColors the scrambled cube (54 colors, facelet order, standard orientation).
  * @param moves the solution; applying them to [startColors] solves the cube.
@@ -116,6 +139,14 @@ internal fun SolveContent(
     val scope = rememberCoroutineScope()
     val animationsEnabled = rememberAnimationsEnabled()
 
+    // While paused, nudge the layer that turns next (left out of static previews and screenshots).
+    val waitingIndex = playback.waitingIndex
+    if (waitingIndex != null && !LocalInspectionMode.current) {
+        LaunchedEffect(cubeState, playback, waitingIndex) {
+            cubeState.hintTurnWhileWaiting(playback.moves[waitingIndex]) { playback.waitingIndex == waitingIndex }
+        }
+    }
+
     AuroraBackground(modifier.fillMaxSize(), intensity = auroraIntensity) {
         Column(
             Modifier
@@ -153,6 +184,7 @@ internal fun SolveContent(
                         onScanAnother = onDone,
                         onReplay = {
                             playback.restart()
+                            playback.play()
                             scope.launch { cubeState.animateView(HomeYaw, HomePitch) }
                         },
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
@@ -224,20 +256,64 @@ private fun PlaybackSection(playback: SolvePlayback, faceColor: (Face) -> Color)
 
 /**
  * The orientation the solution assumes, in the cube's own colors: "Hold green toward you, white
- * on top".
+ * on top". A [Pill] when it fits on one line inside the screen gutter; on very narrow screens with
+ * large text, a matching capsule that wraps, since every word of it matters.
  */
 @Composable
 private fun HoldHint(front: CubeColor, top: CubeColor, modifier: Modifier = Modifier) {
     val locale = currentLocale()
-    Pill(
-        text = stringResource(
-            R.string.solve_hold_hint,
-            colorName(front).lowercase(locale),
-            colorName(top).lowercase(locale),
-        ),
-        icon = Icons.Rounded.ViewInAr,
-        modifier = modifier,
+    val text = stringResource(
+        R.string.solve_hold_hint,
+        colorName(front).lowercase(locale),
+        colorName(top).lowercase(locale),
     )
+    BoxWithConstraints(modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.TopCenter) {
+        val measurer = rememberTextMeasurer()
+        val density = LocalDensity.current
+        val style = MaterialTheme.typography.labelMedium
+        val oneLine = remember(text, style, density, maxWidth) {
+            val width = with(density) { measurer.measure(text, style, softWrap = false, maxLines = 1).size.width.toDp() }
+            width + PillChrome <= maxWidth
+        }
+        if (oneLine) {
+            Pill(text = text, icon = Icons.Rounded.ViewInAr)
+        } else {
+            // Balanced lines ("Hold green toward / you, white on top"), not a lone last word, and
+            // the capsule hugs the longest line instead of stretching across the screen.
+            val wrapStyle = style.copy(lineBreak = LineBreak.Heading)
+            val textWidth = remember(text, wrapStyle, density, maxWidth) {
+                val maxTextWidth = with(density) { (maxWidth - WrappingHintChrome).roundToPx().coerceAtLeast(0) }
+                val layout = measurer.measure(text, wrapStyle, constraints = Constraints(maxWidth = maxTextWidth))
+                val widest = (0 until layout.lineCount).maxOf { layout.getLineRight(it) - layout.getLineLeft(it) }
+                with(density) { ceil(widest).toDp() }
+            }
+            WrappingHint(text = text, style = wrapStyle, textWidth = textWidth)
+        }
+    }
+}
+
+/** Width a [Pill] with an icon adds around its text: start padding, icon, gap and end padding. */
+private val PillChrome = 10.dp + 15.dp + 6.dp + 12.dp
+
+/** Width [WrappingHint] adds around its text. */
+private val WrappingHintChrome = 12.dp + 15.dp + 8.dp + 14.dp
+
+/** The [Pill] look for a hint that needs two lines, its text [textWidth] wide. */
+@Composable
+private fun WrappingHint(text: String, style: TextStyle, textWidth: Dp) {
+    val color = Brand.TextSecondary
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier = Modifier
+            .background(color.copy(alpha = 0.12f), shape)
+            .border(1.dp, color.copy(alpha = 0.24f), shape)
+            .padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(Icons.Rounded.ViewInAr, contentDescription = null, tint = color, modifier = Modifier.size(15.dp))
+        Text(text = text, style = style, color = color, modifier = Modifier.width(textWidth))
+    }
 }
 
 /**
@@ -273,11 +349,17 @@ private const val ViewTolerance = 4f
 /** [degrees] wrapped into [-180, 180). */
 private fun wrapDegrees(degrees: Float): Float = ((degrees + 180f) % 360f + 360f) % 360f - 180f
 
-/** False when the user turned animations off (animator duration scale 0). */
+/**
+ * False while the user has animations turned off (animator duration scale 0). Reads the same live
+ * [MotionDurationScale] that [SolvePlayback] uses to decide between turning and snapping, so the
+ * two always agree, also when the setting changes while the screen is showing.
+ */
 @Composable
 private fun rememberAnimationsEnabled(): Boolean {
-    val context = LocalContext.current
-    return remember(context) {
-        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
+    val enabled = remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        val scale = coroutineContext[MotionDurationScale] ?: return@LaunchedEffect
+        snapshotFlow { scale.scaleFactor != 0f }.collect { enabled.value = it }
     }
+    return enabled.value
 }

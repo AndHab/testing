@@ -35,6 +35,20 @@ fun turnDirection(move: Move): String = stringResource(
     },
 )
 
+/**
+ * Where to look from for [turnDirection] to read right, for the faces that point away from someone
+ * holding the cube in the standard orientation: "Seen from behind" (back), "Seen from below"
+ * (bottom) and "Seen from the left" (left). Null for the top, front and right faces, which they
+ * already see.
+ */
+@Composable
+fun turnViewpoint(face: Face): String? = when (face) {
+    Face.B -> stringResource(R.string.solve_view_b)
+    Face.D -> stringResource(R.string.solve_view_d)
+    Face.L -> stringResource(R.string.solve_view_l)
+    Face.U, Face.F, Face.R -> null
+}
+
 /** One-line description of a move without notation: "Right face · clockwise", "Top face · half turn". */
 @Composable
 fun moveDescription(move: Move): String =

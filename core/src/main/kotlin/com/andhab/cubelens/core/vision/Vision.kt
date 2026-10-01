@@ -10,11 +10,16 @@ import kotlin.math.sqrt
  *
  * The pipeline is:
  *  1. [GridSampler] reads the nine stickers of one face from a camera frame or photo, robustly
- *     (it locks onto the actual stickers inside the guide square and ignores black plastic and glare).
- *  2. [LiveClassifier] gives an instant per-sticker color guess for the live preview.
+ *     (it locks onto the actual stickers inside the guide square and ignores black plastic and glare;
+ *     on stickerless and white-bodied cubes it uses the guide's grid).
+ *  2. [LiveClassifier] gives an instant per-sticker color guess for the live preview, for standard
+ *     vivid cubes and for pastel, candy and muted knock-offs. [AdaptiveLiveClassifier] does better on
+ *     the scanning screen: it learns this cube's actual colors from the captured centers.
  *  3. [ScanResolver] takes all six scans and classifies the 54 stickers jointly (each color exactly
- *     nine times, per-face lighting compensated), places every scan on its face and fixes face
- *     rotations with [OrientationFixer].
+ *     nine times, per-face lighting compensated), names the colors by how they relate to each other
+ *     (so unusual palettes work), places every scan on its face (by center color, or by the scan
+ *     order for non-standard color arrangements), fixes face rotations with [OrientationFixer] and
+ *     estimates the cube's display palette ([CubePaletteEstimate]).
  *
  * Colors are compared with [ColorMath.deltaE].
  */
@@ -58,13 +63,30 @@ data class StickerSample(val r: Int, val g: Int, val b: Int, val lab: Lab) {
 /** An axis-aligned square in source pixel coordinates. */
 data class GridRegion(val left: Int, val top: Int, val size: Int)
 
+/** How [ScanResolver] decided which face each scan shows. */
+enum class Placement {
+    /**
+     * By the color of each scan's center, with the standard color scheme
+     * ([com.andhab.cubelens.core.cube.ColorScheme.STANDARD]: white up, green front, red right).
+     * Works for any scan order, but only for cubes with the standard color arrangement.
+     */
+    CENTER_COLORS,
+
+    /**
+     * By the face the scan flow asked for at each step (the `scanPositions` passed to
+     * [ScanResolver.resolve]). Used for cubes whose colors are arranged differently from the standard
+     * scheme, e.g. the Japanese scheme (white opposite blue); the center labels then define the scheme.
+     */
+    SCAN_ORDER,
+}
+
 /**
  * Result of turning six scanned faces into a cube.
  *
  * All color lists are in facelet order (see [com.andhab.cubelens.core.cube.Facelets]).
  */
 data class ScanAnalysis(
-    /** Colors with each scan placed on the face its center color belongs to, as captured (not re-oriented). */
+    /** Colors with each scan placed on its face (see [placement]), as captured (not re-oriented). */
     val rawColors: List<CubeColor>,
     /** Final colors after automatically fixing face rotations (equals [rawColors] if nothing could be fixed). */
     val colors: List<CubeColor>,
@@ -79,4 +101,12 @@ data class ScanAnalysis(
      * rotations also gives a valid cube, with a different color here; see [ScanResolver]).
      */
     val uncertain: Set<Int>,
+    /**
+     * What this cube's stickers look like, for drawing it: estimated from the scans, or
+     * [CubePaletteEstimate.STANDARD] when there is nothing to estimate from (malformed input).
+     * When [CubePaletteEstimate.isStandardLike] is true the app should keep its stock colors.
+     */
+    val palette: CubePaletteEstimate = CubePaletteEstimate.STANDARD,
+    /** How each scan was assigned to its face. */
+    val placement: Placement = Placement.CENTER_COLORS,
 )

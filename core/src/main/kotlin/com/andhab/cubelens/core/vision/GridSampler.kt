@@ -17,7 +17,9 @@ import kotlin.math.sqrt
  *  1. Reads a coarse lattice (16 points per cell, plus margin around the guide) of a "sticker-ness"
  *     feature, `2 * max(r, g, b) - min(r, g, b)`, which is low only for the dark, unsaturated
  *     plastic between stickers (a shaded saturated sticker such as dark blue still scores high), and
- *     splits it into sticker / plastic with Otsu's threshold.
+ *     splits it into sticker / plastic with Otsu's threshold. If the "plastic" class is not dark
+ *     (stickerless cubes, whose colored tiles touch, and white-bodied cubes), there are no gaps to
+ *     lock onto and the guide's own grid is used, skipping steps 2 and 3.
  *  2. Scores a candidate sticker position as the sticker fraction of a half-cell window there minus
  *     the sticker fraction of a thin square ring at the distance of the gaps between stickers. A
  *     real sticker is a bright patch surrounded by dark plastic, so this is high only on stickers,
@@ -31,7 +33,7 @@ import kotlin.math.sqrt
  *     (bright, washed-out outliers), and takes the per-channel median.
  *
  * Cost is independent of the image size: about 6k pixel reads, under a millisecond on the JVM.
- * Scratch buffers (about 110 KB) are kept per thread and reused, so a camera analyzer calling this
+ * Scratch buffers (about 150 KB) are kept per thread and reused, so a camera analyzer calling this
  * for every frame allocates little more than the returned samples.
  */
 object GridSampler {
@@ -61,6 +63,7 @@ object GridSampler {
     private const val SAMPLE_COUNT = SAMPLES_PER_AXIS * SAMPLES_PER_AXIS
     private const val GLARE_LIGHTNESS = 12f // L* above the median that marks a highlight ...
     private const val GLARE_CHROMA_RATIO = 0.5f // ... if its chroma is also below this fraction of the median
+    private const val GAP_DARKNESS = 0.5 // gaps are dark: their median brightness is below this fraction of the stickers'
 
     /**
      * Samples the 3x3 stickers inside [region] of [source].
@@ -90,6 +93,9 @@ object GridSampler {
      */
     private class Workspace {
         val feature = IntArray(N * N)
+        val brightness = IntArray(N * N)
+        val below = IntArray(9 * STEPS * STEPS)
+        val above = IntArray(9 * STEPS * STEPS)
         val histogram = IntArray(FEATURE_LEVELS)
         val map = StickerMap()
         val scores = DoubleArray(LOCAL_SIDE * LOCAL_SIDE)
@@ -234,6 +240,7 @@ object GridSampler {
      */
     private fun locateStickers(view: UprightView, work: Workspace): DoubleArray {
         val feature = work.feature
+        val brightness = work.brightness
         for (j in 0 until N) {
             val v = latticeToCell(j.toDouble())
             for (i in 0 until N) {
@@ -241,11 +248,15 @@ object GridSampler {
                 val r = (c shr 16) and 0xFF
                 val g = (c shr 8) and 0xFF
                 val b = c and 0xFF
-                feature[j * N + i] = 2 * max(r, max(g, b)) - min(r, min(g, b))
+                val brightest = max(r, max(g, b))
+                feature[j * N + i] = 2 * brightest - min(r, min(g, b))
+                brightness[j * N + i] = brightest
             }
         }
+        val threshold = otsuThreshold(feature, work.histogram)
+        if (!hasDarkGaps(feature, brightness, threshold, work)) return guideCenters(work)
         val map = work.map
-        map.reset(feature, otsuThreshold(feature, work.histogram))
+        map.reset(feature, threshold)
 
         // Global grid fit: shift and scale about the region center, preferring the guide as placed.
         var bestScore = Double.NEGATIVE_INFINITY
@@ -297,6 +308,42 @@ object GridSampler {
         for (cell in 0 until 9) {
             centers[2 * cell] = latticeToCell(found[3 * cell])
             centers[2 * cell + 1] = latticeToCell(found[3 * cell + 1])
+        }
+        return centers
+    }
+
+    /**
+     * Whether the face has dark plastic between its stickers, as stickered cubes with a black body do:
+     * the typical brightness (brightest channel) of the lattice points below the Otsu [threshold]
+     * inside the region is well below that of the points above it. Without dark gaps (stickerless
+     * cubes, whose colored tiles touch, and white-bodied cubes) the two classes are just two groups
+     * of sticker colors, and fitting the grid to them would lock onto color blobs instead of stickers.
+     */
+    private fun hasDarkGaps(feature: IntArray, brightness: IntArray, threshold: Int, work: Workspace): Boolean {
+        val below = work.below
+        val above = work.above
+        var nBelow = 0
+        var nAbove = 0
+        for (j in MARGIN until MARGIN + 3 * STEPS) {
+            for (i in MARGIN until MARGIN + 3 * STEPS) {
+                val k = j * N + i
+                if (feature[k] > threshold) above[nAbove++] = brightness[k] else below[nBelow++] = brightness[k]
+            }
+        }
+        if (nBelow == 0 || nAbove == 0) return true
+        return select(below, nBelow, nBelow / 2) < GAP_DARKNESS * select(above, nAbove, nAbove / 2)
+    }
+
+    /**
+     * The centers of the guide's own 3x3 grid (in [Workspace.centers]), for faces without dark gaps:
+     * the user aligned the face with the guide, and the sampling window ([SAMPLE_FRACTION] of a cell)
+     * stays on its sticker for the slight misalignment of a careful scan.
+     */
+    private fun guideCenters(work: Workspace): DoubleArray {
+        val centers = work.centers
+        for (cell in 0 until 9) {
+            centers[2 * cell] = cell % 3 + 0.5
+            centers[2 * cell + 1] = cell / 3 + 0.5
         }
         return centers
     }

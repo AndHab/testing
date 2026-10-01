@@ -23,4 +23,89 @@
     <string name="color_red">Red</string>
     <string name="color_orange">Orange</string>
     <string name="color_not_set">Not set</string>
+
+    <!-- Home. -->
+    <string name="home_overline">Rubik\'s cube solver</string>
+    <string name="home_headline">Snap. Solve.</string>
+    <string name="home_headline_accent">Twist.</string>
+    <string name="home_subtitle">Point your camera at a scrambled cube and get the shortest path back to solved.</string>
+    <string name="home_scan">Scan my cube</string>
+    <string name="home_manual">Enter colors manually</string>
+    <string name="home_random">Try a random scramble</string>
+    <string name="home_random_busy">Mixing one up…</string>
+    <string name="home_step_scan">Scan</string>
+    <string name="home_step_scan_caption">All six faces</string>
+    <string name="home_step_check">Check</string>
+    <string name="home_step_check_caption">Fix any color</string>
+    <string name="home_step_solve">Solve</string>
+    <string name="home_step_solve_caption">Turn by turn</string>
+    <string name="home_step_number">Step %1$d</string>
+
+    <!-- Review: header. -->
+    <string name="review_title">Check your cube</string>
+    <string name="review_rescan">Scan again</string>
+    <string name="review_overline_scan">Your scan</string>
+    <string name="review_overline_manual">Manual entry</string>
+    <string name="review_heading_scan">Does this match your cube?</string>
+    <string name="review_heading_manual">Copy your cube\'s colors</string>
+    <string name="review_body_scan">We read all 54 stickers. Fix anything that looks off.</string>
+    <string name="review_body_manual">Tap colors in reading order and we\'ll hop to the next sticker.</string>
+    <plurals name="review_straightened">
+        <item quantity="one">We straightened %d face</item>
+        <item quantity="other">We straightened %d faces</item>
+    </plurals>
+    <string name="review_hold_manual">White top, green front</string>
+    <plurals name="review_double_check">
+        <item quantity="one">%d sticker to double-check</item>
+        <item quantity="other">%d stickers to double-check</item>
+    </plurals>
+
+    <!-- Review: marks on the net. -->
+    <string name="review_legend_flagged">Needs a fix</string>
+    <string name="review_legend_uncertain">Double-check</string>
+    <string name="review_legend_locked">Fixed center</string>
+
+    <!-- Review: palette and editing tips. -->
+    <string name="review_count">%1$d/9</string>
+    <string name="review_count_description">%1$s, %2$d of 9</string>
+    <string name="review_swatch_painting">Painting</string>
+    <string name="review_tip_idle">Tap a sticker, then a color. Or pick a color to paint.</string>
+    <string name="review_tip_selected">Now pick its color.</string>
+    <string name="review_tip_brush">Painting with %1$s. Tap stickers, or tap %1$s again to stop.</string>
+    <string name="review_tip_center">Centers set each face\'s color, so they stay put.</string>
+    <string name="review_undo">Undo</string>
+    <string name="review_solve">Solve it</string>
+
+    <!-- Review: status. -->
+    <string name="review_ok_title">Looks like a real cube!</string>
+    <string name="review_ok_message">Every sticker checks out. Ready to solve.</string>
+    <string name="review_ok_message_uncertain">Glance at the stickers with an amber dot, then solve.</string>
+    <plurals name="review_remaining">
+        <item quantity="one">%d sticker to go</item>
+        <item quantity="other">%d stickers to go</item>
+    </plurals>
+    <string name="review_remaining_message">Fill in every sticker and we\'ll check your cube.</string>
+    <string name="review_error_centers">Two faces share a center color</string>
+    <string name="review_error_centers_message">Each face needs its own center color.</string>
+    <string name="review_error_too_many">Too many %1$s stickers</string>
+    <string name="review_error_too_few">Not enough %1$s stickers</string>
+    <string name="review_error_count_message">Found %1$d. A cube has 9 of each color.</string>
+    <string name="review_error_corner">One corner can\'t exist</string>
+    <string name="review_error_corner_message">Its colors never meet on a real cube. Check the marked stickers.</string>
+    <string name="review_error_edge">One edge can\'t exist</string>
+    <string name="review_error_edge_message">Its colors never meet on a real cube. Check the marked stickers.</string>
+    <string name="review_error_duplicate_corner">A corner shows up twice</string>
+    <string name="review_error_duplicate_edge">An edge shows up twice</string>
+    <string name="review_error_duplicate_message">Every piece is one of a kind. Check the marked stickers.</string>
+    <string name="review_error_twisted">One corner looks twisted</string>
+    <string name="review_error_twisted_message">A corner sticker may be misread. Check the corners.</string>
+    <string name="review_error_flipped">One edge looks flipped</string>
+    <string name="review_error_flipped_message">An edge sticker may be misread. Check the edges.</string>
+    <string name="review_error_swapped">Two pieces look swapped</string>
+    <string name="review_error_swapped_message">Look closely at similar colors, like red and orange.</string>
+
+    <!-- App-wide messages. -->
+    <string name="message_solve_failed">Couldn\'t solve that one</string>
+    <string name="message_scramble_failed">Couldn\'t mix up a cube</string>
+    <string name="message_try_again">Something went wrong. Give it another try.</string>
 </resources>

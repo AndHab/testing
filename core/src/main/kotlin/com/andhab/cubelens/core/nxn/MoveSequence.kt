@@ -17,6 +17,10 @@ package com.andhab.cubelens.core.nxn
  * clockwise from that face.
  */
 internal class MoveSequence(val n: Int) {
+    init {
+        require(n in NxNGeometry.MIN_SIZE..NxNGeometry.MAX_SIZE) { "Unsupported cube size $n" }
+    }
+
     private val axes = ArrayList<Int>()
     private val groups = ArrayList<IntArray>()
 
@@ -89,10 +93,11 @@ internal class MoveSequence(val n: Int) {
 
     companion object {
         /**
-         * Minimal number of block moves producing the layer turns [t]. With `d[i] = t[i] - t[i-1]`
-         * (mod 4, zero outside the cube), a block on layers a..b-1 changes only `d[a]` and `d[b]`;
-         * nonzero differences that sum to zero can be produced by a chain of `k - 1` blocks, so the
-         * minimum is the number of nonzero differences minus the most zero-sum groups they split into.
+         * Minimal number of block moves producing the layer turns [t] (one entry per layer, so at
+         * most [NxNGeometry.MAX_SIZE]). With `d[i] = t[i] - t[i-1]` (mod 4, zero outside the cube),
+         * a block on layers a..b-1 changes only `d[a]` and `d[b]`; nonzero differences that sum to
+         * zero can be produced by a chain of `k - 1` blocks, so the minimum is the number of nonzero
+         * differences minus the most zero-sum groups they split into.
          */
         fun blockCount(t: IntArray): Int {
             var c1 = 0
@@ -108,7 +113,7 @@ internal class MoveSequence(val n: Int) {
                 }
                 prev = cur
             }
-            return c1 + c2 + c3 - MAX_GROUPS[(c1 * 12 + c2) * 12 + c3]
+            return c1 + c2 + c3 - MAX_GROUPS[groupsIndex(c1, c2, c3)]
         }
 
         /**
@@ -122,18 +127,28 @@ internal class MoveSequence(val n: Int) {
 
         private const val IMPOSSIBLE = -1000
 
-        /** Most zero-sum groups for counts (c1, c2, c3) <= 11 each, or [IMPOSSIBLE]. */
-        private val MAX_GROUPS: IntArray = IntArray(12 * 12 * 12).also { table ->
-            for (c1 in 0 until 12) for (c2 in 0 until 12) for (c3 in 0 until 12) {
+        /**
+         * Count limit (exclusive) per difference value in [MAX_GROUPS]: a cube of [NxNGeometry.MAX_SIZE]
+         * layers has `MAX_SIZE + 1` layer differences, so each count is at most that. Derived from
+         * the size limit so that raising it keeps the table large enough.
+         */
+        private const val COUNTS = NxNGeometry.MAX_SIZE + 2
+
+        private fun groupsIndex(c1: Int, c2: Int, c3: Int): Int = (c1 * COUNTS + c2) * COUNTS + c3
+
+        /** Most zero-sum groups for counts (c1, c2, c3) < [COUNTS] each, or [IMPOSSIBLE]. */
+        private val MAX_GROUPS: IntArray = IntArray(COUNTS * COUNTS * COUNTS).also { table ->
+            // Each entry only reads entries with smaller counts, so plain index order works.
+            for (c1 in 0 until COUNTS) for (c2 in 0 until COUNTS) for (c3 in 0 until COUNTS) {
                 var best = if (c1 == 0 && c2 == 0 && c3 == 0) 0 else IMPOSSIBLE
                 for (g in ZERO_SUM_GROUPS) {
                     val r1 = c1 - g[0]
                     val r2 = c2 - g[1]
                     val r3 = c3 - g[2]
                     if (r1 < 0 || r2 < 0 || r3 < 0) continue
-                    best = maxOf(best, table[(r1 * 12 + r2) * 12 + r3] + 1)
+                    best = maxOf(best, table[groupsIndex(r1, r2, r3)] + 1)
                 }
-                table[(c1 * 12 + c2) * 12 + c3] = best
+                table[groupsIndex(c1, c2, c3)] = best
             }
         }
 
@@ -184,12 +199,12 @@ internal class MoveSequence(val n: Int) {
             var c3 = byValue[3].size
             val out = ArrayList<Triple<Int, Int, Int>>()
             while (c1 + c2 + c3 > 0) {
-                val here = MAX_GROUPS[(c1 * 12 + c2) * 12 + c3]
+                val here = MAX_GROUPS[groupsIndex(c1, c2, c3)]
                 val g = ZERO_SUM_GROUPS.first { g ->
                     val r1 = c1 - g[0]
                     val r2 = c2 - g[1]
                     val r3 = c3 - g[2]
-                    r1 >= 0 && r2 >= 0 && r3 >= 0 && MAX_GROUPS[(r1 * 12 + r2) * 12 + r3] == here - 1
+                    r1 >= 0 && r2 >= 0 && r3 >= 0 && MAX_GROUPS[groupsIndex(r1, r2, r3)] == here - 1
                 }
                 val members = ArrayList<Int>()
                 repeat(g[0]) { members += byValue[1].removeFirst() }

@@ -134,7 +134,8 @@ class NxNSolverTest {
         val random = Random(5)
         repeat(10) {
             val cube = NxNTestCubes.scrambled(3, random)
-            val expected = TwoPhaseSolver.solve(cube.toFaceletCube()!!).moves.map(LayerMove::of)
+            val expected = TwoPhaseSolver.solve(cube.toFaceletCube()!!, 20, NxNSolver.THREE_BY_THREE_SEARCH_MILLIS)
+                .moves.map(LayerMove::of)
             val solution = NxNSolver.solve(cube)
             assertSolves(cube, solution)
             assertTrue(solution.length <= maxOf(expected.size, 20))
@@ -145,6 +146,26 @@ class NxNSolverTest {
             val expected = TwoPhaseSolver.solve(FaceletCube.SOLVED.apply(Move.parseSequence(scramble)))
             assertEquals(expected.moves.map(LayerMove::of), NxNSolver.solve(cube).moves)
         }
+    }
+
+    /**
+     * A 3×3 for which the two-phase search finds no 20-move solution for seconds (found by the
+     * review with `Random(300132)`, a random scheme and a default-length scramble): the search is
+     * cut short after [NxNSolver.THREE_BY_THREE_SEARCH_MILLIS] instead of the full 3 s budget.
+     */
+    @Test
+    fun slowThreeByThreeCubesDoNotKeepTheUserWaiting() {
+        val cube = NxNCube.parse(3, "OGWWRWOWYGRBYOOGWRYBBRWOROBOGRGYOGYBGYWYBBRRWYBYRGBWGO")
+        val start = System.nanoTime()
+        val solution = NxNSolver.solve(cube)
+        val millis = (System.nanoTime() - start) / 1e6
+        assertSolves(cube, solution)
+        assertTrue("${solution.length} moves", solution.length <= 22)
+        assertTrue("took $millis ms", millis < NxNSolver.THREE_BY_THREE_SEARCH_MILLIS + 1_000)
+        // A shorter budget is respected too.
+        val quickStart = System.nanoTime()
+        assertSolves(cube, NxNSolver.solve(cube, timeoutMillis = 100))
+        assertTrue((System.nanoTime() - quickStart) / 1e6 < 1_000)
     }
 
     @Test

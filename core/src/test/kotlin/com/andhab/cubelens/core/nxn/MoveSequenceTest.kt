@@ -3,6 +3,7 @@ package com.andhab.cubelens.core.nxn
 import com.andhab.cubelens.core.cube.Face
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -83,7 +84,7 @@ class MoveSequenceTest {
     /** [MoveSequence.blockCount] equals the true minimum, found by breadth-first search over block turns. */
     @Test
     fun blockCountIsMinimal() {
-        for (n in 2..6) {
+        for (n in 2..8) {
             val states = 1 shl (2 * n)
             val distance = IntArray(states) { -1 }
             distance[0] = 0
@@ -114,5 +115,26 @@ class MoveSequenceTest {
                 assertEquals(t.toList(), produced.toList())
             }
         }
+    }
+
+    /** The lookup table behind [MoveSequence.blockCount] is large enough for the largest supported size. */
+    @Test
+    fun largestSizeIsCovered() {
+        val n = NxNGeometry.MAX_SIZE
+        val random = Random(11)
+        val patterns = List(2_000) { IntArray(n) { random.nextInt(4) } } + listOf(
+            // Every layer turned differently from its neighbours: n + 1 nonzero differences.
+            IntArray(n) { 1 + it % 3 },
+            IntArray(n) { if (it % 2 == 0) 1 else 3 },
+            IntArray(n) { if (it % 2 == 0) 2 else 1 },
+        )
+        for (t in patterns) {
+            val emitted = MoveSequence.blocks(0, t, n)
+            if (t[0] == 0 || t[n - 1] == 0) assertEquals(t.toList().toString(), MoveSequence.blockCount(t), emitted.size)
+            val check = MoveSequence(n).apply { addAll(emitted) }
+            val produced = if (check.isEmpty) IntArray(n) else check.groupTurns(0)
+            assertEquals(t.toList(), produced.toList())
+        }
+        assertThrows(IllegalArgumentException::class.java) { MoveSequence(NxNGeometry.MAX_SIZE + 1) }
     }
 }

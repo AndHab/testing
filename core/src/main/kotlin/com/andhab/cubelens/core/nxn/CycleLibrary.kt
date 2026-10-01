@@ -22,7 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
  * Even sizes only use turns that keep the DBL corner in place (no outer D, L or B turns, see
  * [moveSet]), so their solutions never move that corner, not even temporarily.
  *
- * Libraries are built once per size ([of]) and are immutable afterwards, hence thread-safe.
+ * Libraries are built once per size ([of]) and are immutable afterwards, hence thread-safe. A
+ * build checks for interruption as it goes (a cold 10×10 build takes one to a few seconds) and
+ * then throws [InterruptedException]; nothing is cached, so the next request builds afresh.
  */
 internal class CycleLibrary private constructor(val model: NxNModel) {
 
@@ -147,6 +149,7 @@ internal class CycleLibrary private constructor(val model: NxNModel) {
         }
         val transported = LongArray(words)
         for (f in moveSet) {
+            throwIfInterrupted()
             val pf = model.perm(f)
             for (g in singleMoveSet) {
                 if (model.axisOf(f) == model.axisOf(g)) continue
@@ -242,6 +245,7 @@ internal class CycleLibrary private constructor(val model: NxNModel) {
             round++
             val improved = LinkedHashSet<Int>()
             for (key in frontier) {
+                throwIfInterrupted()
                 val cycle = best[key] ?: continue
                 for (s in moveSet) {
                     val back = orbit.slotDest[model.inverse(s)]
@@ -303,12 +307,18 @@ internal class CycleLibrary private constructor(val model: NxNModel) {
         /** Setup rounds are a safety limit; two always suffice in practice. */
         private const val MAX_SETUP_ROUNDS = 6
 
-        private val cache = ConcurrentHashMap<Int, CycleLibrary>()
+        private val cache = ConcurrentHashMap<Int, BuildOnce<CycleLibrary>>()
 
-        /** The library for [n]×[n] cubes (n >= 4), built on first use (thread-safe). */
+        /**
+         * The library for [n]×[n] cubes (n >= 4), built on first use. Thread-safe: concurrent
+         * callers wait for a single build.
+         *
+         * @throws InterruptedException if the thread is interrupted while waiting for or running the build.
+         */
         fun of(n: Int): CycleLibrary {
             require(n >= 4) { "Only cubes of size 4 and up have wing or center orbits" }
-            return cache.computeIfAbsent(n) { CycleLibrary(NxNModel.of(it)) }
+            val model = NxNModel.of(n)
+            return cache.computeIfAbsent(n) { BuildOnce { CycleLibrary(model) } }.get()
         }
 
         /** Builds a new library for [n]×[n] cubes, bypassing the cache (to measure build time). */
@@ -359,6 +369,9 @@ internal object OrbitSolver {
     /**
      * Appends to [out] cycles that turn [state] into [target] (`state[slot]` is the piece or color in
      * each slot) and returns how many were used. Moves are merged with what [out] ends with.
+     *
+     * @throws InterruptedException if the thread is interrupted (checked once per search round,
+     *   well under a millisecond apart).
      */
     fun solve(
         cycles: CycleLibrary.OrbitCycles,
@@ -383,6 +396,7 @@ internal object OrbitSolver {
         var beam = listOf(root)
         var best: Node? = null
         while (beam.isNotEmpty()) {
+            throwIfInterrupted()
             // Candidate extensions, best estimate first: (estimate, cost, beam index, cycle index).
             val candidates = ArrayList<DoubleArray>()
             for ((b, node) in beam.withIndex()) {

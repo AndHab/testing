@@ -43,6 +43,17 @@ internal object NxNChecks {
 
     private val OPPOSITE = IntArray(6) { Face.entries[it].opposite.ordinal }
 
+    /**
+     * Odd sizes: the fixed centers' color arrangement is trusted as long as it leaves at least this
+     * many of the eight corner positions holding real pieces. A misread sticker spoils at most one
+     * corner, so up to three bad corners are blamed on corner stickers (and flagged there), while
+     * centers that contradict the corners spoil at least six of them: of the 720 arrangements,
+     * the 24 whole-cube turns of the right one keep all eight corners real and every other one
+     * keeps at most two. Four or more spoiled corners, when another arrangement explains more of
+     * them, therefore point at the centers.
+     */
+    private const val MIN_REAL_CORNERS_TO_TRUST_CENTERS = 5
+
     fun validate(cube: NxNCube): NxNValidation {
         val n = cube.n
         val model = NxNModel.of(n)
@@ -108,7 +119,7 @@ internal object NxNChecks {
         }
         val fromCenters = IntArray(6).also { for (f in 0 until 6) it[centerColors[f]] = f }
         val centerScore = cornerScore(cornerColors, fromCenters)
-        if (centerScore < best && centerScore <= 4) {
+        if (centerScore < best && centerScore < MIN_REAL_CORNERS_TO_TRUST_CENTERS) {
             val wrong = (0 until 6).filter { f -> closest[centerColors[f]] != f }
             errors += NxNError("The center colors don't match the corner pieces.", wrong.map { fixed[it] }.toSet())
             return closest to false

@@ -25,6 +25,9 @@ import com.andhab.cubelens.core.solver.TwoPhaseSolver
  * Cubes at most two block moves from solved get that short solution directly. Moves are merged and
  * cancelled within each stage ([MoveSequence]). Even cubes are only ever turned with moves that keep
  * the DBL corner in place (no outer D, L or B turns), so they end in the scanned orientation.
+ *
+ * Interrupting the solving thread makes [solve] throw [InterruptedException] within milliseconds
+ * (checked between stages, in the short-solution search, the library build and every beam round).
  */
 internal object BigCubeSolver {
 
@@ -43,11 +46,13 @@ internal object BigCubeSolver {
         val frameMoves = if (n % 2 == 1) {
             val frame = FaceletCube.fromColors(List(54) { cube[model.frameSticker(it)] })
                 ?: error("Fixed centers of a validated cube are distinct")
+            // An interrupt ends this search early with a valid (if longer) solution; the check below throws.
             TwoPhaseSolver.solve(frame, FRAME_TARGET_LENGTH, (timeoutMillis / 4).coerceIn(1, FRAME_MAX_MILLIS))
                 .moves.map(LayerMove::of)
         } else {
             solveCorners(cube, model, scheme).map(LayerMove::of)
         }
+        throwIfInterrupted()
         stages += SolveStage(if (n % 2 == 1) NxNSolver.STAGE_FRAME else NxNSolver.STAGE_CORNERS, frameMoves)
         var state = cube.apply(frameMoves)
 
@@ -142,6 +147,7 @@ internal object BigCubeSolver {
         for (i in moves.indices) if (matches(colors, perms[i], target)) return listOf(moves[i])
         val after = IntArray(colors.size)
         for (i in moves.indices) {
+            throwIfInterrupted()
             val p = perms[i]
             for (k in after.indices) after[k] = colors[p[k]]
             for (j in moves.indices) {

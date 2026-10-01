@@ -12,7 +12,9 @@ import com.andhab.cubelens.core.cube.Move
  * tenths of a second on a desktop JVM); a solution then simply follows the distances down, so it
  * is optimal in the half-turn metric (never more than 11 moves) and takes microseconds.
  *
- * Thread-safe: the table is built once, on first use or in [prepare].
+ * Thread-safe: the table is built once, on first use or in [prepare]. Interrupting a thread that
+ * builds or waits for the table makes it throw [InterruptedException]; the table is then built
+ * from scratch by the next caller.
  */
 internal object CornerSolver {
     private val MOVES = listOf(Move.U1, Move.U2, Move.U3, Move.R1, Move.R2, Move.R3, Move.F1, Move.F2, Move.F3)
@@ -31,24 +33,33 @@ internal object CornerSolver {
     /** God's number for the 2×2×2 in the half-turn metric. */
     const val MAX_LENGTH = 11
 
-    private class Tables(val permMove: IntArray, val twistMove: IntArray, val distance: ByteArray)
+    /** The breadth-first search checks for interruption every 65,536 states (well under a millisecond). */
+    private const val INTERRUPT_CHECK_MASK = (1 shl 16) - 1
 
-    private val tables: Tables by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { build() }
+    internal class Tables(val permMove: IntArray, val twistMove: IntArray, val distance: ByteArray)
 
-    /** Builds the tables now (idempotent). */
+    private val tables = BuildOnce { build() }
+
+    /**
+     * Builds the tables now (idempotent).
+     *
+     * @throws InterruptedException if the thread is interrupted while waiting for or building them.
+     */
     fun prepare() {
-        tables
+        tables.get()
     }
 
     /**
      * An optimal U/R/F solution for the corner permutation [cp] and twists [co] (Kociemba
      * conventions, [CubieCube]). The DBL corner must be home (`cp[DBL] == DBL`, `co[DBL] == 0`) and
      * the twists must add up.
+     *
+     * @throws InterruptedException if the tables have to be built and the thread is interrupted.
      */
     fun solve(cp: IntArray, co: IntArray): List<Move> {
         require(cp[CubieCube.DBL] == CubieCube.DBL && co[CubieCube.DBL] == 0) { "The DBL corner must be home" }
         require(co.sum() % 3 == 0) { "Corner twists don't add up" }
-        val t = tables
+        val t = tables.get()
         var state = encodePerm(cp) * N_TWIST + encodeTwist(co)
         var d = t.distance[state].toInt()
         val out = ArrayList<Move>(d)
@@ -117,7 +128,8 @@ internal object CornerSolver {
         return co
     }
 
-    private fun build(): Tables {
+    /** Builds the tables (a few tenths of a second); checks for interruption as it goes. */
+    internal fun build(): Tables {
         val moveCubes = MOVES.map { CubieCube.moveCube(it) }
         val permMove = IntArray(N_PERM * 9)
         for (p in 0 until N_PERM) {
@@ -136,6 +148,7 @@ internal object CornerSolver {
         distance[0] = 0
         queue[tail++] = 0
         while (head < tail) {
+            if (head and INTERRUPT_CHECK_MASK == 0) throwIfInterrupted()
             val s = queue[head++]
             val d = (distance[s] + 1).toByte()
             val perm = s / N_TWIST

@@ -61,6 +61,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -85,6 +86,8 @@ import com.andhab.cubelens.ui.theme.DisplayFont
  * What to do now: a small 3D cube held exactly as asked, the face to show, how to get there and
  * which color goes on top. Once everything is scanned it shows the scanned cube instead.
  *
+ * @param followsPreviousStep whether the cube is still held as the previous step left it, so the
+ *   step's short relative cue applies; otherwise the card says how to get there from any hold.
  * @param scannedCube the cube as scanned (see [scannedCubeColors]), shown once [complete].
  * @param compact a smaller cube and title, for short screens.
  */
@@ -94,6 +97,7 @@ internal fun InstructionCard(
     complete: Boolean,
     scannedCube: List<CubeColor?>?,
     modifier: Modifier = Modifier,
+    followsPreviousStep: Boolean = true,
     compact: Boolean = false,
 ) {
     GlassCard(modifier, contentPadding = PaddingValues(start = 4.dp, end = 16.dp, top = 10.dp, bottom = 10.dp)) {
@@ -106,13 +110,17 @@ internal fun InstructionCard(
             Spacer(Modifier.width(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 AnimatedContent(
-                    targetState = if (complete) null else step,
+                    targetState = when {
+                        complete -> null
+                        followsPreviousStep -> Instruction(step, step.cue)
+                        else -> Instruction(step, step.anywhereCue)
+                    },
                     transitionSpec = { fadeIn(tween(220, delayMillis = 60)) togetherWith fadeOut(tween(120)) },
                     label = "instruction",
                 ) { shown ->
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = shown?.title ?: "That's all six!",
+                            text = shown?.step?.title ?: "That's all six!",
                             style = if (compact) InstructionTitle.copy(fontSize = 17.sp, lineHeight = 21.sp) else InstructionTitle,
                             color = Brand.TextPrimary,
                         )
@@ -122,7 +130,7 @@ internal fun InstructionCard(
                             color = Brand.TextSecondary,
                         )
                         if (shown != null) {
-                            HoldChip(shown.topColor, Modifier.padding(top = 4.dp))
+                            HoldChip(shown.step.topColor, Modifier.padding(top = 4.dp))
                         }
                     }
                 }
@@ -130,6 +138,9 @@ internal fun InstructionCard(
         }
     }
 }
+
+/** The instruction text for one step: which face, and how to get there from the current hold. */
+private data class Instruction(val step: ScanStep, val cue: String)
 
 private val InstructionTitle = TextStyle(
     fontFamily = DisplayFont,
@@ -233,7 +244,8 @@ internal fun ScanStatus(state: ScanUiState, modifier: Modifier = Modifier, showR
             contentAlignment = Alignment.Center,
             label = "scanStatus",
         ) { shown ->
-            StatusChip(shown)
+            // Only heads-ups and the finish are announced; "Hold still…" comes and goes with every wobble.
+            StatusChip(shown, announce = shown.tone == StatusTone.Warning || state.isComplete)
         }
         // The reassurance gives way to a heads-up, which may need two lines on narrow screens.
         if (showReassurance && !state.isComplete && state.hint == null) {
@@ -252,16 +264,34 @@ internal data class StatusMessage(val text: String, val tone: StatusTone)
 
 internal enum class StatusTone { Neutral, Good, Warning }
 
+/**
+ * The face thumbnail this hint asks the user to tap (to redo it), if any: only when the face in
+ * view is the right one but was already captured for another step.
+ */
+internal fun ScanHint?.pointsAtThumbnail(state: ScanUiState): ScanStep? =
+    (this as? ScanHint.AlreadyScanned)?.takeIf { it.color == state.currentStep.color }?.step
+
+private val CubeColor.lowerName: String get() = displayName.lowercase()
+
 internal fun statusMessage(state: ScanUiState): StatusMessage {
     val hint = state.hint
     return when {
         state.isComplete -> StatusMessage("All six faces scanned", StatusTone.Good)
         hint is ScanHint.WrongFace -> StatusMessage(
-            "This looks like the ${hint.seen.displayName.lowercase()} face — expected ${hint.expected.displayName.lowercase()}",
+            "Looks like the ${hint.seen.lowerName} face — show ${hint.expected.lowerName}, " +
+                "${ScanStep.forColor(hint.expected).topColor.lowerName} on top",
             StatusTone.Warning,
         )
+        // Usually the cube just hasn't been turned yet: say what to show next.
+        hint is ScanHint.AlreadyScanned && hint.color != state.currentStep.color -> StatusMessage(
+            "${hint.color.displayName}'s done — now show ${state.currentStep.color.lowerName}, " +
+                "${state.currentStep.topColor.lowerName} on top",
+            StatusTone.Warning,
+        )
+        // The right face, but it was already captured for another step (by hand, at the wrong step).
         hint is ScanHint.AlreadyScanned -> StatusMessage(
-            "${hint.color.displayName} is already scanned. Tap it below to redo it.",
+            "${hint.color.displayName} went into ${hint.step.color.lowerName}'s spot. " +
+                "Tap ${hint.step.color.lowerName} below to redo it.",
             StatusTone.Warning,
         )
         state.liveColors == null -> StatusMessage("Starting the camera…", StatusTone.Neutral)
@@ -272,7 +302,7 @@ internal fun statusMessage(state: ScanUiState): StatusMessage {
 }
 
 @Composable
-private fun StatusChip(message: StatusMessage) {
+private fun StatusChip(message: StatusMessage, announce: Boolean) {
     val accent = when (message.tone) {
         StatusTone.Neutral -> Brand.TextPrimary
         StatusTone.Good -> Brand.Mint
@@ -284,7 +314,7 @@ private fun StatusChip(message: StatusMessage) {
     }
     Row(
         modifier = Modifier
-            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+            .semantics(mergeDescendants = true) { if (announce) liveRegion = LiveRegionMode.Polite }
             .heightIn(min = 36.dp)
             .glassSurface(
                 shape = CircleShape,
@@ -307,7 +337,8 @@ private fun StatusChip(message: StatusMessage) {
         }
         Text(
             text = message.text,
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+            // Two-line heads-ups wrap evenly instead of leaving a word on its own.
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold, lineBreak = LineBreak.Heading),
             color = if (message.tone == StatusTone.Neutral) Brand.TextPrimary else accent,
             textAlign = TextAlign.Center,
         )
@@ -340,7 +371,7 @@ internal fun FaceProgressRow(
 ) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         for (step in ScanStep.entries) {
@@ -351,7 +382,7 @@ internal fun FaceProgressRow(
                 colors = capture ?: step.placeholderColors,
                 captured = capture != null,
                 current = current,
-                attention = (state.hint as? ScanHint.AlreadyScanned)?.step == step,
+                attention = state.hint.pointsAtThumbnail(state) == step,
                 enabled = !state.isComplete && !current,
                 onClick = { onSelect(step) },
                 modifier = Modifier.onGloballyPositioned { onPlaced(step, it.boundsInRoot()) },
@@ -401,7 +432,7 @@ private fun FaceThumbnail(
                 scaleY = scale
             }
             .drawBehind {
-                // Amber ring around a face the user is pointed to ("tap it below to redo it").
+                // Amber ring around a face the user is pointed to ("Tap red below to redo it").
                 if (ring <= 0f) return@drawBehind
                 val gap = 4.dp.toPx()
                 val width = 2.dp.toPx()
@@ -443,7 +474,8 @@ private fun FaceThumbnail(
     }
 }
 
-private val ThumbnailSize: Dp = 44.dp
+/** At least the minimum touch target: tapping a thumbnail is the only way to redo a face. */
+private val ThumbnailSize: Dp = 48.dp
 
 /**
  * The shutter: a light glossy disc inside a sunset ring. While a correct face is held steady,

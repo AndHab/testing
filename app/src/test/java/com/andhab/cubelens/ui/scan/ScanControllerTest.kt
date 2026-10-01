@@ -10,6 +10,7 @@ import com.andhab.cubelens.core.cube.CubeColor.YELLOW
 import com.andhab.cubelens.core.vision.ColorMath
 import com.andhab.cubelens.core.vision.LiveClassifier
 import com.andhab.cubelens.core.vision.StickerSample
+import androidx.compose.runtime.saveable.SaverScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -86,7 +87,7 @@ class ScanControllerTest {
         assertEquals(0, state.captureCount)
         assertEquals(0f, state.captureProgress)
         assertEquals(StatusTone.Warning, statusMessage(state).tone)
-        assertEquals("This looks like the red face — expected green", statusMessage(state).text)
+        assertEquals("Looks like the red face — show green, white on top", statusMessage(state).text)
 
         // The shutter still works: the user stays in control.
         assertTrue(controller.capture())
@@ -109,6 +110,9 @@ class ScanControllerTest {
         assertEquals(ScanHint.AlreadyScanned(RED, ScanStep.Green), state.hint)
         assertEquals(1, state.captureCount)
         assertEquals(0f, state.captureProgress)
+        // The right face for this step sits in green's place: point at that thumbnail.
+        assertEquals("Red went into green's spot. Tap green below to redo it.", statusMessage(state).text)
+        assertEquals(ScanStep.Green, state.hint.pointsAtThumbnail(state))
     }
 
     @Test
@@ -123,6 +127,9 @@ class ScanControllerTest {
         show(green, millis = 600)
         assertEquals(ScanHint.AlreadyScanned(GREEN, ScanStep.Green), state.hint)
         assertEquals(1, state.captureCount)
+        // Most likely the cube just wasn't turned yet: lead with what to show next.
+        assertEquals("Green's done — now show red, white on top", statusMessage(state).text)
+        assertNull("nothing to redo", state.hint.pointsAtThumbnail(state))
     }
 
     @Test
@@ -247,6 +254,93 @@ class ScanControllerTest {
         assertEquals(0, state.captureCount)
         show(green, millis = 400)
         assertEquals(1, state.captureCount)
+    }
+
+    @Test
+    fun instructionsAndTitleFollowTheGuidedOrderUntilAFaceIsRedone() {
+        val green = face(GREEN, RED, WHITE, YELLOW, GREEN, RED, ORANGE, BLUE, WHITE)
+        val red = face(RED, RED, BLUE, RED, RED, BLUE, RED, WHITE, ORANGE)
+        assertTrue(state.followsPreviousStep)
+        assertEquals("Face 1 of 6", scanTitle(state))
+        show(green, millis = 800)
+        assertTrue("red right after green: 'turn the cube to the left'", state.followsPreviousStep)
+        assertEquals("Face 2 of 6", scanTitle(state))
+        show(red, millis = 800)
+
+        // Redo green: an absolute instruction, and the bar says it's a redo, not "Face 1 of 6".
+        controller.selectStep(ScanStep.Green)
+        assertTrue(state.isRetake)
+        assertFalse(state.followsPreviousStep)
+        assertEquals("Redo green", scanTitle(state))
+
+        // Back to blue, but the cube is held for green now: "turn it left again" would be wrong.
+        show(face(GREEN, RED, WHITE, YELLOW, GREEN, RED, ORANGE, BLUE, YELLOW), millis = 800)
+        assertEquals(ScanStep.Blue, state.currentStep)
+        assertFalse(state.followsPreviousStep)
+        assertEquals("Face 3 of 6", scanTitle(state))
+    }
+
+    @Test
+    fun jumpingAheadCountsFacesNotSteps() {
+        controller.selectStep(ScanStep.Orange)
+        assertFalse(state.followsPreviousStep)
+        assertEquals("Face 1 of 6", scanTitle(state))
+    }
+
+    @Test
+    fun aScanInProgressSurvivesSavingAndRestoring() {
+        val green = face(GREEN, RED, WHITE, YELLOW, GREEN, RED, ORANGE, BLUE, WHITE)
+        val red = face(RED, RED, BLUE, RED, RED, BLUE, RED, WHITE, ORANGE)
+        controller.setAutoCapture(false)
+        show(green, millis = 300)
+        controller.capture()
+        show(red, millis = 300)
+        controller.capture()
+        controller.selectStep(ScanStep.Green)
+        controller.setTorchAvailable(true)
+        controller.setTorch(true)
+        val before = state
+
+        val saver = ScanController.saver()
+        val saved = with(saver) { SaverScope { true }.save(controller) }
+        val restored = saver.restore(checkNotNull(saved))!!
+        val after = restored.state.value
+        assertEquals(before.currentStep, after.currentStep)
+        assertEquals(before.captures, after.captures)
+        assertEquals(before.captureCount, after.captureCount)
+        assertEquals(before.lastCaptured, after.lastCaptured)
+        assertFalse(after.autoCapture)
+        assertNull("live tracking starts afresh", after.liveColors)
+        assertFalse("the camera restarts with the light off", after.torchOn)
+
+        // It carries on where it left off, and hands over the same samples.
+        controller = restored
+        for (step in listOf(ScanStep.Green, ScanStep.Blue, ScanStep.Orange, ScanStep.White, ScanStep.Yellow)) {
+            assertEquals(step, state.currentStep)
+            show(face(*Array(9) { if (it == 4) step.color else step.topColor }), millis = 100)
+            controller.capture()
+        }
+        assertTrue(state.isComplete)
+        assertEquals(red, controller.scans()[ScanStep.Red.ordinal].map(LiveClassifier::classify))
+    }
+
+    @Test
+    fun aFinishedScanIsRestoredFinished() {
+        controller.setAutoCapture(false)
+        for (step in ScanStep.entries) {
+            show(face(*Array(9) { if (it == 4) step.color else step.topColor }), millis = 100)
+            controller.capture()
+        }
+        val saver = ScanController.saver()
+        val restored = saver.restore(checkNotNull(with(saver) { SaverScope { true }.save(controller) }))!!
+        assertTrue(restored.state.value.isComplete)
+        assertEquals(controller.scans(), restored.scans())
+    }
+
+    @Test
+    fun unrecognizedSavedStateStartsAFreshScan() {
+        val restored = ScanController.saver().restore(intArrayOf(7, 7, 7))!!
+        assertEquals(ScanUiState(), restored.state.value)
     }
 
     @Test

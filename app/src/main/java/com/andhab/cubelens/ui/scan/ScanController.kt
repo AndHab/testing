@@ -1,6 +1,7 @@
 package com.andhab.cubelens.ui.scan
 
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.saveable.Saver
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.vision.LiveClassifier
 import com.andhab.cubelens.core.vision.StickerSample
@@ -77,6 +78,20 @@ data class ScanUiState(
 
     /** Whether the live center is the color this step asks for. */
     val centerMatches: Boolean get() = liveColors?.get(CENTER) == currentStep.color
+
+    /** Whether the current step scans a face again that was captured before. */
+    val isRetake: Boolean get() = isCaptured(currentStep)
+
+    /**
+     * Whether the cube is presumably still held as the previous step left it, so the step's relative
+     * [ScanStep.cue] ("Turn it left again") applies: the first step before any capture, or a step
+     * right after its predecessor was captured. False after a retake or a jump to another face.
+     */
+    val followsPreviousStep: Boolean
+        get() = !isRetake && when (val previous = currentStep.previous) {
+            null -> captureCount == 0
+            else -> lastCaptured == previous
+        }
 }
 
 /**
@@ -88,7 +103,8 @@ data class ScanUiState(
  * captured already. Manual capture ([capture]) is always allowed. After a capture it moves on to
  * the next face still missing; [selectStep] goes back to retake one. Observe [state].
  *
- * All methods are thread-safe.
+ * All methods are thread-safe. Use [saver] to keep a scan in progress across activity recreation
+ * and process death.
  */
 class ScanController(private val tuning: ScanTuning = ScanTuning()) {
 
@@ -213,6 +229,57 @@ class ScanController(private val tuning: ScanTuning = ScanTuning()) {
         capturedSamples.map { checkNotNull(it) { "Not all faces are captured yet" } }
     }
 
+    /**
+     * The progress worth keeping (captured samples, current step, auto-capture choice) as a compact
+     * array; live tracking and the flashlight start afresh. See [restore].
+     */
+    private fun save(): IntArray = synchronized(lock) {
+        val current = mutableState.value
+        val saved = IntArray(SAVED_HEADER + ScanStep.entries.size * SAVED_PER_FACE) { NONE }
+        saved[0] = SAVED_VERSION
+        saved[1] = current.currentStep.ordinal
+        saved[2] = if (current.autoCapture) 1 else 0
+        saved[3] = current.captureCount
+        saved[4] = current.lastCaptured?.ordinal ?: NONE
+        capturedSamples.forEachIndexed { step, samples ->
+            samples?.forEachIndexed { sticker, sample ->
+                val at = SAVED_HEADER + step * SAVED_PER_FACE + sticker * 3
+                saved[at] = sample.r
+                saved[at + 1] = sample.g
+                saved[at + 2] = sample.b
+            }
+        }
+        saved
+    }
+
+    /** Puts back what [save] kept; ignores anything it doesn't recognize. */
+    private fun restore(saved: IntArray) {
+        if (saved.size != SAVED_HEADER + ScanStep.entries.size * SAVED_PER_FACE || saved[0] != SAVED_VERSION) return
+        synchronized(lock) {
+            val steps = ScanStep.entries
+            for (step in steps.indices) {
+                val at = SAVED_HEADER + step * SAVED_PER_FACE
+                capturedSamples[step] = if (saved[at] == NONE) {
+                    null
+                } else {
+                    List(9) { sticker ->
+                        val rgb = at + sticker * 3
+                        StickerSample.of(saved[rgb], saved[rgb + 1], saved[rgb + 2])
+                    }
+                }
+            }
+            val captures = capturedSamples.map { samples -> samples?.map(LiveClassifier::classify) }
+            mutableState.value = ScanUiState(
+                currentStep = steps.getOrElse(saved[1]) { steps.first() },
+                captures = captures,
+                autoCapture = saved[2] == 1,
+                isComplete = captures.all { it != null },
+                captureCount = saved[3].coerceAtLeast(0),
+                lastCaptured = steps.getOrNull(saved[4]),
+            )
+        }
+    }
+
     private fun heldFor(since: Long): Long = lastFrameMillis - since
 
     /** Per sticker, the color seen most often in the recent frames; ties go to the newest frame. */
@@ -306,9 +373,23 @@ class ScanController(private val tuning: ScanTuning = ScanTuning()) {
         mutableState.value = current.copy(liveColors = live, hint = hint, captureProgress = progress)
     }
 
-    private companion object {
+    companion object {
+        /**
+         * Saves a scan in progress with `rememberSaveable`, so it survives activity recreation
+         * (rotation, theme or font changes, resizing) and process death.
+         */
+        fun saver(tuning: ScanTuning = ScanTuning()): Saver<ScanController, IntArray> = Saver(
+            save = { it.save() },
+            restore = { saved -> ScanController(tuning).apply { restore(saved) } },
+        )
+
+        private const val SAVED_VERSION = 1
+        private const val SAVED_HEADER = 5
+        private const val SAVED_PER_FACE = 9 * 3
+        private const val NONE = -1
+
         /** Each channel averaged over [frames] per sticker; null if there are none. */
-        fun averageOf(frames: Collection<List<StickerSample>>): List<StickerSample>? {
+        private fun averageOf(frames: Collection<List<StickerSample>>): List<StickerSample>? {
             if (frames.isEmpty()) return null
             return List(9) { sticker ->
                 var r = 0

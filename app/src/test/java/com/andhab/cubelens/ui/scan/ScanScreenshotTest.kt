@@ -131,6 +131,25 @@ class ScanScreenshotTest {
     }
 
     @Test
+    fun redoAFace() {
+        // Tapped the green thumbnail after four faces: an absolute instruction and "Redo green".
+        val frame = Frame.load("green")
+        shotScan(
+            "scan_redo",
+            frame,
+            ScanUiState(
+                currentStep = ScanStep.Green,
+                captures = captured(ScanStep.Green, ScanStep.Red, ScanStep.Blue, ScanStep.Orange),
+                liveColors = frame.liveColors,
+                captureProgress = 0.3f,
+                captureCount = 4,
+                lastCaptured = ScanStep.Orange,
+                torchAvailable = true,
+            ),
+        )
+    }
+
+    @Test
     fun complete() {
         val frame = Frame.load("yellow")
         shotScan(

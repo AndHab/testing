@@ -48,6 +48,11 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -69,10 +74,10 @@ import kotlin.math.roundToInt
  * [preview], which fills the screen behind the controls. Screenshot tests pass a still image as
  * the preview; the real screen passes the live camera.
  *
- * Layout, top to bottom: the bar (back, "Face 2 of 6", flashlight), the instruction card, the guide
- * window with live colors and the status line, the six face thumbnails, and the shutter flanked by
- * the auto-capture switch and manual entry. A capture flashes the screen, gives a haptic tick and
- * flies the captured face into its thumbnail.
+ * Layout, top to bottom: the bar (back, "Face 2 of 6" or "Redo green", flashlight), the
+ * instruction card, the guide window with live colors and the status line, the six face
+ * thumbnails, and the shutter flanked by the auto-capture switch and manual entry. A capture
+ * flashes the screen, gives a haptic tick and flies the captured face into its thumbnail.
  *
  * @param onCapture the shutter was pressed.
  * @param onAutoCaptureChange the auto-capture switch was flipped.
@@ -130,7 +135,7 @@ fun ScanContent(
                 .windowInsetsPadding(WindowInsets.systemBars),
         ) {
             TopBar(
-                title = if (state.isComplete) "All done" else "Face ${state.currentStep.ordinal + 1} of ${ScanStep.entries.size}",
+                title = scanTitle(state),
                 onBack = onBack,
                 actions = {
                     if (state.torchAvailable) {
@@ -148,6 +153,7 @@ fun ScanContent(
                 step = state.currentStep,
                 complete = state.isComplete,
                 scannedCube = remember(state.captures) { scannedCubeColors(state.captures) },
+                followsPreviousStep = state.followsPreviousStep,
                 compact = compact,
                 modifier = Modifier
                     .padding(horizontal = 20.dp)
@@ -190,15 +196,17 @@ fun ScanContent(
                 }
             }
 
+            val caption = progressCaption(state)
             if (!compact) {
                 Text(
-                    text = progressCaption(state),
+                    text = caption,
                     style = MaterialTheme.typography.labelSmall,
                     color = Brand.TextTertiary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = 12.dp)
+                        .clearAndSetSemantics {},
                 )
             }
             FaceProgressRow(
@@ -206,7 +214,13 @@ fun ScanContent(
                 landing = capture.landing,
                 onSelect = onSelectStep,
                 onPlaced = { step, bounds -> thumbnailsInRoot[step] = bounds },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Announces each capture ("2 of 6 scanned"), in compact layouts too.
+                    .semantics {
+                        contentDescription = caption
+                        liveRegion = LiveRegionMode.Polite
+                    },
             )
             Spacer(Modifier.height(if (compact) 12.dp else 22.dp))
             Row(
@@ -256,6 +270,13 @@ fun ScanContent(
             )
         }
     }
+}
+
+/** The bar's title: which face this is, or that a face is being redone. */
+internal fun scanTitle(state: ScanUiState): String = when {
+    state.isComplete -> "All done"
+    state.isRetake -> "Redo ${state.currentStep.color.displayName.lowercase()}"
+    else -> "Face ${(state.capturedCount + 1).coerceAtMost(ScanStep.entries.size)} of ${ScanStep.entries.size}"
 }
 
 /** The line above the face thumbnails: progress, and how to retake a face. */

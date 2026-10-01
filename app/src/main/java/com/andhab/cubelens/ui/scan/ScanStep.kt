@@ -16,7 +16,8 @@ import com.andhab.cubelens.core.cube.Facelets
  * @property color the center color of that face: what should be facing the camera.
  * @property topColor the center color that should be on top while scanning.
  * @property rightColor the center color on the right while scanning (for the illustration).
- * @property cue how to get there from the previous step, as a short sentence.
+ * @property cue how to get there from the previous step, as a short sentence. Only right while the
+ *   cube is still held as the previous step left it; otherwise use [anywhereCue].
  */
 enum class ScanStep(
     val face: Face,
@@ -38,6 +39,12 @@ enum class ScanStep(
 
     /** How to hold it, e.g. "White on top". */
     val hold: String get() = "${topColor.displayName} on top"
+
+    /** How to get there from any hold, e.g. "Turn the cube until blue faces you." */
+    val anywhereCue: String get() = "Turn the cube until ${color.displayName.lowercase()} faces you."
+
+    /** The step before this one in the guided order, or null for the first. */
+    val previous: ScanStep? get() = entries.getOrNull(ordinal - 1)
 
     /**
      * A solved cube as the user should be holding it for this step, in facelet order: this step's

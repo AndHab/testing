@@ -40,9 +40,10 @@ import kotlinx.coroutines.delay
  *
  * Without camera permission it explains why the camera is needed and asks for it (or, once the
  * permission was denied for good, sends the user to the app's settings and checks again on
- * return). With it, it shows the live camera with the scan guide and captures each face, by
- * itself once the face is held steady or with the shutter. After the sixth face it pauses on a
- * short success state and reports the scans.
+ * return; see [CameraPermissionMemory]). With it, it shows the live camera with the scan guide
+ * and captures each face, by itself once the face is held steady or with the shutter. After the
+ * sixth face it pauses on a short success state and reports the scans. A scan in progress
+ * survives activity recreation and process death.
  *
  * @param onScanned called once with six scans, one per guided step in [ScanStep] order (the capture
  *   order, unless a face was retaken), each nine samples row-major as seen on screen; pass to
@@ -58,19 +59,28 @@ fun ScanScreen(
 ) {
     val context = LocalContext.current
     val activity = LocalActivity.current
+    val store = remember(context) { CameraPermissionStore(context) }
     var granted by remember { mutableStateOf(context.hasCameraPermission()) }
-    var deniedForGood by rememberSaveable { mutableStateOf(false) }
+    var memory by remember { mutableStateOf(store.load()) }
+    var showRationale by remember { mutableStateOf(activity?.shouldShowCameraRationale() == true) }
+    val requestState = remember { PermissionRequest() }
+    fun learn(updated: CameraPermissionMemory) {
+        memory = updated
+        store.save(updated)
+    }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         granted = ok
-        // After a refusal the system only stops offering a rationale once it stops asking at all.
-        deniedForGood = !ok && activity != null && !activity.shouldShowCameraRationale()
+        showRationale = activity?.shouldShowCameraRationale() == true
+        learn(memory.afterRequest(ok, rationaleBefore = requestState.rationaleBefore, rationaleAfter = showRationale))
     }
     LifecycleResumeEffect(Unit) {
         // Back from Settings (or the permission was revoked meanwhile): check again.
         granted = context.hasCameraPermission()
-        if (granted) deniedForGood = false
+        showRationale = activity?.shouldShowCameraRationale() == true
+        learn(memory.observe(granted, showRationale))
         onPauseOrDispose { }
     }
+    val deniedForGood = memory.deniedForGood(granted, showRationale)
 
     if (granted) {
         CameraScan(onScanned = onScanned, onBack = onBack, onManualEntry = onManualEntry, modifier = modifier)
@@ -78,7 +88,12 @@ fun ScanScreen(
         CameraGateContent(
             gate = if (deniedForGood) CameraGate.Denied else CameraGate.Rationale,
             onPrimary = {
-                if (deniedForGood) context.openAppSettings() else permissionLauncher.launch(Manifest.permission.CAMERA)
+                if (deniedForGood) {
+                    context.openAppSettings()
+                } else {
+                    requestState.rationaleBefore = activity?.shouldShowCameraRationale() == true
+                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                }
             },
             onManualEntry = onManualEntry,
             onBack = onBack,
@@ -86,6 +101,9 @@ fun ScanScreen(
         )
     }
 }
+
+/** Whether a rationale was due when the pending permission request was made; read in its callback. */
+private class PermissionRequest(var rationaleBefore: Boolean = false)
 
 /** How long the success state stays up before the scans are handed over. */
 private const val CompletionPauseMillis = 1_300L
@@ -97,7 +115,8 @@ private fun CameraScan(
     onManualEntry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val controller = remember { ScanController() }
+    // Saved, so a scan in progress survives rotation, theme or size changes and process death.
+    val controller = rememberSaveable(saver = ScanController.saver()) { ScanController() }
     val state by controller.state.collectAsStateWithLifecycle()
     val analyzer = remember(controller) { CubeFrameAnalyzer(controller::onFrame) }
     var guide by remember { mutableStateOf<GuideGeometry?>(null) }
@@ -128,6 +147,7 @@ private fun CameraScan(
                     focusPoint = guide?.let { Offset(it.centerX, it.centerY) },
                     focusKey = state.currentStep,
                     onTorchAvailable = controller::setTorchAvailable,
+                    onTorchChange = controller::setTorch,
                     onError = { cameraFailed = true },
                     modifier = Modifier.fillMaxSize(),
                 )

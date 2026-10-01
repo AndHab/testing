@@ -7,6 +7,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.TorchState
 import androidx.camera.core.UseCase
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
@@ -28,10 +29,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.Observer
+import androidx.lifecycle.asFlow
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -49,12 +56,18 @@ import kotlin.coroutines.resume
  * Autofocus runs continuously; once the preview is streaming, and again whenever [focusKey]
  * changes, focus and exposure are metered at [focusPoint] (the guide center).
  *
+ * While the screen is visible, a [CameraWatchdog] checks that the camera actually works after
+ * binding (another app may hold it, or it may be disabled) and reports it through [onError].
+ *
  * @param analyzer receives every analyzed frame.
  * @param torchOn whether the flashlight should be on (ignored without a flash unit).
  * @param focusPoint point to meter focus and exposure at, in this view's pixels.
  * @param focusKey re-meters at [focusPoint] when it changes (e.g. the face being scanned).
  * @param onTorchAvailable called once bound, with whether the camera has a flash unit.
- * @param onError called if the camera cannot be started (no back camera, camera in use...).
+ * @param onTorchChange called with the flashlight's actual state whenever it changes or a request
+ *   to change it failed, e.g. off once the app went to the background; keep [torchOn] in step.
+ * @param onError called if the camera cannot be started or stops working (no back camera, camera
+ *   in use or disabled, no frames...).
  */
 @Composable
 fun CubeCameraPreview(
@@ -65,6 +78,7 @@ fun CubeCameraPreview(
     onError: (Throwable) -> Unit,
     modifier: Modifier = Modifier,
     focusKey: Any? = null,
+    onTorchChange: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -76,7 +90,10 @@ fun CubeCameraPreview(
         }
     }
     var camera by remember { mutableStateOf<Camera?>(null) }
+    // Frames analyzed so far, for the watchdog; written only on the analysis thread.
+    val frameCount = remember { MutableStateFlow(0L) }
     val currentOnTorchAvailable by rememberUpdatedState(onTorchAvailable)
+    val currentOnTorchChange by rememberUpdatedState(onTorchChange)
     val currentOnError by rememberUpdatedState(onError)
 
     AndroidView(factory = { previewView }, modifier = modifier)
@@ -103,7 +120,10 @@ fun CubeCameraPreview(
                 .setResolutionSelector(AnalysisResolution)
                 .setTargetRotation(rotation)
                 .build()
-            imageAnalysis.setAnalyzer(executor, analyzer)
+            imageAnalysis.setAnalyzer(executor) { image ->
+                frameCount.value += 1
+                analyzer.analyze(image)
+            }
             analysis = imageAnalysis
             useCases += preview
             useCases += imageAnalysis
@@ -130,9 +150,31 @@ fun CubeCameraPreview(
         }
     }
 
+    LaunchedEffect(camera, lifecycleOwner) {
+        val bound = camera ?: return@LaunchedEffect
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            // Each time the screen comes back, the camera must deliver frames again.
+            val seen = frameCount.value
+            val failure = CameraWatchdog.awaitFailure(
+                cameraStates = bound.cameraInfo.cameraState.asFlow(),
+                frameArrived = frameCount.map { it > seen },
+            )
+            currentOnError(failure)
+        }
+    }
+
+    LaunchedEffect(camera) {
+        // The camera turns the flashlight off by itself, e.g. when the app goes to the background.
+        val bound = camera ?: return@LaunchedEffect
+        bound.cameraInfo.torchState.asFlow().collect { currentOnTorchChange(it == TorchState.ON) }
+    }
+
     LaunchedEffect(camera, torchOn) {
         val bound = camera ?: return@LaunchedEffect
-        if (bound.cameraInfo.hasFlashUnit()) bound.cameraControl.enableTorch(torchOn)
+        if (!bound.cameraInfo.hasFlashUnit()) return@LaunchedEffect
+        // Fails while the camera isn't open yet (or anymore): then report what the light really does.
+        val applied = bound.cameraControl.enableTorch(torchOn).awaitSuccess()
+        if (!applied) currentOnTorchChange(bound.cameraInfo.torchState.value == TorchState.ON)
     }
 
     LaunchedEffect(camera, focusPoint, focusKey) {
@@ -191,6 +233,11 @@ private suspend fun PreviewView.awaitViewPort(): ViewPort {
             ContextCompat.getMainExecutor(context).execute { removeOnLayoutChangeListener(listener) }
         }
     }
+}
+
+/** Waits for this future to finish; true if it succeeded. A newer request cancels the wait. */
+private suspend fun ListenableFuture<*>.awaitSuccess(): Boolean = suspendCancellableCoroutine { continuation ->
+    addListener({ continuation.resume(runCatching { get() }.isSuccess) }, Runnable::run)
 }
 
 /** Suspends until the preview is showing camera frames. */

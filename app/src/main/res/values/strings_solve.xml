@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Solve screen (ui/solve): step-by-step solution playback. -->
+<resources>
+    <!-- Orientation hint; %1$s = color of the front center, %2$s = color of the top center (lowercase). -->
+    <string name="solve_hold_hint">Hold %1$s toward you, %2$s on top</string>
+
+    <!-- Faces, as named in move descriptions. -->
+    <string name="solve_face_u">Top face</string>
+    <string name="solve_face_d">Bottom face</string>
+    <string name="solve_face_f">Front face</string>
+    <string name="solve_face_b">Back face</string>
+    <string name="solve_face_l">Left face</string>
+    <string name="solve_face_r">Right face</string>
+
+    <!-- Turn directions, as seen looking straight at the face. -->
+    <string name="solve_turn_clockwise">clockwise</string>
+    <string name="solve_turn_counter_clockwise">counter-clockwise</string>
+    <string name="solve_turn_half">half turn</string>
+
+    <!-- "Right face · clockwise" -->
+    <string name="solve_move_description">%1$s · %2$s</string>
+    <string name="solve_move_counter">Move %1$d of %2$d</string>
+    <plurals name="solve_moves_to_go">
+        <item quantity="one">%d to go</item>
+        <item quantity="other">%d to go</item>
+    </plurals>
+    <!-- Spoken summary of the current move: "Move 3 of 19: R prime, Right face · counter-clockwise". -->
+    <string name="solve_current_move_spoken">%1$s: %2$s, %3$s</string>
+
+    <!-- Timeline and controls. -->
+    <string name="solve_timeline">Solution moves</string>
+    <string name="solve_jump_to_move">Jump to this move</string>
+    <string name="solve_restart">Start over</string>
+    <string name="solve_previous">Previous move</string>
+    <string name="solve_next">Next move</string>
+    <string name="solve_play">Play</string>
+    <string name="solve_pause">Pause</string>
+    <string name="solve_speed">Playback speed</string>
+    <string name="solve_speed_change">Change speed</string>
+    <string name="solve_reset_view">Reset view</string>
+
+    <!-- Celebration. -->
+    <string name="solve_solved_title">Solved!</string>
+    <string name="solve_already_solved_title">Already solved!</string>
+    <plurals name="solve_move_count">
+        <item quantity="one">%d move</item>
+        <item quantity="other">%d moves</item>
+    </plurals>
+    <string name="solve_solved_subtitle">That\'s the short way home.</string>
+    <string name="solve_already_solved_subtitle">Every face matches. Nothing to do!</string>
+    <string name="solve_scan_another">Scan another cube</string>
+    <string name="solve_replay">Replay</string>
+</resources>

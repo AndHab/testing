@@ -20,6 +20,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -29,41 +30,44 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Facelets
+import com.andhab.cubelens.core.nxn.NxNGeometry
 import com.andhab.cubelens.ui.theme.Brand
-import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
+import com.andhab.cubelens.ui.theme.StickerPalette
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * The cube unfolded in the standard cross: U above F, the row L F R B, and D below F.
+ * The cube unfolded in the standard cross: U above F, the row L F R B, and D below F. Works for any
+ * size: each face is an N×N grid, with N inferred from the 6·N² colors.
  *
- * The net fills the available width (or the available height, if that is the tighter fit). Each face
- * sits on a dark glass plate; stickers are rounded and glossy, unknown (`null`) stickers are hollow
- * with a dashed rim, flagged stickers pulse with a soft [Brand.Danger] glow and ring, and the
- * selected sticker lifts slightly inside a white ring. When [onStickerClick] is set, stickers are
- * buttons with a springy press.
+ * The net fills the available width (or the available height, if that is the tighter fit), and
+ * keeps the same overall proportions for every size. Each face sits on a dark glass plate;
+ * stickers are rounded and glossy in the colors of [LocalStickerPalette], unknown (`null`) stickers
+ * are hollow with a dashed rim, flagged stickers pulse with a soft [Brand.Danger] glow and ring,
+ * and the selected sticker lifts slightly inside a white ring. When [onStickerClick] is set,
+ * stickers are buttons with a springy press.
  *
- * @param colors 54 sticker colors in facelet order.
+ * On a big cube the stickers of a net get small; pass [onFaceClick] to make each face's plate a
+ * button (e.g. to open that face in a [FaceEditor]). Taps on a sticker go to [onStickerClick] when
+ * it is set, everywhere else on a plate to [onFaceClick].
+ *
+ * @param colors 6·N² sticker colors in [NxNGeometry] order (54 for a 3×3).
  * @param highlightFacelets stickers to flag (e.g. [com.andhab.cubelens.core.cube.ValidationResult.flaggedFacelets]).
  * @param selectedFacelet the sticker currently being edited, if any.
- * @param onStickerClick called with the facelet index of a tapped sticker; `null` makes the net read-only.
+ * @param onStickerClick called with the index of a tapped sticker; `null` makes stickers read-only.
+ * @param onFaceClick called with the face whose plate was tapped; `null` makes plates read-only.
  */
 @Composable
 fun CubeNet(
@@ -72,22 +76,32 @@ fun CubeNet(
     highlightFacelets: Set<Int> = emptySet(),
     selectedFacelet: Int? = null,
     onStickerClick: ((Int) -> Unit)? = null,
+    onFaceClick: ((Face) -> Unit)? = null,
 ) {
-    require(colors.size == Facelets.COUNT) { "Need ${Facelets.COUNT} sticker colors, got ${colors.size}" }
+    val n = CubeSizes.ofCube(colors.size)
+    val geometry = NxNGeometry.of(n)
     val pulse = if (highlightFacelets.isNotEmpty()) rememberHighlightPulse() else null
     // An array, so the per-frame glow loop needs no iterator.
-    val flagged = remember(highlightFacelets) {
-        highlightFacelets.filter { it in 0 until Facelets.COUNT }.sorted().toIntArray()
+    val flagged = remember(highlightFacelets, n) {
+        highlightFacelets.filter { it in 0 until geometry.stickerCount }.sorted().toIntArray()
     }
     // Written by the measure pass, read by the draw pass (which always follows it).
     val measured = remember { MeasuredNet() }
+    val plateTargets = onFaceClick != null
 
     Layout(
         content = {
-            for (i in 0 until Facelets.COUNT) {
-                NetSticker(
+            if (onFaceClick != null) {
+                for (face in Face.entries) FacePlateTarget(face, onFaceClick)
+            }
+            for (i in 0 until geometry.stickerCount) {
+                val face = geometry.faceOf(i)
+                val color = colors[i]
+                StickerCell(
                     index = i,
-                    color = colors[i],
+                    color = color,
+                    description = "${face.friendlyName} face, row ${geometry.rowOf(i) + 1}, " +
+                        "column ${geometry.colOf(i) + 1}: ${color?.displayName ?: "empty"}",
                     flagged = i in highlightFacelets,
                     selected = i == selectedFacelet,
                     onClick = onStickerClick,
@@ -105,7 +119,7 @@ fun CubeNet(
                 GlowSprite.create(
                     shape = Size(metrics.sticker, metrics.sticker),
                     cornerRadius = metrics.sticker * STICKER_CORNER,
-                    spread = FLAG_GLOW_SPREAD.dp.toPx(),
+                    spread = min(FLAG_GLOW_SPREAD.dp.toPx(), metrics.sticker * 0.75f),
                     colors = listOf(Brand.Danger),
                 )
             }
@@ -126,28 +140,79 @@ fun CubeNet(
             }
         },
     ) { measurables, constraints ->
-        val metrics = NetMetrics.fit(constraints)
+        val metrics = NetMetrics.fit(constraints, n)
         measured.metrics = metrics
         val sticker = metrics.sticker.roundToInt().coerceAtLeast(1)
-        val placeables = measurables.map { it.measure(Constraints.fixed(sticker, sticker)) }
+        val plate = metrics.plate.roundToInt().coerceAtLeast(1)
+        val first = if (plateTargets) Face.entries.size else 0
+        val placeables = measurables.mapIndexed { k, measurable ->
+            val side = if (k < first) plate else sticker
+            measurable.measure(Constraints.fixed(side, side))
+        }
         layout(metrics.width.roundToInt(), metrics.height.roundToInt()) {
-            placeables.forEachIndexed { i, placeable ->
-                placeable.place(metrics.stickerX(i).roundToInt(), metrics.stickerY(i).roundToInt())
+            placeables.forEachIndexed { k, placeable ->
+                if (k < first) {
+                    val face = Face.entries[k]
+                    placeable.place(metrics.plateX(face).roundToInt(), metrics.plateY(face).roundToInt())
+                } else {
+                    val i = k - first
+                    placeable.place(metrics.stickerX(i).roundToInt(), metrics.stickerY(i).roundToInt())
+                }
             }
         }
     }
 }
 
 /**
- * A single face as a 3x3 thumbnail on a dark plate (e.g. the strip of scanned faces).
+ * The tappable plate of one face of a [CubeNet]: invisible at rest (the net draws the plates), it
+ * lights up with a sunset rim while pressed.
+ */
+@Composable
+private fun FacePlateTarget(face: Face, onClick: (Face) -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val glow by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        label = "platePressed",
+    )
+    Box(
+        Modifier
+            .semantics { contentDescription = "${face.friendlyName} face" }
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClickLabel = "Edit face",
+            ) { onClick(face) }
+            .drawBehind {
+                if (glow > 0.01f) {
+                    val width = 2.dp.toPx()
+                    drawRoundRect(
+                        brush = Brush.linearGradient(Brand.SunsetColors, start = Offset.Zero, end = Offset(size.width, size.height)),
+                        topLeft = Offset(width / 2, width / 2),
+                        size = Size(size.width - width, size.height - width),
+                        cornerRadius = CornerRadius(size.minDimension * PLATE_CORNER),
+                        style = Stroke(width),
+                        alpha = glow.coerceAtMost(1f),
+                    )
+                }
+            },
+    )
+}
+
+/**
+ * A single face as an N×N thumbnail on a dark plate (e.g. the strip of scanned faces), with N
+ * inferred from the N² colors.
  *
- * @param colors the nine stickers, row-major as in [Facelets]; `null` stickers are hollow.
+ * @param colors the face's stickers, row-major as in [NxNGeometry]; `null` stickers are hollow.
  * @param active highlights the face with a sunset outline and a softly breathing glow. The glow
  *   stays within the composable's bounds, so a clipping parent will not cut it off.
  */
 @Composable
 fun FaceGrid(colors: List<CubeColor?>, modifier: Modifier = Modifier, active: Boolean = false) {
-    require(colors.size == 9) { "A face has 9 stickers, got ${colors.size}" }
+    val n = CubeSizes.ofFace(colors.size)
+    val palette = LocalStickerPalette.current
     val activeAmount = animateFloatAsState(
         targetValue = if (active) 1f else 0f,
         animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f),
@@ -175,11 +240,11 @@ fun FaceGrid(colors: List<CubeColor?>, modifier: Modifier = Modifier, active: Bo
             .aspectRatio(1f)
             .semantics { contentDescription = description }
             .drawWithCache {
-                val thumbnail = thumbnails.forSize(size, this)
+                val thumbnail = thumbnails.forSize(size, this, n)
                 onDrawBehind {
                     val amount = activeAmount.value
                     val glow = amount * (0.7f + 0.3f * (breathe?.value ?: 1f))
-                    with(thumbnail) { drawThumbnail(colors, glow, amount) }
+                    with(thumbnail) { drawThumbnail(colors, palette, glow, amount) }
                 }
             },
     )
@@ -194,120 +259,6 @@ internal fun rememberHighlightPulse(): State<Float> =
         animationSpec = infiniteRepeatable(tween(720, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "pulse",
     )
-
-@Composable
-private fun NetSticker(
-    index: Int,
-    color: CubeColor?,
-    flagged: Boolean,
-    selected: Boolean,
-    onClick: ((Int) -> Unit)?,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val stickerScale by animateFloatAsState(
-        targetValue = when {
-            pressed -> PRESSED_SCALE
-            selected -> SELECTED_SCALE
-            else -> 1f
-        },
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
-        label = "stickerScale",
-    )
-    val selection = animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
-        label = "stickerSelection",
-    )
-    val face = Facelets.faceOf(index)
-    val description = "${face.friendlyName} face, row ${Facelets.rowOf(index) + 1}, column ${Facelets.colOf(index) + 1}: " +
-        (color?.displayName ?: "empty")
-
-    Box(
-        Modifier
-            .zIndex(if (selected) 2f else if (flagged) 1f else 0f)
-            .graphicsLayer {
-                scaleX = stickerScale
-                scaleY = stickerScale
-            }
-            .semantics {
-                contentDescription = description
-                this.selected = selected
-                if (flagged) stateDescription = "Needs checking"
-            }
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        role = Role.Button,
-                        onClickLabel = "Change color",
-                    ) { onClick(index) }
-                } else {
-                    Modifier
-                },
-            )
-            .drawWithCache {
-                val radius = CornerRadius(size.minDimension * STICKER_CORNER)
-                val gloss = Brush.linearGradient(
-                    0f to Color.White.copy(alpha = 0.42f),
-                    0.42f to Color.White.copy(alpha = 0.08f),
-                    0.6f to Color.Transparent,
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height),
-                )
-                val shade = Brush.linearGradient(
-                    0.45f to Color.Transparent,
-                    1f to Color.Black.copy(alpha = 0.22f),
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height),
-                )
-                val rimWidth = 1.5.dp.toPx()
-                val emptyRim = Stroke(rimWidth, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx())))
-                val flagWidth = 2.dp.toPx()
-                val flagRing = Stroke(flagWidth)
-                // The selection ring straddles the sticker's edge, so even at SELECTED_SCALE it ends
-                // inside the gap to the next sticker. The body shrinks inside it, like a picked swatch.
-                val ringWidth = SELECTION_RING_WIDTH.dp.toPx()
-                val ring = Stroke(ringWidth)
-                val bodyInset = ringWidth / 2 + SELECTION_RING_GAP.dp.toPx()
-                val selectedBodyScale = 1f - 2 * bodyInset / size.minDimension
-                onDrawBehind {
-                    val amount = selection.value
-                    if (amount > 0.01f) {
-                        drawRoundRect(Color.White, cornerRadius = radius, style = ring, alpha = amount.coerceAtMost(1f))
-                    }
-                    // Scaling the canvas (rather than the rects) keeps every brush at one size, so
-                    // no shader is rebuilt while the selection animates.
-                    scale(1f + (selectedBodyScale - 1f) * amount) {
-                        if (color != null) {
-                            drawRoundRect(CubePalette.color(color), cornerRadius = radius)
-                            drawRoundRect(shade, cornerRadius = radius)
-                            drawRoundRect(gloss, cornerRadius = radius)
-                        } else {
-                            drawRoundRect(EMPTY_FILL, cornerRadius = radius)
-                            drawRoundRect(
-                                color = EMPTY_RIM,
-                                topLeft = Offset(rimWidth / 2, rimWidth / 2),
-                                size = Size(size.width - rimWidth, size.height - rimWidth),
-                                cornerRadius = radius,
-                                style = emptyRim,
-                            )
-                        }
-                        if (flagged) {
-                            drawRoundRect(
-                                color = Brand.Danger,
-                                topLeft = Offset(flagWidth / 2, flagWidth / 2),
-                                size = Size(size.width - flagWidth, size.height - flagWidth),
-                                cornerRadius = radius,
-                                style = flagRing,
-                            )
-                        }
-                    }
-                }
-            },
-    )
-}
 
 /** The dark glass plates behind the six faces of a net, with their brushes built once per size. */
 private class NetPlates(metrics: NetMetrics, density: Density) {
@@ -342,20 +293,20 @@ private class NetPlates(metrics: NetMetrics, density: Density) {
     }
 }
 
-/** The [FaceThumbnail] of a [FaceGrid]'s latest size and density. */
+/** The [FaceThumbnail] of a [FaceGrid]'s latest size, density and cube size. */
 private class FaceThumbnailHolder {
     private var current: FaceThumbnail? = null
 
-    fun forSize(size: Size, density: Density): FaceThumbnail =
-        current?.takeIf { it.size == size && it.pixelDensity == density.density }
-            ?: FaceThumbnail(size, density).also { current = it }
+    fun forSize(size: Size, density: Density, n: Int): FaceThumbnail =
+        current?.takeIf { it.size == size && it.pixelDensity == density.density && it.n == n }
+            ?: FaceThumbnail(size, density, n).also { current = it }
 }
 
 /**
  * Everything a [FaceGrid] of one size draws with: plate, border, sticker layout, brushes and strokes.
  * Built once per size, so a breathing active thumbnail allocates nothing per frame.
  */
-private class FaceThumbnail(val size: Size, density: Density) {
+private class FaceThumbnail(val size: Size, density: Density, val n: Int) {
     val pixelDensity = density.density
     private val inset = size.minDimension * THUMBNAIL_INSET
     private val plate = size.minDimension - 2 * inset
@@ -370,10 +321,12 @@ private class FaceThumbnail(val size: Size, density: Density) {
     private val ring = Stroke(ringWidth)
     private val ringBrush = Brush.linearGradient(Brand.SunsetColors, start = plateTopLeft, end = plateTopLeft + Offset(plate, plate))
 
-    // 3x3 stickers: padding p, sticker s, gap g with 2p + 3s + 2g = plate.
-    private val sticker = plate / (3f + 2 * GRID_GAP + 2 * GRID_PADDING)
+    // N×N stickers: padding p and gap g scaled to the 3×3's proportions of the plate, so every size
+    // fills the plate the same way: 2p + N·s + (N-1)·g = plate.
+    private val padding = plate * GRID_PADDING_FRACTION
+    private val sticker = (plate - 2 * padding) / (n + (n - 1) * GRID_GAP)
     private val stickerStep = sticker * (1 + GRID_GAP)
-    private val stickerOrigin = inset + sticker * GRID_PADDING
+    private val stickerOrigin = inset + padding
     private val stickerSize = Size(sticker, sticker)
     private val stickerRadius = CornerRadius(sticker * STICKER_CORNER)
     private val gloss = Brush.linearGradient(
@@ -400,7 +353,7 @@ private class FaceThumbnail(val size: Size, density: Density) {
      * @param glow strength of the glow around the plate, 0..1.
      * @param active how far the hairline border has turned into the sunset ring, 0..1.
      */
-    fun DrawScope.drawThumbnail(colors: List<CubeColor?>, glow: Float, active: Float) {
+    fun DrawScope.drawThumbnail(colors: List<CubeColor?>, palette: StickerPalette, glow: Float, active: Float) {
         if (glow > 0.01f) drawGlow(glow(), plateTopLeft, alpha = THUMBNAIL_GLOW_ALPHA * glow)
         drawRoundRect(plateFill, plateTopLeft, plateSize, plateRadius)
         if (active < 0.99f) {
@@ -423,12 +376,12 @@ private class FaceThumbnail(val size: Size, density: Density) {
                 alpha = active.coerceIn(0f, 1f),
             )
         }
-        for (i in 0 until 9) {
-            translate(stickerOrigin + (i % 3) * stickerStep, stickerOrigin + (i / 3) * stickerStep) {
+        for (i in 0 until n * n) {
+            translate(stickerOrigin + (i % n) * stickerStep, stickerOrigin + (i / n) * stickerStep) {
                 val color = colors[i]
                 if (color != null) {
-                    drawRoundRect(CubePalette.color(color), size = stickerSize, cornerRadius = stickerRadius)
-                    drawRoundRect(gloss, size = stickerSize, cornerRadius = stickerRadius)
+                    drawRoundRect(palette.color(color), size = stickerSize, cornerRadius = stickerRadius)
+                    drawRoundRect(gloss, size = stickerSize, cornerRadius = stickerRadius, alpha = palette.finish(color).glossScale)
                 } else {
                     drawRoundRect(EMPTY_FILL, size = stickerSize, cornerRadius = stickerRadius)
                     drawRoundRect(
@@ -445,40 +398,50 @@ private class FaceThumbnail(val size: Size, density: Density) {
 }
 
 /**
- * Geometry of the net in pixels, all derived from the sticker size: stickers are separated by a
- * small gap, sit inside a padded plate per face, and plates are separated by a wider gap.
+ * Geometry of an N×N net in pixels, all derived from the sticker size: stickers are separated by a
+ * small gap, sit inside a padded plate per face, and plates are separated by a wider gap. Plate
+ * padding and the gap between plates keep the 3×3's proportions of a plate, so nets of every size
+ * have the same shape and only the stickers get smaller.
  */
-internal class NetMetrics private constructor(val sticker: Float) {
+internal class NetMetrics private constructor(val sticker: Float, val n: Int) {
+    private val geometry = NxNGeometry.of(n)
     val gap = sticker * NET_GAP
-    val padding = sticker * NET_PADDING
-    val faceGap = sticker * NET_FACE_GAP
-    val plate = 3 * sticker + 2 * gap + 2 * padding
+    val plate = sticker * plateUnits(n)
+    val padding = plate * PLATE_PADDING_FRACTION
+    val faceGap = plate * FACE_GAP_FRACTION
     val width = 4 * plate + 3 * faceGap
     val height = 3 * plate + 2 * faceGap
 
     fun plateX(face: Face): Float = layoutColumn(face) * (plate + faceGap)
     fun plateY(face: Face): Float = layoutRow(face) * (plate + faceGap)
-    fun stickerX(index: Int): Float = plateX(Facelets.faceOf(index)) + padding + Facelets.colOf(index) * (sticker + gap)
-    fun stickerY(index: Int): Float = plateY(Facelets.faceOf(index)) + padding + Facelets.rowOf(index) * (sticker + gap)
+    fun stickerX(index: Int): Float = plateX(geometry.faceOf(index)) + padding + geometry.colOf(index) * (sticker + gap)
+    fun stickerY(index: Int): Float = plateY(geometry.faceOf(index)) + padding + geometry.rowOf(index) * (sticker + gap)
 
     companion object {
+        /** A 3×3 plate is 3 stickers, 2 gaps and 2 paddings; these keep its proportions for every N. */
+        private val PLATE_PADDING_FRACTION = NET_PADDING / (3 + 2 * NET_GAP + 2 * NET_PADDING)
+        private val FACE_GAP_FRACTION = NET_FACE_GAP / (3 + 2 * NET_GAP + 2 * NET_PADDING)
+
+        /** Plate side in sticker units for an N×N face. */
+        private fun plateUnits(n: Int): Float = (n + (n - 1) * NET_GAP) / (1 - 2 * PLATE_PADDING_FRACTION)
+
         /** Width of the net in sticker units. */
-        private val WIDTH_UNITS = 4 * (3 + 2 * NET_GAP + 2 * NET_PADDING) + 3 * NET_FACE_GAP
+        private fun widthUnits(n: Int): Float = plateUnits(n) * (4 + 3 * FACE_GAP_FRACTION)
 
         /** Height of the net in sticker units. */
-        private val HEIGHT_UNITS = 3 * (3 + 2 * NET_GAP + 2 * NET_PADDING) + 2 * NET_FACE_GAP
+        private fun heightUnits(n: Int): Float = plateUnits(n) * (3 + 2 * FACE_GAP_FRACTION)
 
-        /** Largest net that fits [constraints]; uses the width when the height is unbounded. */
-        fun fit(constraints: Constraints): NetMetrics {
+        /** Largest net of an [n]×[n] cube that fits [constraints]; uses the width when the height is unbounded. */
+        fun fit(constraints: Constraints, n: Int = 3): NetMetrics {
             val maxW = if (constraints.hasBoundedWidth) constraints.maxWidth.toFloat() else DEFAULT_WIDTH_PX
             val maxH = if (constraints.hasBoundedHeight) constraints.maxHeight.toFloat() else Float.MAX_VALUE
-            return forSize(maxW, maxH)
+            return forSize(maxW, maxH, n)
         }
 
-        /** Largest net that fits in [width] x [height] pixels, with a whole-pixel sticker size. */
-        fun forSize(width: Float, height: Float): NetMetrics {
-            val s = min(width / WIDTH_UNITS, height / HEIGHT_UNITS)
-            return NetMetrics(floor(s).coerceAtLeast(1f))
+        /** Largest net of an [n]×[n] cube that fits in [width] x [height] pixels, with a whole-pixel sticker size. */
+        fun forSize(width: Float, height: Float, n: Int = 3): NetMetrics {
+            val s = min(width / widthUnits(n), height / heightUnits(n))
+            return NetMetrics(floor(s).coerceAtLeast(1f), n)
         }
 
         private const val DEFAULT_WIDTH_PX = 1080f
@@ -518,9 +481,10 @@ private const val NET_GAP = 0.1f
 private const val NET_PADDING = 0.16f
 private const val NET_FACE_GAP = 0.22f
 private const val GRID_GAP = 0.1f
-private const val GRID_PADDING = 0.16f
-private const val STICKER_CORNER = 0.2f
-private const val PLATE_CORNER = 0.13f
+
+/** Thumbnail plate padding as a fraction of the plate: a 3×3 has 0.16 sticker of padding. */
+private const val GRID_PADDING_FRACTION = 0.16f / (3 + 2 * 0.1f + 2 * 0.16f)
+internal const val PLATE_CORNER = 0.13f
 
 /** Margin around a [FaceGrid]'s plate, as a fraction of its size; the active glow fills it. */
 private const val THUMBNAIL_INSET = 0.09f
@@ -528,21 +492,11 @@ private const val THUMBNAIL_INSET = 0.09f
 /** Strength of the active [FaceGrid] glow; it is half this strong at the plate's edge. */
 private const val THUMBNAIL_GLOW_ALPHA = 0.85f
 
-/** Reach of a flagged sticker's glow, in dp. */
+/** Reach of a flagged sticker's glow, in dp (less for tiny stickers). */
 private const val FLAG_GLOW_SPREAD = 9f
-
-/** Net sticker scale while pressed and while selected (DESIGN.md: gentle, springy). */
-private const val PRESSED_SCALE = 0.92f
-private const val SELECTED_SCALE = 1.06f
-
-/** Width of the white ring around the selected net sticker, and its gap to the sticker body, in dp. */
-private const val SELECTION_RING_WIDTH = 2f
-private const val SELECTION_RING_GAP = 1.25f
 
 /** Glow hues stay in magenta/coral: low-alpha orange over ink reads as brown. */
 private val WARM_GLOW_COLORS = listOf(Brand.Magenta, Brand.Coral, Brand.Magenta)
 
-private val PLATE_COLORS = listOf(Color(0xFF191921), Color(0xFF0E0E14))
-private val RIM_COLORS = listOf(Brand.HairlineStrong, Brand.Hairline.copy(alpha = 0.04f))
-private val EMPTY_FILL = Color(0xFF1B1B24)
-private val EMPTY_RIM = Color(0xFF6F6A86)
+internal val PLATE_COLORS = listOf(Color(0xFF191921), Color(0xFF0E0E14))
+internal val RIM_COLORS = listOf(Brand.HairlineStrong, Brand.Hairline.copy(alpha = 0.04f))

@@ -41,6 +41,9 @@ import kotlin.math.sqrt
  * curated scramble) on a black body, optionally sitting in a sunset bloom. Same geometry and
  * colors as the launcher icon. Fills the smaller side of its bounds; the bloom spills outside.
  *
+ * It always uses the stock [CubePalette] colors, never [com.andhab.cubelens.ui.theme.LocalStickerPalette]:
+ * it is the app's logo, not the user's cube, so it looks the same everywhere.
+ *
  * Decorative by default; pass [contentDescription] when it stands alone.
  */
 @Composable

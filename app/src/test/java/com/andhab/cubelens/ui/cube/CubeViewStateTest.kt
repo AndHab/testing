@@ -4,6 +4,9 @@ import androidx.compose.runtime.MonotonicFrameClock
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.FaceletCube
 import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
+import com.andhab.cubelens.core.nxn.NxNCube
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -16,6 +19,7 @@ import org.junit.Test
 import kotlin.math.abs
 
 /** Behavior of [CubeViewState] turns and camera, driven by a fake frame clock (plain JVM). */
+@OptIn(ExperimentalCoroutinesApi::class)
 class CubeViewStateTest {
 
     private val solved: List<CubeColor?> = FaceletCube.SOLVED.toColors()
@@ -133,6 +137,118 @@ class CubeViewStateTest {
     @Test(expected = IllegalArgumentException::class)
     fun rejectsWrongStickerCount() {
         CubeViewState(List(53) { CubeColor.WHITE })
+    }
+
+    @Test
+    fun sizeIsInferredFromTheColorsAndFollowsSnapTo() {
+        val state = CubeViewState(solved)
+        assertEquals(3, state.size)
+        state.snapTo(NxNCube.solved(7).toColors())
+        assertEquals(7, state.size)
+        assertEquals(294, state.colors.size)
+        state.snapTo(NxNCube.solved(2).toColors())
+        assertEquals(2, state.size)
+        assertEquals(4, CubeViewState(NxNCube.solved(4).toColors()).size)
+    }
+
+    @Test
+    fun layerMovesOfAnySizeCommitTheModelPermutation() = runTest(FakeFrameClock()) {
+        val cases = listOf(
+            4 to "Rw",
+            4 to "2-3Lw'",
+            5 to "2R",
+            5 to "3U2",
+            6 to "3Fw'",
+            7 to "3Uw'",
+            7 to "4R",
+            2 to "U'",
+            2 to "2Rw",
+            3 to "3Rw",
+            3 to "2F",
+        )
+        for ((n, notation) in cases) {
+            val move = LayerMove.parse(notation)
+            val start = NxNCube.solved(n).apply(TestCubes.scramble(n))
+            val state = CubeViewState(start.toColors())
+            state.animateMove(move)
+            assertEquals("$n×$n $notation", start.apply(move).toColors(), state.colors)
+            assertNull(state.animatingLayerMove)
+        }
+    }
+
+    @Test
+    fun outerMovesOnBigCubesMatchTheirLayerMove() = runTest(FakeFrameClock()) {
+        val start = NxNCube.solved(5).apply(TestCubes.scramble(5))
+        val state = CubeViewState(start.toColors())
+        state.animateMove(Move.R3)
+        assertEquals(start.apply(LayerMove.parse("R'")).toColors(), state.colors)
+    }
+
+    @Test
+    fun animatingMoveIsOnlySetForOuterTurns() = runTest(FakeFrameClock()) {
+        val state = CubeViewState(NxNCube.solved(4).toColors())
+        val wide = launch { state.animateMove(LayerMove.parse("Rw")) }
+        advanceTimeBy(100)
+        runCurrent()
+        assertEquals(LayerMove.parse("Rw"), state.animatingLayerMove)
+        assertNull(state.animatingMove)
+        wide.join()
+
+        val outer = launch { state.animateMove(LayerMove.parse("U2")) }
+        advanceTimeBy(100)
+        runCurrent()
+        assertEquals(Move.U2, state.animatingMove)
+        outer.join()
+        assertNull(state.animatingMove)
+    }
+
+    @Test
+    fun layerPreviewFreezesAndNullReturnsToRest() {
+        val state = CubeViewState(NxNCube.solved(5).toColors())
+        state.setPreview(LayerMove.parse("2R"), 0.5f)
+        assertEquals(LayerMove.parse("2R"), state.animatingLayerMove)
+        assertEquals(0.5f, state.moveProgress, 0f)
+        assertNull(state.animatingMove)
+        state.setPreview(Move.F1, 0.3f)
+        assertEquals(Move.F1, state.animatingMove)
+        state.setPreview(null, 0.3f)
+        assertNull(state.animatingLayerMove)
+        assertEquals(0f, state.moveProgress, 0f)
+        assertEquals(NxNCube.solved(5).toColors(), state.colors)
+    }
+
+    @Test
+    fun movesDeeperThanTheCubeAreRejected() = runTest(FakeFrameClock()) {
+        val state = CubeViewState(NxNCube.solved(3).toColors())
+        assertTrue(runCatching { state.setPreview(LayerMove.parse("4Rw"), 0.5f) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { state.animateMove(LayerMove.parse("2-4Lw")) }.exceptionOrNull() is IllegalArgumentException)
+        assertNull(state.animatingLayerMove)
+        assertEquals(solved, state.colors)
+    }
+
+    @Test
+    fun snappingToAnotherSizeCancelsTheTurn() = runTest(FakeFrameClock()) {
+        val state = CubeViewState(NxNCube.solved(6).toColors())
+        val turn = launch { state.animateMove(LayerMove.parse("3Rw")) }
+        advanceTimeBy(100)
+        runCurrent()
+        state.snapTo(solved)
+        runCurrent()
+        assertTrue(turn.isCancelled)
+        assertEquals(3, state.size)
+        assertEquals(solved, state.colors)
+        assertNull(state.animatingLayerMove)
+    }
+
+    @Test
+    fun heavierTurnsTakeALittleLonger() {
+        assertEquals(CubeViewState.DEFAULT_TURN_MILLIS, CubeViewState.defaultTurnMillis(LayerMove.parse("R")))
+        assertEquals(CubeViewState.DEFAULT_TURN_MILLIS, CubeViewState.defaultTurnMillis(LayerMove.parse("3R2")))
+        val wide = CubeViewState.defaultTurnMillis(LayerMove.parse("Rw"))
+        val wider = CubeViewState.defaultTurnMillis(LayerMove.parse("3Rw"))
+        val whole = CubeViewState.defaultTurnMillis(LayerMove.parse("7Rw"))
+        assertTrue(CubeViewState.DEFAULT_TURN_MILLIS < wide && wide < wider && wider < whole)
+        assertTrue(whole <= CubeViewState.DEFAULT_TURN_MILLIS * 1.3f)
     }
 
     /** One frame every 16 ms of the test's virtual time. */

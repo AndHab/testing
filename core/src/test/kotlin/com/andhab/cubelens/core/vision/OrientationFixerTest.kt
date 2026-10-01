@@ -1,5 +1,6 @@
 package com.andhab.cubelens.core.vision
 
+import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.CubeValidator
 import com.andhab.cubelens.core.cube.Face
@@ -100,16 +101,62 @@ class OrientationFixerTest {
             var expected = scanned
             for (face in Face.entries) expected = OrientationFixer.rotateFace(expected, face, rotations.getValue(face))
             assertEquals(expected, fixed)
+            val orientation = OrientationFixer.orient(scanned)!!
             if (FaceletCube.fromColors(fixed) != cube) {
                 // Rarely, another rotation of some face also gives a valid (different) cube; colors alone
-                // cannot tell them apart, and the fixer must then have picked the preferred one.
+                // cannot tell them apart, and the fixer must then have picked the preferred one ...
                 ambiguous++
                 val undo = IntArray(6) { (4 - turns[it]) % 4 }
                 assertTrue(preference(rotations.values.toIntArray()) <= preference(undo))
+                // ... and reported every sticker that differs from the true cube as ambiguous.
+                val truth = cube.toColors()
+                val wrong = (0 until Facelets.COUNT).filter { fixed[it] != truth[it] }.toSet()
+                assertTrue("wrong $wrong not in ambiguous ${orientation.ambiguous}", orientation.ambiguous.containsAll(wrong))
             }
         }
         println("OrientationFixer: $ambiguous of 300 randomly rotated scans had another, preferred valid reading")
         assertTrue("ambiguous $ambiguous", ambiguous <= 3)
+    }
+
+    @Test
+    fun reportsWhereAnotherValidReadingDisagrees() {
+        // Half-turn-only scrambles leave two opposite colors per face, so several rotations of a face
+        // are often valid. The preferred reading is right when faces are held in the reference
+        // orientation; otherwise every sticker it gets wrong must be reported as ambiguous.
+        val random = Random(9)
+        val halfTurns = Move.entries.filter { it.notation.endsWith("2") }
+        var ambiguousCubes = 0
+        var wrongCubes = 0
+        repeat(200) {
+            val cube = FaceletCube.scrambled(List(random.nextInt(8, 20)) { halfTurns[random.nextInt(halfTurns.size)] })
+            val truth = cube.toColors()
+
+            val asHeld = OrientationFixer.orient(truth)!!
+            assertEquals(truth, asHeld.colors)
+            assertEquals(Face.entries.associateWith { 0 }, asHeld.rotations)
+            if (asHeld.ambiguous.isNotEmpty()) ambiguousCubes++
+
+            var scanned = truth
+            for (face in Face.entries) scanned = OrientationFixer.rotateFace(scanned, face, random.nextInt(4))
+            val orientation = OrientationFixer.orient(scanned)!!
+            val wrong = (0 until Facelets.COUNT).filter { orientation.colors[it] != truth[it] }.toSet()
+            if (wrong.isNotEmpty()) wrongCubes++
+            assertTrue("wrong $wrong not in ambiguous ${orientation.ambiguous}", orientation.ambiguous.containsAll(wrong))
+            // Ambiguous stickers never include centers, which no rotation moves.
+            assertTrue(orientation.ambiguous.none { it % 9 == 4 })
+        }
+        println("OrientationFixer: half-turn scrambles, $ambiguousCubes/200 ambiguous, $wrongCubes/200 misread when held at random angles (all flagged)")
+        assertTrue("expected ambiguous cases, got $ambiguousCubes", ambiguousCubes > 50)
+    }
+
+    @Test
+    fun symmetricFacesAreNotAmbiguous() {
+        // Every rotation of a one-color or checkerboard face is valid but shows the same colors.
+        for (cube in listOf(FaceletCube.SOLVED, FaceletCube.scrambled(Move.parseSequence("U2 D2 F2 B2 L2 R2")))) {
+            assertEquals(emptySet<Int>(), OrientationFixer.orient(cube.toColors())!!.ambiguous)
+        }
+        // The user's cube has exactly one valid reading.
+        assertEquals(emptySet<Int>(), OrientationFixer.orient(usersCube())!!.ambiguous)
     }
 
     private fun preference(turns: IntArray): Int = turns.count { it != 0 } * 100 + turns.sumOf { minOf(it, 4 - it) }
@@ -204,12 +251,17 @@ class OrientationFixerTest {
         return best?.let { (c, t) -> c to Face.entries.associateWith { t[it.ordinal] } }
     }
 
+    /** The user's cube from the photo ground truth, each face as photographed. */
+    private fun usersCube(): List<CubeColor> {
+        val raw = Photos.TRUTH.filterKeys { it != "5_red_rotated" }.mapValues { Photos.truth(it.key) }
+        val byCenter = raw.values.associateBy { it[4] }
+        return Face.entries.flatMap { face -> byCenter.getValue(ColorScheme.STANDARD.colorOf(face)) }
+    }
+
     @Test
     fun bruteForceFindsTheUsersCubeUnique() {
         // The real cube from the photos: exactly one rotation combination is valid.
-        val raw = Photos.TRUTH.filterKeys { it != "5_red_rotated" }.mapValues { Photos.truth(it.key) }
-        val byCenter = raw.values.associateBy { it[4] }
-        val colors = Face.entries.flatMap { face -> byCenter.getValue(com.andhab.cubelens.core.cube.ColorScheme.STANDARD.colorOf(face)) }
+        val colors = usersCube()
         var valid = 0
         for (code in 0 until 4096) {
             var c = colors

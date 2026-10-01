@@ -5,7 +5,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.lang.management.ManagementFactory
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.random.Random
 
@@ -115,15 +119,19 @@ class GridSamplerTest {
         }
     }
 
-    @Test
-    fun isFastEnoughForLivePreview() {
+    /** A 640x480 camera frame with a rendered face in the middle, and its guide region. */
+    private fun cameraFrame(): Pair<IntImage, GridRegion> {
         val faces = SyntheticFaces(Random(1))
         val colors = CubeColor.entries + CubeColor.entries.take(3)
         val (face, _) = faces.render(colors, faces.randomConditions(), imageSize = 400)
-        // A 640x480 camera frame with the face in the middle.
         val frame = IntImage(640, 480)
         for (y in 0 until 400) for (x in 0 until 400) frame[x + 120, y + 40] = face.argb(x, y)
-        val region = GridRegion(120 + 44, 40 + 44, 312)
+        return frame to GridRegion(120 + 44, 40 + 44, 312)
+    }
+
+    @Test
+    fun isFastEnoughForLivePreview() {
+        val (frame, region) = cameraFrame()
         repeat(300) { GridSampler.sample(frame, region, 90) }
         val runs = 1000
         val start = System.nanoTime()
@@ -131,6 +139,44 @@ class GridSamplerTest {
         val perCallMs = (System.nanoTime() - start) / 1e6 / runs
         println("GridSampler.sample: %.3f ms per call (640x480 frame)".format(perCallMs))
         assertTrue("GridSampler took $perCallMs ms per call", perCallMs < 5.0)
+    }
+
+    @Test
+    fun allocatesLittleMoreThanItsResult() {
+        // Live preview samples every analyzed frame; per-call garbage would churn the GC on a phone.
+        val bean = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
+        assumeTrue("per-thread allocation counter unavailable", bean != null && bean.isThreadAllocatedMemorySupported)
+        bean!!.isThreadAllocatedMemoryEnabled = true
+        val (frame, region) = cameraFrame()
+        val thread = Thread.currentThread().id
+        repeat(300) { GridSampler.sample(frame, region, 90) }
+        val runs = 1000
+        val before = bean.getThreadAllocatedBytes(thread)
+        repeat(runs) { GridSampler.sample(frame, region, 90) }
+        val perCall = (bean.getThreadAllocatedBytes(thread) - before).toDouble() / runs
+        println("GridSampler.sample: %.2f KB allocated per call".format(perCall / 1024))
+        // The result itself (nine samples with their Lab values and the list) is about 0.6 KB.
+        assertTrue("GridSampler allocated $perCall bytes per call", perCall < 4096)
+    }
+
+    @Test
+    fun concurrentCallsDoNotShareScratchState() {
+        val faces = SyntheticFaces(Random(12))
+        val inputs = List(8) { k ->
+            val colors = List(9) { CubeColor.entries[(it + k) % 6] }
+            faces.render(colors, faces.randomConditions(), imageSize = 200)
+        }
+        val expected = inputs.map { (img, guide) -> GridSampler.sample(img, guide) }
+        val pool = Executors.newFixedThreadPool(4)
+        try {
+            val tasks = List(64) { n -> Callable { n % inputs.size to inputs[n % inputs.size].let { (img, guide) -> GridSampler.sample(img, guide) } } }
+            for (future in pool.invokeAll(tasks)) {
+                val (k, samples) = future.get()
+                assertEquals("input $k", expected[k], samples)
+            }
+        } finally {
+            pool.shutdown()
+        }
     }
 
     @Test

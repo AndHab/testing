@@ -5,6 +5,7 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Samples the nine stickers of a face from an image.
@@ -30,6 +31,8 @@ import kotlin.math.roundToInt
  *     (bright, washed-out outliers), and takes the per-channel median.
  *
  * Cost is independent of the image size: about 6k pixel reads, under a millisecond on the JVM.
+ * Scratch buffers (about 110 KB) are kept per thread and reused, so a camera analyzer calling this
+ * for every frame allocates little more than the returned samples.
  */
 object GridSampler {
 
@@ -52,7 +55,10 @@ object GridSampler {
     private const val MIN_SCORE = 0.3 // below this a cell keeps the grid position
     private const val RETRY_DISTANCE = 1.5 // lattice steps off the affine prediction that trigger a retry
     private const val MIN_CONFIDENT_CELLS = 5 // needed for the affine fit
+    private const val LOCAL_SIDE = 2 * LOCAL_SHIFT + 1
+    private const val FEATURE_LEVELS = 511 // 2 * max - min ranges over 0..510
     private const val SAMPLES_PER_AXIS = 9
+    private const val SAMPLE_COUNT = SAMPLES_PER_AXIS * SAMPLES_PER_AXIS
     private const val GLARE_LIGHTNESS = 12f // L* above the median that marks a highlight ...
     private const val GLARE_CHROMA_RATIO = 0.5f // ... if its chroma is also below this fraction of the median
 
@@ -65,8 +71,9 @@ object GridSampler {
      */
     fun sample(source: PixelSource, region: GridRegion, rotationDegrees: Int = 0): List<StickerSample> {
         val view = UprightView(source, region, rotationDegrees)
-        val centers = locateStickers(view)
-        return List(9) { aggregate(view, centers[2 * it], centers[2 * it + 1]) }
+        val work = workspaces.get()
+        val centers = locateStickers(view, work)
+        return List(9) { aggregate(view, centers[2 * it], centers[2 * it + 1], work) }
     }
 
     /**
@@ -74,7 +81,42 @@ object GridSampler {
      * region (0..3 on each axis, u to the right, v down), row-major.
      */
     internal fun stickerCenters(source: PixelSource, region: GridRegion, rotationDegrees: Int = 0): DoubleArray =
-        locateStickers(UprightView(source, region, rotationDegrees))
+        locateStickers(UprightView(source, region, rotationDegrees), workspaces.get()).copyOf()
+
+    /**
+     * Scratch buffers for one [sample] call. Each thread gets its own, reused for every call on that
+     * thread (a camera analyzer runs on one thread, so this is a single set of buffers in practice).
+     * Nothing in here outlives a call: every buffer is fully rewritten before it is read.
+     */
+    private class Workspace {
+        val feature = IntArray(N * N)
+        val histogram = IntArray(FEATURE_LEVELS)
+        val map = StickerMap()
+        val scores = DoubleArray(LOCAL_SIDE * LOCAL_SIDE)
+        val found = DoubleArray(27)
+        val retry = DoubleArray(3)
+        val predicted = DoubleArray(18)
+        val centers = DoubleArray(18)
+        val normal = DoubleArray(9)
+        val rhsX = DoubleArray(3)
+        val rhsY = DoubleArray(3)
+        val coefX = DoubleArray(3)
+        val coefY = DoubleArray(3)
+        val red = IntArray(SAMPLE_COUNT)
+        val green = IntArray(SAMPLE_COUNT)
+        val blue = IntArray(SAMPLE_COUNT)
+        val lightness = FloatArray(SAMPLE_COUNT)
+        val chroma = FloatArray(SAMPLE_COUNT)
+        val keep = BooleanArray(SAMPLE_COUNT)
+        val noGlare = BooleanArray(SAMPLE_COUNT)
+        val intScratch = IntArray(SAMPLE_COUNT)
+        val floatScratch = FloatArray(SAMPLE_COUNT)
+        val lab = FloatArray(3)
+    }
+
+    private val workspaces = object : ThreadLocal<Workspace>() {
+        override fun initialValue() = Workspace()
+    }
 
     /**
      * The region as the user sees it: (u, v) in cell units, u to the right and v down on screen,
@@ -128,11 +170,12 @@ object GridSampler {
         (1.5 + (index - 1) * scale) * STEPS + MARGIN - 0.5 + shift
 
     /** Sticker indicator of the lattice as a summed-area table, with window queries. */
-    private class StickerMap(feature: IntArray, threshold: Int) {
+    private class StickerMap {
         private val stride = N + 1
-        private val sat = IntArray(stride * stride)
+        private val sat = IntArray(stride * stride) // row 0 and column 0 stay zero
 
-        init {
+        /** Rebuilds the map for a new lattice: points whose [feature] exceeds [threshold] are sticker. */
+        fun reset(feature: IntArray, threshold: Int) {
             for (j in 0 until N) {
                 var rowSum = 0
                 for (i in 0 until N) {
@@ -140,6 +183,7 @@ object GridSampler {
                     sat[(j + 1) * stride + i + 1] = sat[j * stride + i + 1] + rowSum
                 }
             }
+            memo.fill(Double.NaN)
         }
 
         /** Sticker count and area of the [side] x [side] square starting at lattice ([x0], [y0]), clipped. */
@@ -159,7 +203,7 @@ object GridSampler {
         // All squares have even sides, so a center at lattice coordinate c snaps to the same point
         // (round(c - 0.5)) for each of them; scores are memoized per snapped point.
         private val memoStride = N + 2 * MEMO_PAD
-        private val memo = DoubleArray(memoStride * memoStride) { Double.NaN }
+        private val memo = DoubleArray(memoStride * memoStride)
 
         /** Sticker fraction of the window minus sticker fraction of the surrounding gap ring. */
         fun score(cx: Double, cy: Double): Double {
@@ -184,9 +228,12 @@ object GridSampler {
         }
     }
 
-    /** Returns the located sticker centers as (u, v) pairs in cell units, row-major. */
-    private fun locateStickers(view: UprightView): DoubleArray {
-        val feature = IntArray(N * N)
+    /**
+     * Returns the located sticker centers as (u, v) pairs in cell units, row-major. The result is
+     * [Workspace.centers], valid until the next call on this thread.
+     */
+    private fun locateStickers(view: UprightView, work: Workspace): DoubleArray {
+        val feature = work.feature
         for (j in 0 until N) {
             val v = latticeToCell(j.toDouble())
             for (i in 0 until N) {
@@ -197,7 +244,8 @@ object GridSampler {
                 feature[j * N + i] = 2 * max(r, max(g, b)) - min(r, min(g, b))
             }
         }
-        val map = StickerMap(feature, otsuThreshold(feature))
+        val map = work.map
+        map.reset(feature, otsuThreshold(feature, work.histogram))
 
         // Global grid fit: shift and scale about the region center, preferring the guide as placed.
         var bestScore = Double.NEGATIVE_INFINITY
@@ -226,26 +274,26 @@ object GridSampler {
         }
 
         // Per-cell refinement around the global grid.
-        val found = DoubleArray(27) // x, y (lattice coordinates) and score per cell
+        val found = work.found // x, y (lattice coordinates) and score per cell
         for (cell in 0 until 9) {
-            refine(map, cellCenter(cell % 3, bestScale, bestDx.toDouble()), cellCenter(cell / 3, bestScale, bestDy.toDouble()), found, cell)
+            refine(map, cellCenter(cell % 3, bestScale, bestDx.toDouble()), cellCenter(cell / 3, bestScale, bestDy.toDouble()), found, cell, work.scores)
         }
 
         // Second chance for cells the shift-and-scale grid placed badly (rotation, perspective): search
         // again around where the confidently found stickers say they should be.
-        val predicted = predictAffine(found)
-        if (predicted != null) {
-            val retry = DoubleArray(3)
+        if (predictAffine(found, work)) {
+            val predicted = work.predicted
+            val retry = work.retry
             for (cell in 0 until 9) {
                 val dx = predicted[2 * cell] - found[3 * cell]
                 val dy = predicted[2 * cell + 1] - found[3 * cell + 1]
                 if (dx * dx + dy * dy < RETRY_DISTANCE * RETRY_DISTANCE) continue
-                refine(map, predicted[2 * cell], predicted[2 * cell + 1], retry, 0)
+                refine(map, predicted[2 * cell], predicted[2 * cell + 1], retry, 0, work.scores)
                 if (retry[2] > found[3 * cell + 2] + PLATEAU_TOLERANCE) retry.copyInto(found, 3 * cell)
             }
         }
 
-        val centers = DoubleArray(18)
+        val centers = work.centers
         for (cell in 0 until 9) {
             centers[2 * cell] = latticeToCell(found[3 * cell])
             centers[2 * cell + 1] = latticeToCell(found[3 * cell + 1])
@@ -256,11 +304,10 @@ object GridSampler {
     /**
      * Searches +-[LOCAL_SHIFT] lattice steps around ([baseX], [baseY]) and writes the center of the
      * best-scoring plateau and its score to `out[3 * slot]`, `out[3 * slot + 1]` and `out[3 * slot + 2]`.
-     * If nothing scores at least [MIN_SCORE], the base position is kept.
+     * If nothing scores at least [MIN_SCORE], the base position is kept. [scores] is scratch space.
      */
-    private fun refine(map: StickerMap, baseX: Double, baseY: Double, out: DoubleArray, slot: Int) {
-        val side = 2 * LOCAL_SHIFT + 1
-        val scores = DoubleArray(side * side)
+    private fun refine(map: StickerMap, baseX: Double, baseY: Double, out: DoubleArray, slot: Int, scores: DoubleArray) {
+        val side = LOCAL_SIDE
         var best = Double.NEGATIVE_INFINITY
         for (ey in -LOCAL_SHIFT..LOCAL_SHIFT) {
             for (ex in -LOCAL_SHIFT..LOCAL_SHIFT) {
@@ -295,56 +342,68 @@ object GridSampler {
 
     /**
      * Fits an affine map from grid position (column, row) to the found centers, weighting each cell
-     * by how far its score exceeds [MIN_SCORE], and returns the predicted center of every cell as
-     * (x, y) pairs, or null if too few cells were found confidently.
+     * by how far its score exceeds [MIN_SCORE], and writes the predicted center of every cell as
+     * (x, y) pairs to [Workspace.predicted]. Returns false if too few cells were found confidently.
      */
-    private fun predictAffine(found: DoubleArray): DoubleArray? {
+    private fun predictAffine(found: DoubleArray, work: Workspace): Boolean {
         // Weighted normal equations for the basis [1, column - 1, row - 1].
-        val m = DoubleArray(9)
-        val bx = DoubleArray(3)
-        val by = DoubleArray(3)
-        val f = DoubleArray(3)
+        val m = work.normal
+        val bx = work.rhsX
+        val by = work.rhsY
+        m.fill(0.0)
+        bx.fill(0.0)
+        by.fill(0.0)
         var confident = 0
         for (cell in 0 until 9) {
             val w = found[3 * cell + 2] - MIN_SCORE
             if (w <= 0.0) continue
             confident++
-            f[0] = 1.0
-            f[1] = (cell % 3 - 1).toDouble()
-            f[2] = (cell / 3 - 1).toDouble()
             for (a in 0 until 3) {
-                for (b in 0 until 3) m[a * 3 + b] += w * f[a] * f[b]
-                bx[a] += w * f[a] * found[3 * cell]
-                by[a] += w * f[a] * found[3 * cell + 1]
+                val fa = basis(cell, a)
+                for (b in 0 until 3) m[a * 3 + b] += w * fa * basis(cell, b)
+                bx[a] += w * fa * found[3 * cell]
+                by[a] += w * fa * found[3 * cell + 1]
             }
         }
-        if (confident < MIN_CONFIDENT_CELLS) return null
-        val ax = solve3(m, bx) ?: return null
-        val ay = solve3(m, by) ?: return null
-        return DoubleArray(18) { k ->
-            val cell = k / 2
-            val a = if (k % 2 == 0) ax else ay
-            a[0] + a[1] * (cell % 3 - 1) + a[2] * (cell / 3 - 1)
+        if (confident < MIN_CONFIDENT_CELLS) return false
+        val ax = work.coefX
+        val ay = work.coefY
+        if (!solve3(m, bx, ax) || !solve3(m, by, ay)) return false
+        for (cell in 0 until 9) {
+            val c = (cell % 3 - 1).toDouble()
+            val r = (cell / 3 - 1).toDouble()
+            work.predicted[2 * cell] = ax[0] + ax[1] * c + ax[2] * r
+            work.predicted[2 * cell + 1] = ay[0] + ay[1] * c + ay[2] * r
         }
+        return true
     }
 
-    /** Solves the 3x3 system [m] x = [b] ([m] row-major) by Cramer's rule; null if (nearly) singular. */
-    private fun solve3(m: DoubleArray, b: DoubleArray): DoubleArray? {
-        fun det(c0: DoubleArray, c1: DoubleArray, c2: DoubleArray): Double =
-            c0[0] * (c1[1] * c2[2] - c1[2] * c2[1]) -
-                c1[0] * (c0[1] * c2[2] - c0[2] * c2[1]) +
-                c2[0] * (c0[1] * c1[2] - c0[2] * c1[1])
-        val col0 = doubleArrayOf(m[0], m[3], m[6])
-        val col1 = doubleArrayOf(m[1], m[4], m[7])
-        val col2 = doubleArrayOf(m[2], m[5], m[8])
-        val d = det(col0, col1, col2)
-        if (abs(d) < 1e-9) return null
-        return doubleArrayOf(det(b, col1, col2) / d, det(col0, b, col2) / d, det(col0, col1, b) / d)
+    /** Basis function [k] of the affine fit ([1, column - 1, row - 1]) at [cell]. */
+    private fun basis(cell: Int, k: Int): Double = when (k) {
+        0 -> 1.0
+        1 -> (cell % 3 - 1).toDouble()
+        else -> (cell / 3 - 1).toDouble()
+    }
+
+    /**
+     * Solves the 3x3 system [m] x = [b] ([m] row-major) by Cramer's rule into [x]; returns false if
+     * [m] is (nearly) singular.
+     */
+    private fun solve3(m: DoubleArray, b: DoubleArray, x: DoubleArray): Boolean {
+        // Determinant of the matrix whose columns are (p0, p1, p2), (q0, q1, q2), (r0, r1, r2).
+        fun det(p0: Double, p1: Double, p2: Double, q0: Double, q1: Double, q2: Double, r0: Double, r1: Double, r2: Double): Double =
+            p0 * (q1 * r2 - q2 * r1) - q0 * (p1 * r2 - p2 * r1) + r0 * (p1 * q2 - p2 * q1)
+        val d = det(m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8])
+        if (abs(d) < 1e-9) return false
+        x[0] = det(b[0], b[1], b[2], m[1], m[4], m[7], m[2], m[5], m[8]) / d
+        x[1] = det(m[0], m[3], m[6], b[0], b[1], b[2], m[2], m[5], m[8]) / d
+        x[2] = det(m[0], m[3], m[6], m[1], m[4], m[7], b[0], b[1], b[2]) / d
+        return true
     }
 
     /** Otsu's threshold over the lattice points inside the region (features are 0..510). */
-    private fun otsuThreshold(feature: IntArray): Int {
-        val hist = IntArray(511)
+    private fun otsuThreshold(feature: IntArray, hist: IntArray): Int {
+        hist.fill(0)
         var total = 0
         for (j in MARGIN until MARGIN + 3 * STEPS) {
             for (i in MARGIN until MARGIN + 3 * STEPS) {
@@ -376,14 +435,15 @@ object GridSampler {
     }
 
     /** Robust color of the sticker centered at ([cu], [cv]) (cell units). */
-    private fun aggregate(view: UprightView, cu: Double, cv: Double): StickerSample {
+    private fun aggregate(view: UprightView, cu: Double, cv: Double, work: Workspace): StickerSample {
         val n = SAMPLES_PER_AXIS
-        val count = n * n
-        val red = IntArray(count)
-        val green = IntArray(count)
-        val blue = IntArray(count)
-        val lightness = FloatArray(count)
-        val chroma = FloatArray(count)
+        val count = SAMPLE_COUNT
+        val red = work.red
+        val green = work.green
+        val blue = work.blue
+        val lightness = work.lightness
+        val chroma = work.chroma
+        val lab = work.lab
         for (k in 0 until count) {
             val u = cu + SAMPLE_FRACTION * ((k % n + 0.5) / n - 0.5)
             val v = cv + SAMPLE_FRACTION * ((k / n + 0.5) / n - 0.5)
@@ -391,34 +451,94 @@ object GridSampler {
             red[k] = (c shr 16) and 0xFF
             green[k] = (c shr 8) and 0xFF
             blue[k] = c and 0xFF
-            val lab = ColorMath.srgbToLab(red[k], green[k], blue[k])
-            lightness[k] = lab.l
-            chroma[k] = lab.chroma
+            ColorMath.srgbToLab(red[k], green[k], blue[k], lab)
+            lightness[k] = lab[0]
+            chroma[k] = sqrt(lab[1] * lab[1] + lab[2] * lab[2])
         }
 
         // Drop the darkest quarter: black plastic at the edges, shadows, dark print.
-        val darkCut = lightness.sortedArray()[count / 4]
-        val keep = BooleanArray(count) { lightness[it] >= darkCut }
+        val keep = work.keep
+        keep.fill(true)
+        val darkCut = kthSmallest(lightness, keep, count / 4, work.floatScratch)
+        for (k in 0 until count) keep[k] = lightness[k] >= darkCut
 
         // Drop specular highlights: much brighter than the sticker body and washed out.
-        val medianL = median(lightness, keep)
-        val medianC = median(chroma, keep)
-        val noGlare = BooleanArray(count) {
-            keep[it] && !(lightness[it] > medianL + GLARE_LIGHTNESS && chroma[it] < GLARE_CHROMA_RATIO * medianC)
+        val medianL = median(lightness, keep, work.floatScratch)
+        val medianC = median(chroma, keep, work.floatScratch)
+        val noGlare = work.noGlare
+        var anyLeft = false
+        for (k in 0 until count) {
+            noGlare[k] = keep[k] && !(lightness[k] > medianL + GLARE_LIGHTNESS && chroma[k] < GLARE_CHROMA_RATIO * medianC)
+            anyLeft = anyLeft || noGlare[k]
         }
-        val use = if (noGlare.any { it }) noGlare else keep
-        return StickerSample.of(median(red, use), median(green, use), median(blue, use))
+        val use = if (anyLeft) noGlare else keep
+        val scratch = work.intScratch
+        return StickerSample.of(median(red, use, scratch), median(green, use, scratch), median(blue, use, scratch))
     }
 
-    private fun median(values: FloatArray, mask: BooleanArray): Float {
-        val selected = values.filterIndexed { i, _ -> mask[i] }.toFloatArray()
-        selected.sort()
-        return selected[selected.size / 2]
+    /** Upper median of the [values] selected by [mask] (at least one must be). */
+    private fun median(values: FloatArray, mask: BooleanArray, scratch: FloatArray): Float =
+        kthSmallest(values, mask, mask.count { it } / 2, scratch)
+
+    /** Upper median of the [values] selected by [mask] (at least one must be). */
+    private fun median(values: IntArray, mask: BooleanArray, scratch: IntArray): Int {
+        var n = 0
+        for (i in values.indices) if (mask[i]) scratch[n++] = values[i]
+        return select(scratch, n, n / 2)
     }
 
-    private fun median(values: IntArray, mask: BooleanArray): Int {
-        val selected = values.filterIndexed { i, _ -> mask[i] }.toIntArray()
-        selected.sort()
-        return selected[selected.size / 2]
+    /** The [k]-th smallest (0-based) of the [values] selected by [mask], using [scratch] as work space. */
+    private fun kthSmallest(values: FloatArray, mask: BooleanArray, k: Int, scratch: FloatArray): Float {
+        var n = 0
+        for (i in values.indices) if (mask[i]) scratch[n++] = values[i]
+        return select(scratch, n, k)
+    }
+
+    /** Quickselect (Hoare partition): the [k]-th smallest of `a[0 until n]`, which it reorders. */
+    private fun select(a: IntArray, n: Int, k: Int): Int {
+        var lo = 0
+        var hi = n - 1
+        while (lo < hi) {
+            val pivot = a[(lo + hi) ushr 1]
+            var i = lo
+            var j = hi
+            while (i <= j) {
+                while (a[i] < pivot) i++
+                while (a[j] > pivot) j--
+                if (i <= j) {
+                    val t = a[i]
+                    a[i] = a[j]
+                    a[j] = t
+                    i++
+                    j--
+                }
+            }
+            if (k <= j) hi = j else if (k >= i) lo = i else return a[k]
+        }
+        return a[k]
+    }
+
+    /** Quickselect (Hoare partition): the [k]-th smallest of `a[0 until n]`, which it reorders. */
+    private fun select(a: FloatArray, n: Int, k: Int): Float {
+        var lo = 0
+        var hi = n - 1
+        while (lo < hi) {
+            val pivot = a[(lo + hi) ushr 1]
+            var i = lo
+            var j = hi
+            while (i <= j) {
+                while (a[i] < pivot) i++
+                while (a[j] > pivot) j--
+                if (i <= j) {
+                    val t = a[i]
+                    a[i] = a[j]
+                    a[j] = t
+                    i++
+                    j--
+                }
+            }
+            if (k <= j) hi = j else if (k >= i) lo = i else return a[k]
+        }
+        return a[k]
     }
 }

@@ -74,7 +74,9 @@ data class ScanAnalysis(
     val isValid: Boolean,
     /**
      * Facelets whose color assignment was uncertain; the UI may highlight these for review.
-     * Indices refer to positions in [colors].
+     * Indices refer to positions in [colors]. A facelet is uncertain when its color was a close
+     * call, or when it depends on how a face was held during scanning (another combination of face
+     * rotations also gives a valid cube, with a different color here; see [ScanResolver]).
      */
     val uncertain: Set<Int>,
 )

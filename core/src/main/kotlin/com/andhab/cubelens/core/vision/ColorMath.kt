@@ -54,14 +54,32 @@ object ColorMath {
      * L above 100, which is useful for exposure-compensated colors.
      */
     fun linearToLab(r: Double, g: Double, b: Double): Lab {
-        val x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / XN
-        val y = (0.2126729 * r + 0.7151522 * g + 0.0721750 * b) / YN
-        val z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / ZN
-        val fx = f(x)
-        val fy = f(y)
-        val fz = f(z)
+        val fx = f(xOf(r, g, b))
+        val fy = f(yOf(r, g, b))
+        val fz = f(zOf(r, g, b))
         return Lab((116.0 * fy - 16.0).toFloat(), (500.0 * (fx - fy)).toFloat(), (200.0 * (fy - fz)).toFloat())
     }
+
+    /**
+     * Writes the CIELAB L*, a* and b* of an 8-bit sRGB color to `out[0]`, `out[1]` and `out[2]`.
+     * Same values as [srgbToLab], without allocating; for per-pixel loops.
+     */
+    internal fun srgbToLab(r: Int, g: Int, b: Int, out: FloatArray) {
+        val lr = srgbToLinear(r)
+        val lg = srgbToLinear(g)
+        val lb = srgbToLinear(b)
+        val fx = f(xOf(lr, lg, lb))
+        val fy = f(yOf(lr, lg, lb))
+        val fz = f(zOf(lr, lg, lb))
+        out[0] = (116.0 * fy - 16.0).toFloat()
+        out[1] = (500.0 * (fx - fy)).toFloat()
+        out[2] = (200.0 * (fy - fz)).toFloat()
+    }
+
+    // Linear sRGB to CIE XYZ (D65), normalized by the reference white.
+    private fun xOf(r: Double, g: Double, b: Double): Double = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / XN
+    private fun yOf(r: Double, g: Double, b: Double): Double = (0.2126729 * r + 0.7151522 * g + 0.0721750 * b) / YN
+    private fun zOf(r: Double, g: Double, b: Double): Double = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / ZN
 
     /** Linear-light RGB (sRGB primaries, may fall outside 0..1 for out-of-gamut colors) of [lab]. */
     fun labToLinear(lab: Lab): DoubleArray {

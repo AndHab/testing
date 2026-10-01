@@ -2,7 +2,6 @@ package com.andhab.cubelens.core.vision
 
 import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeColor
-import com.andhab.cubelens.core.cube.CubeValidator
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Facelets
 import kotlin.math.exp
@@ -26,7 +25,15 @@ import kotlin.math.ln
  *     rounds converge.
  *  4. If the colors don't form a valid cube, [OrientationFixer] searches for face rotations; if that
  *     fails too, swapping the colors of two low-confidence stickers is tried (cheapest swap first).
- *  5. Stickers whose best and second-best color are close are reported as [ScanAnalysis.uncertain].
+ *  5. Stickers whose best and second-best color are close are reported as [ScanAnalysis.uncertain],
+ *     and so are stickers whose color depends on how a face was held: when another combination of
+ *     face rotations also gives a valid cube, every sticker that differs between the two readings.
+ *
+ * Face orientation: when several rotations are valid, the reading with the fewest rotated faces is
+ * returned, which is correct when each face was scanned in its reference orientation (side faces
+ * with white on top, white with blue on top, yellow with green on top; see [OrientationFixer]). Scan
+ * flows should instruct users to hold the cube that way; faces held otherwise still resolve
+ * automatically whenever the reading is unambiguous, and are flagged as uncertain when it is not.
  *
  * Only the samples' sRGB values are used (their Lab is recomputed), and malformed input never throws:
  * it yields a result with `isValid == false`.
@@ -52,27 +59,30 @@ object ScanResolver {
      * captured at any rotation. Centers decide which face each scan is (standard color scheme: white
      * up, green front, red right); all 54 stickers are then classified jointly (each color exactly
      * nine times) and face rotations are fixed automatically when the scan doesn't form a valid cube.
+     * Faces scanned in the reference orientation (see the class documentation) are never re-rotated
+     * when the reading is ambiguous; stickers whose color depends on the orientation are uncertain.
      */
     fun resolve(scans: List<List<StickerSample>>): ScanAnalysis {
         if (scans.size != 6 || scans.any { it.size != 9 }) return malformed(scans)
         val classification = classify(scans)
         val uncertainRaw = classification.uncertain().toMutableSet()
         var raw = classification.colors
-        var fixed = orient(raw)
-        if (fixed == null) {
+        var oriented = OrientationFixer.orient(raw)
+        if (oriented == null) {
             val repaired = repairBySwap(classification)
             if (repaired != null) {
                 raw = repaired.first
-                fixed = repaired.second
+                oriented = repaired.second
                 uncertainRaw += repaired.third
             }
         }
-        return if (fixed == null) {
+        return if (oriented == null) {
             ScanAnalysis(raw, raw, Face.entries.associateWith { 0 }, false, uncertainRaw)
         } else {
-            val (fixedColors, rotations) = fixed
-            val uncertain = uncertainRaw.map { OrientationFixer.destinationOf(it, rotations.getValue(Facelets.faceOf(it))) }.toSet()
-            ScanAnalysis(raw, fixedColors, rotations, true, uncertain)
+            val rotations = oriented.rotations
+            val uncertain = uncertainRaw.mapTo(sortedSetOf()) { OrientationFixer.destinationOf(it, rotations.getValue(Facelets.faceOf(it))) }
+            uncertain += oriented.ambiguous
+            ScanAnalysis(raw, oriented.colors, rotations, true, uncertain)
         }
     }
 
@@ -166,14 +176,11 @@ object ScanResolver {
         return changed
     }
 
-    private fun orient(raw: List<CubeColor>): Pair<List<CubeColor>, Map<Face, Int>>? =
-        if (CubeValidator.validate(raw).isValid) raw to Face.entries.associateWith { 0 } else OrientationFixer.fix(raw)
-
     /**
      * Tries exchanging the colors of two low-margin stickers (keeps nine of each color), cheapest
      * first. Returns the new raw colors, their oriented version and the swapped facelets.
      */
-    private fun repairBySwap(classification: Classification): Triple<List<CubeColor>, Pair<List<CubeColor>, Map<Face, Int>>, Set<Int>>? {
+    private fun repairBySwap(classification: Classification): Triple<List<CubeColor>, OrientationFixer.Orientation, Set<Int>>? {
         val raw = classification.colors
         val cost = classification.cost
         val candidates = NON_CENTERS.sortedBy { classification.margin[it] }.take(SWAP_CANDIDATES)
@@ -194,7 +201,7 @@ object ScanResolver {
             val candidate = raw.toMutableList()
             candidate[i] = raw[j]
             candidate[j] = raw[i]
-            val oriented = orient(candidate) ?: continue
+            val oriented = OrientationFixer.orient(candidate) ?: continue
             return Triple(candidate, oriented, setOf(i, j))
         }
         return null

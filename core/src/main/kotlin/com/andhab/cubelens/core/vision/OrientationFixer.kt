@@ -11,11 +11,22 @@ import com.andhab.cubelens.core.cube.Facelets
  * Finds face rotations that turn a mis-oriented scan into a valid cube.
  *
  * Users hold the cube at any angle while scanning a face, so each face's 3x3 grid may be off by a
- * quarter, half or three-quarter turn. Centers don't move under such a rotation, and almost always
- * exactly one combination of the 4^6 face rotations yields a real, solvable cube. Rarely (about 1 in
- * 150 random scrambles scanned at random angles) a second combination is valid too; colors alone
- * cannot tell them apart, so the one needing the least correction wins. Scan flows that ask for a
- * fixed orientation per face make that the right choice.
+ * quarter, half or three-quarter turn. Centers don't move under such a rotation, and usually exactly
+ * one combination of the 4^6 face rotations yields a real, solvable cube.
+ *
+ * Sometimes a second combination is valid too, and colors alone cannot tell them apart: about 1 in
+ * 150 random scrambles scanned at random angles, and almost every cube scrambled with half turns
+ * only (each face then shows just two opposite colors). The reading needing the least correction
+ * wins (fewest rotated faces, then fewest quarter turns), which is always right when every face was
+ * scanned in the reference orientation of [Facelets] (standard color scheme):
+ *
+ *  - side faces (F green, R red, B blue, L orange): U (white) at the top of the screen;
+ *  - U (white): B (blue) at the top of the screen, F (green) at the bottom;
+ *  - D (yellow): F (green) at the top of the screen, B (blue) at the bottom.
+ *
+ * Scan flows should ask for exactly this. [ScanResolver] additionally reports every sticker whose
+ * color differs between the chosen and another valid reading as uncertain, so a face held at an
+ * unexpected angle is flagged for review instead of silently producing the wrong cube.
  */
 object OrientationFixer {
 
@@ -42,11 +53,33 @@ object OrientationFixer {
      * faces. Returns the fixed colors and the rotation applied to each face, or null if none is valid.
      *
      * Ties are broken by the smallest total rotation (a three-quarter turn counts as one quarter
-     * turn the other way), then by enumeration order. The search is a depth-first enumeration over
-     * the faces that rejects a partial combination as soon as a completed corner or edge is not a
-     * real piece or repeats one already seen, so it usually inspects only a few hundred states.
+     * turn the other way), then by enumeration order. Other valid combinations, if any, are not
+     * reported here; see [ScanResolver] for how they surface as uncertain stickers.
      */
-    fun fix(colors: List<CubeColor>): Pair<List<CubeColor>, Map<Face, Int>>? {
+    fun fix(colors: List<CubeColor>): Pair<List<CubeColor>, Map<Face, Int>>? =
+        orient(colors)?.let { it.colors to it.rotations }
+
+    /** Outcome of [orient]: the preferred valid reading and where other valid readings disagree with it. */
+    internal class Orientation(
+        /** The preferred valid colors (what [fix] returns). */
+        val colors: List<CubeColor>,
+        /** Clockwise quarter turns applied to each face (what [fix] returns). */
+        val rotations: Map<Face, Int>,
+        /**
+         * Facelets (indices into [colors]) whose color is different in at least one other valid
+         * combination of face rotations; empty when the reading is unambiguous. Faces of a single
+         * color, or symmetric ones, can be valid at several rotations without changing any color:
+         * those are not ambiguous.
+         */
+        val ambiguous: Set<Int>,
+    )
+
+    /**
+     * [fix] plus the ambiguity analysis. The search is a depth-first enumeration over the faces that
+     * rejects a partial combination as soon as a completed corner or edge is not a real piece or
+     * repeats one already seen, so it usually inspects only a few hundred states.
+     */
+    internal fun orient(colors: List<CubeColor>): Orientation? {
         require(colors.size == Facelets.COUNT) { "Need 54 colors, got ${colors.size}" }
         val scheme = FaceletCube.schemeOf(colors) ?: return null
         val base = IntArray(Facelets.COUNT) { scheme.faceOf(colors[it]).ordinal }
@@ -56,7 +89,7 @@ object OrientationFixer {
         var fixed = colors.toList()
         for (face in Face.entries) fixed = rotateFace(fixed, face, turns[face.ordinal])
         if (!CubeValidator.validate(fixed).isValid) return null
-        return fixed to Face.entries.associateWith { turns[it.ordinal] }
+        return Orientation(fixed, Face.entries.associateWith { turns[it.ordinal] }, search.ambiguousFacelets(turns))
     }
 
     /**
@@ -123,6 +156,10 @@ object OrientationFixer {
         private var bestRotated = Int.MAX_VALUE
         private var bestTotal = Int.MAX_VALUE
 
+        /** Every valid combination found, packed two bits per face (face f in bits 2f..2f+1). */
+        private val valid = IntArray(4096)
+        private var validCount = 0
+
         fun run(face: Int, usedCorners: Int, usedEdges: Int, twist: Int, flip: Int) {
             if (face == 6) {
                 if (twist % 3 == 0 && flip % 2 == 0 &&
@@ -171,6 +208,9 @@ object OrientationFixer {
         }
 
         private fun record() {
+            var packed = 0
+            for (f in 0 until 6) packed = packed or (turns[f] shl (2 * f))
+            valid[validCount++] = packed
             var rotated = 0
             var total = 0
             for (k in turns) {
@@ -182,6 +222,28 @@ object OrientationFixer {
                 bestTotal = total
                 best = turns.copyOf()
             }
+        }
+
+        /**
+         * Facelets (in the frame rotated by [chosen]) whose color differs between [chosen] and some
+         * other valid combination.
+         */
+        fun ambiguousFacelets(chosen: IntArray): Set<Int> {
+            val result = sortedSetOf<Int>()
+            for (n in 0 until validCount) {
+                val packed = valid[n]
+                for (f in 0 until 6) {
+                    val k = (packed shr (2 * f)) and 3
+                    if (k == chosen[f]) continue
+                    val mine = ROTATION[chosen[f]]
+                    val other = ROTATION[k]
+                    val offset = f * 9
+                    for (p in 0 until 9) {
+                        if (base[offset + mine[p]] != base[offset + other[p]]) result += offset + p
+                    }
+                }
+            }
+            return result
         }
     }
 }

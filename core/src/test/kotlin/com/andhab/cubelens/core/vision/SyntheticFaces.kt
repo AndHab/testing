@@ -12,8 +12,56 @@ import kotlin.random.Random
  * Renders photo-like images of one cube face for tests: rounded stickers on black plastic, per-photo
  * exposure and white balance, uneven illumination, sensor noise, specular highlights, and a face that
  * is shifted, scaled, rotated and slightly in perspective relative to the scanning guide.
+ *
+ * Stickers have the colors of [palette] in neutral light.
  */
-class SyntheticFaces(private val random: Random) {
+class SyntheticFaces(private val random: Random, private val palette: Palette = Palette.NOMINAL) {
+
+    /** A cube's sticker colors as a phone camera captures them in neutral light. */
+    enum class Palette(
+        /** sRGB (0..255) of each sticker color. */
+        val srgb: Map<CubeColor, IntArray>,
+    ) {
+        /**
+         * The commonly published nominal Rubik's brand colors (white FFFFFF, yellow FFD500, green
+         * 009B48, blue 0046AD, red B71234, orange FF5800) at a typical auto exposure, where a white
+         * sticker comes out at about 206 (0.62 in linear light). Independent of the photo fixtures
+         * that [LiveClassifier.reference] is calibrated on; its orange is redder and its yellow
+         * deeper than the user's cube.
+         */
+        NOMINAL(
+            mapOf(
+                CubeColor.WHITE to intArrayOf(206, 206, 206),
+                CubeColor.YELLOW to intArrayOf(206, 172, 0),
+                CubeColor.GREEN to intArrayOf(0, 124, 56),
+                CubeColor.BLUE to intArrayOf(0, 55, 139),
+                CubeColor.RED to intArrayOf(147, 12, 40),
+                CubeColor.ORANGE to intArrayOf(206, 70, 0),
+            ),
+        ),
+
+        /**
+         * Typical sticker colors of the user's cube in the photo fixtures, i.e. the data that
+         * [LiveClassifier.reference] is calibrated on.
+         */
+        PHOTO(
+            mapOf(
+                CubeColor.WHITE to intArrayOf(192, 200, 212),
+                CubeColor.YELLOW to intArrayOf(222, 214, 62),
+                CubeColor.GREEN to intArrayOf(48, 165, 80),
+                CubeColor.BLUE to intArrayOf(1, 79, 162),
+                CubeColor.RED to intArrayOf(183, 25, 29),
+                CubeColor.ORANGE to intArrayOf(228, 114, 22),
+            ),
+        ),
+        ;
+
+        /** [srgb] in linear light. */
+        val linear: Map<CubeColor, DoubleArray> = srgb.mapValues { (_, c) -> DoubleArray(3) { ColorMath.srgbToLinear(c[it]) } }
+
+        /** An ideal (noise-free, neutral light) sample of [color]. */
+        fun sample(color: CubeColor): StickerSample = srgb.getValue(color).let { StickerSample.of(it[0], it[1], it[2]) }
+    }
 
     /** Lighting and pose of one rendered photo. */
     data class Conditions(
@@ -106,7 +154,7 @@ class SyntheticFaces(private val random: Random) {
                     val lx = fx + 1.5 - col - 0.5 - jitterX[k]
                     val ly = fy + 1.5 - row - 0.5 - jitterY[k]
                     if (insideRoundedSquare(lx, ly, stickerHalf[k], 0.09)) {
-                        val base = BASE_LINEAR.getValue(colors[k])
+                        val base = palette.linear.getValue(colors[k])
                         for (ch in 0 until 3) linear[ch] = base[ch] * tint[k][ch]
                         if (k in highlightCells) {
                             val h = highlight[k]
@@ -147,20 +195,5 @@ class SyntheticFaces(private val random: Random) {
         val u1 = nextDouble(1e-12, 1.0)
         val u2 = nextDouble()
         return kotlin.math.sqrt(-2.0 * kotlin.math.ln(u1)) * cos(2.0 * Math.PI * u2)
-    }
-
-    companion object {
-        /** Sticker colors as a phone camera captures them in neutral light (sRGB). */
-        val BASE_SRGB: Map<CubeColor, IntArray> = mapOf(
-            CubeColor.WHITE to intArrayOf(192, 200, 212),
-            CubeColor.YELLOW to intArrayOf(222, 214, 62),
-            CubeColor.GREEN to intArrayOf(48, 165, 80),
-            CubeColor.BLUE to intArrayOf(1, 79, 162),
-            CubeColor.RED to intArrayOf(183, 25, 29),
-            CubeColor.ORANGE to intArrayOf(228, 114, 22),
-        )
-
-        private val BASE_LINEAR: Map<CubeColor, DoubleArray> =
-            BASE_SRGB.mapValues { (_, c) -> DoubleArray(3) { ColorMath.srgbToLinear(c[it]) } }
     }
 }

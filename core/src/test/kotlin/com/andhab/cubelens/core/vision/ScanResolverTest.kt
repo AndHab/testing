@@ -13,11 +13,14 @@ import kotlin.random.Random
 
 class ScanResolverTest {
 
-    private fun ideal(color: CubeColor): StickerSample = SyntheticFaces.BASE_SRGB.getValue(color).let { StickerSample.of(it[0], it[1], it[2]) }
+    /** Nominal sticker colors, independent of the photos the live classifier is calibrated on. */
+    private val palette = SyntheticFaces.Palette.NOMINAL
+
+    private fun ideal(color: CubeColor): StickerSample = palette.sample(color)
 
     private fun mix(a: CubeColor, b: CubeColor, t: Double): StickerSample {
-        val x = SyntheticFaces.BASE_SRGB.getValue(a)
-        val y = SyntheticFaces.BASE_SRGB.getValue(b)
+        val x = palette.srgb.getValue(a)
+        val y = palette.srgb.getValue(b)
         val c = IntArray(3) { ColorMath.linearToSrgb((1 - t) * ColorMath.srgbToLinear(x[it]) + t * ColorMath.srgbToLinear(y[it])) }
         return StickerSample.of(c[0], c[1], c[2])
     }
@@ -117,6 +120,33 @@ class ScanResolverTest {
     }
 
     @Test
+    fun neverSilentlyReturnsAWrongOrientation() {
+        // Half-turn-only scrambles admit several valid readings when faces are held at random angles.
+        val random = Random(6)
+        val halfTurns = Move.entries.filter { it.notation.endsWith("2") }
+        var misread = 0
+        repeat(40) {
+            val cube = FaceletCube.scrambled(List(random.nextInt(8, 20)) { halfTurns[random.nextInt(halfTurns.size)] })
+            val truth = cube.toColors()
+            for (heldAtRandom in listOf(false, true)) {
+                val scans = Face.entries.map { face ->
+                    val turns = if (heldAtRandom) random.nextInt(4) else 0
+                    OrientationFixer.rotateFace(truth, face, turns).subList(face.ordinal * 9, face.ordinal * 9 + 9).map(::ideal)
+                }.shuffled(random)
+                val analysis = ScanResolver.resolve(scans)
+                assertWellFormed(analysis)
+                assertTrue(analysis.isValid)
+                val wrong = (0 until Facelets.COUNT).filter { analysis.colors[it] != truth[it] }.toSet()
+                // Held in the reference orientation, the preferred reading is the right one.
+                if (!heldAtRandom) assertEquals(emptySet<Int>(), wrong)
+                if (wrong.isNotEmpty()) misread++
+                assertTrue("wrong $wrong not flagged in ${analysis.uncertain}", analysis.uncertain.containsAll(wrong))
+            }
+        }
+        assertTrue("expected some faces held at random angles to be misread, got $misread", misread > 0)
+    }
+
+    @Test
     fun isFast() {
         val random = Random(5)
         val inputs = List(40) {
@@ -127,7 +157,7 @@ class ScanResolverTest {
                 OrientationFixer.rotateFace(colors, face, random.nextInt(4))
                     .subList(face.ordinal * 9, face.ordinal * 9 + 9)
                     .map { c ->
-                        val x = SyntheticFaces.BASE_SRGB.getValue(c)
+                        val x = palette.srgb.getValue(c)
                         val y = IntArray(3) { ColorMath.linearToSrgb(ColorMath.srgbToLinear(x[it]) * exposure) }
                         StickerSample.of(y[0], y[1], y[2])
                     }

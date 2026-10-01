@@ -1,18 +1,28 @@
 package com.andhab.cubelens.core.vision
 
+import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.FaceletCube
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.roundToInt
 
-/** Real photos of the user's scrambled cube (see src/test/resources/photos). */
+/**
+ * Real photos of the user's scrambled cube (see src/test/resources/photos).
+ *
+ * [LiveClassifier.reference] was calibrated on these photos, so the tests that classify them with it
+ * are calibration checks (they catch regressions in sampling and classification, but say little about
+ * other cubes or light). [liveClassificationGeneralizesToHeldOutPhotos] is the generalization check:
+ * references re-derived without the photo under test. The resolver tests are not affected: the
+ * resolver only uses the references to tell the six centers apart and otherwise compares the scans
+ * with each other.
+ */
 class PhotoFixtureTest {
 
     private val names = Photos.TRUTH.keys.toList()
 
     @Test
-    fun liveClassifierReadsEveryPhoto() {
+    fun liveClassifierReadsItsCalibrationPhotos() {
         for (name in names) {
             val got = Photos.scan(name).map(LiveClassifier::classify)
             assertEquals("photo $name", Photos.truth(name).letters(), got.letters())
@@ -20,7 +30,7 @@ class PhotoFixtureTest {
     }
 
     @Test
-    fun liveClassifierToleratesMisalignedGuide() {
+    fun liveClassifierReadsCalibrationPhotosThroughAMisalignedGuide() {
         val base = Photos.REGION
         var checked = 0
         for (name in names) {
@@ -43,21 +53,52 @@ class PhotoFixtureTest {
     }
 
     @Test
-    fun everyStickerIsClearlyNearestToItsTrueColor() {
+    fun calibrationPhotosAreClearlyNearestToTheirTrueColor() {
         // Margin between the true color's reference and the nearest other one, in deltaE units.
         var minMargin = Float.MAX_VALUE
         for (name in names) {
             val truth = Photos.truth(name)
             for ((i, s) in Photos.scan(name).withIndex()) {
-                val d = LiveClassifier.distances(s.lab)
-                val own = d[truth[i].ordinal]
-                val other = d.filterIndexed { c, _ -> c != truth[i].ordinal }.min()
-                minMargin = minOf(minMargin, other - own)
+                minMargin = minOf(minMargin, margin(LiveClassifier.distances(s.lab), truth[i]))
             }
         }
-        println("Photos: smallest live-classification margin %.1f deltaE".format(minMargin))
+        println("Photos (calibration data): smallest live-classification margin %.1f deltaE".format(minMargin))
         assertTrue("margin $minMargin", minMargin > 8f)
     }
+
+    @Test
+    fun liveClassificationGeneralizesToHeldOutPhotos() {
+        // Leave one face out: references are the mean Lab of each color's stickers on the other photos,
+        // the same procedure the shipped references come from, and the held-out face is classified
+        // with them. Photos 1 and 5 show the same stickers, so they are held out together.
+        val samples = names.associateWith { Photos.scan(it) }
+        var minMargin = Float.MAX_VALUE
+        var correct = 0
+        var total = 0
+        for (name in names) {
+            val heldOut = if (name.endsWith("_red") || name.endsWith("_red_rotated")) setOf("1_red", "5_red_rotated") else setOf(name)
+            val references = CubeColor.entries.map { color ->
+                val labs = names.filter { it !in heldOut }.flatMap { other ->
+                    val truth = Photos.truth(other)
+                    samples.getValue(other).filterIndexed { i, _ -> truth[i] == color }.map { it.lab }
+                }
+                Lab(labs.map { it.l }.average().toFloat(), labs.map { it.a }.average().toFloat(), labs.map { it.b }.average().toFloat())
+            }
+            val truth = Photos.truth(name)
+            for ((i, s) in samples.getValue(name).withIndex()) {
+                total++
+                if (LiveClassifier.classify(s, references) == truth[i]) correct++
+                minMargin = minOf(minMargin, margin(LiveClassifier.distances(s.lab, references), truth[i]))
+            }
+        }
+        println("Photos (held out): live classification $correct/$total, smallest margin %.1f deltaE".format(minMargin))
+        assertEquals(total, correct)
+        assertTrue("margin $minMargin", minMargin > 5f)
+    }
+
+    /** Distance to the nearest wrong color minus distance to [truth], from per-color [distances]. */
+    private fun margin(distances: FloatArray, truth: CubeColor): Float =
+        distances.filterIndexed { c, _ -> c != truth.ordinal }.min() - distances[truth.ordinal]
 
     @Test
     fun cameraRotationGivesTheSameSamples() {

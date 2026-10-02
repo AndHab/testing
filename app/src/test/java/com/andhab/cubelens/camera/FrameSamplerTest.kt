@@ -1,6 +1,7 @@
 package com.andhab.cubelens.camera
 
 import com.andhab.cubelens.core.cube.CubeColor
+import com.andhab.cubelens.core.vision.ColorMath
 import com.andhab.cubelens.core.vision.LiveClassifier
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -11,10 +12,11 @@ import kotlin.math.floor
 import kotlin.math.max
 
 /**
- * End to end, without a camera: a real photo of the user's cube is placed in the guide on screen,
- * "captured" into a sensor buffer at each rotation (padded rows, off-center visible crop, garbage
- * outside the crop), then read back through [RgbaPixelSource], [GuideMapper] and the sampler. The
- * nine colors must come out exactly as the user sees them on screen.
+ * End to end, without a camera: a face is placed in the guide on screen, "captured" into a sensor
+ * buffer at each rotation (padded rows, off-center visible crop, garbage outside the crop), then
+ * read back through [RgbaPixelSource], [GuideMapper] and the sampler. The colors must come out
+ * exactly as the user sees them on screen: the nine of a real photo of the user's cube, and the N²
+ * of faces of every other size.
  */
 class FrameSamplerTest {
 
@@ -24,9 +26,7 @@ class FrameSamplerTest {
     private val seen = "YBBGOBBYG".map(CubeColor::fromLetter)
 
     /** The photo's sticker grid: a 472px square at (165, 535). */
-    private val photoGridLeft = 165.0
-    private val photoGridTop = 535.0
-    private val photoGridSize = 472.0
+    private val photoGrid = Grid(left = 165.0, top = 535.0, size = 472.0)
 
     private val guide = GuideGeometry(viewWidth = 1080, viewHeight = 2400, left = 130f, top = 640f, size = 820f)
 
@@ -39,7 +39,7 @@ class FrameSamplerTest {
             val bufferWidth = crop.right + 45
             val bufferHeight = crop.bottom + 61
             val rowStride = bufferWidth * 4 + 64
-            val buffer = render(bufferWidth, bufferHeight, rowStride, crop, rotation)
+            val buffer = render(photo, photoGrid, bufferWidth, bufferHeight, rowStride, crop, rotation)
 
             val source = RgbaPixelSource(buffer, bufferWidth, bufferHeight, rowStride, crop = crop)
             val samples = FrameSampler.sample(source, crop, rotation, guide)
@@ -47,12 +47,54 @@ class FrameSamplerTest {
         }
     }
 
+    @Test
+    fun readsFacesOfEverySizeAsSeenAtEveryRotation() {
+        for (n in listOf(2, 4, 5, 7)) {
+            val colors = List(n * n) { CubeColor.entries[(it * 5 + it / n) % CubeColor.entries.size] }
+            val face = drawFace(colors, n)
+            for (rotation in listOf(0, 90, 180, 270)) {
+                val sideways = rotation % 180 != 0
+                val crop = if (sideways) BufferRect(31, 157, 31 + 1280, 157 + 576) else BufferRect(119, 23, 119 + 576, 23 + 1280)
+                val bufferWidth = crop.right + 45
+                val bufferHeight = crop.bottom + 61
+                val rowStride = bufferWidth * 4 + 64
+                val buffer = render(face, Grid(0.0, 0.0, face.width.toDouble()), bufferWidth, bufferHeight, rowStride, crop, rotation)
+
+                val source = RgbaPixelSource(buffer, bufferWidth, bufferHeight, rowStride, crop = crop)
+                val samples = FrameSampler.sample(source, crop, rotation, guide, size = n)
+                assertEquals("$n×$n rotation $rotation", colors, samples.map(LiveClassifier::classify))
+            }
+        }
+    }
+
+    /** A flat [n]×[n] face: stickers in typical camera colors on a black body. */
+    private fun drawFace(colors: List<CubeColor>, n: Int): BufferedImage {
+        val side = 490
+        val image = BufferedImage(side, side, BufferedImage.TYPE_INT_RGB)
+        val cell = side / n
+        val gap = cell / 12
+        for (y in 0 until side) {
+            for (x in 0 until side) {
+                val c = (x / cell).coerceAtMost(n - 1)
+                val r = (y / cell).coerceAtMost(n - 1)
+                val inX = x - c * cell
+                val inY = y - r * cell
+                val sticker = inX in gap until cell - gap && inY in gap until cell - gap
+                image.setRGB(x, y, if (sticker) ColorMath.labToArgb(LiveClassifier.reference.getValue(colors[r * n + c])) else BODY)
+            }
+        }
+        return image
+    }
+
+    /** Where a face's sticker grid is in an image: a square of [size] at ([left], [top]). */
+    private data class Grid(val left: Double, val top: Double, val size: Double)
+
     /**
      * A sensor buffer that, turned [rotation] degrees clockwise and shown FILL_CENTER in the view,
-     * shows the photo's face exactly inside [guide]. Outside [crop] it is magenta noise the reader
-     * must never see.
+     * shows [image]'s face ([grid]) exactly inside [guide]. Outside [crop] it is magenta noise the
+     * reader must never see.
      */
-    private fun render(width: Int, height: Int, rowStride: Int, crop: BufferRect, rotation: Int): ByteBuffer {
+    private fun render(image: BufferedImage, grid: Grid, width: Int, height: Int, rowStride: Int, crop: BufferRect, rotation: Int): ByteBuffer {
         val bytes = ByteArray(rowStride * height)
         val uprightWidth = if (rotation % 180 == 0) crop.width else crop.height
         val uprightHeight = if (rotation % 180 == 0) crop.height else crop.width
@@ -74,9 +116,9 @@ class FrameSamplerTest {
                     }
                     val viewX = u * scale + offsetX
                     val viewY = v * scale + offsetY
-                    val px = photoGridLeft + (viewX - guide.left) / guide.size * photoGridSize
-                    val py = photoGridTop + (viewY - guide.top) / guide.size * photoGridSize
-                    photo.getRGB(floor(px).toInt().coerceIn(0, photo.width - 1), floor(py).toInt().coerceIn(0, photo.height - 1))
+                    val px = grid.left + (viewX - guide.left) / guide.size * grid.size
+                    val py = grid.top + (viewY - guide.top) / guide.size * grid.size
+                    image.getRGB(floor(px).toInt().coerceIn(0, image.width - 1), floor(py).toInt().coerceIn(0, image.height - 1))
                 }
                 val i = y * rowStride + x * 4
                 bytes[i] = (argb shr 16).toByte()
@@ -86,5 +128,10 @@ class FrameSamplerTest {
             }
         }
         return ByteBuffer.wrap(bytes)
+    }
+
+    private companion object {
+        /** Black cube plastic between the stickers. */
+        val BODY = 0xFF101012.toInt()
     }
 }

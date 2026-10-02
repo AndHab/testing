@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -48,6 +49,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -58,6 +60,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
+import com.andhab.cubelens.R
 import com.andhab.cubelens.camera.GuideGeometry
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.components.CircleIconButton
@@ -65,6 +68,8 @@ import com.andhab.cubelens.ui.components.TopBar
 import com.andhab.cubelens.ui.components.drawSoftGlow
 import com.andhab.cubelens.ui.cube.FaceGrid
 import com.andhab.cubelens.ui.theme.Brand
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
+import com.andhab.cubelens.ui.theme.StickerPalette
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -75,9 +80,11 @@ import kotlin.math.roundToInt
  * the preview; the real screen passes the live camera.
  *
  * Layout, top to bottom: the bar (back, "Face 2 of 6" or "Redo green", flashlight), the
- * instruction card, the guide window with live colors and the status line, the six face
- * thumbnails, and the shutter flanked by the auto-capture switch and manual entry. A capture
- * flashes the screen, gives a haptic tick and flies the captured face into its thumbnail.
+ * instruction card, the guide window (an N×N grid for the cube's size) with live colors and the
+ * status line, the six face thumbnails, and the shutter flanked by the auto-capture switch and
+ * manual entry. A capture flashes the screen, gives a haptic tick and flies the captured face into
+ * its thumbnail. Stickers are drawn in the cube's own colors once they are learned
+ * ([ScanUiState.stickerColors]), in the stock colors until then.
  *
  * @param onCapture the shutter was pressed.
  * @param onAutoCaptureChange the auto-capture switch was flipped.
@@ -114,176 +121,170 @@ fun ScanContent(
     }
 
     val capture = rememberCaptureEffects(state)
+    val res = LocalResources.current
+    val palette = remember(state.stickerColors) {
+        if (state.stickerColors.isEmpty()) StickerPalette.Standard else StickerPalette.fromArgb(state.stickerColors)
+    }
 
-    BoxWithConstraints(
-        modifier
-            .fillMaxSize()
-            .background(Brand.Ink)
-            .onGloballyPositioned {
-                rootOrigin = it.positionInRoot()
-                rootSize = it.size
-            },
-    ) {
-        // Short screens trade the decorative extras for a bigger guide.
-        val compact = maxHeight < CompactHeight
-        Box(Modifier.fillMaxSize()) { preview() }
-        ScanScrim(guide = guide, modifier = Modifier.fillMaxSize())
-
-        Column(
-            Modifier
+    CompositionLocalProvider(LocalStickerPalette provides palette) {
+        BoxWithConstraints(
+            modifier
                 .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.systemBars),
-        ) {
-            TopBar(
-                title = scanTitle(state),
-                onBack = onBack,
-                actions = {
-                    if (state.torchAvailable) {
-                        CircleIconButton(
-                            icon = if (state.torchOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
-                            contentDescription = if (state.torchOn) "Turn flashlight off" else "Turn flashlight on",
-                            onClick = { onTorchChange(!state.torchOn) },
-                            size = 44.dp,
-                            highlighted = state.torchOn,
-                        )
-                    }
+                .background(Brand.Ink)
+                .onGloballyPositioned {
+                    rootOrigin = it.positionInRoot()
+                    rootSize = it.size
                 },
-            )
-            InstructionCard(
-                step = state.currentStep,
-                complete = state.isComplete,
-                scannedCube = remember(state.captures) { scannedCubeColors(state.captures) },
-                followsPreviousStep = state.followsPreviousStep,
-                compact = compact,
-                modifier = Modifier
-                    .padding(horizontal = 20.dp)
-                    .fillMaxWidth(),
-            )
+        ) {
+            // Short screens trade the decorative extras for a bigger guide.
+            val compact = maxHeight < CompactHeight
+            Box(Modifier.fillMaxSize()) { preview() }
+            ScanScrim(guide = guide, modifier = Modifier.fillMaxSize())
 
-            BoxWithConstraints(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-            ) {
-                val statusHeight = if (compact) 56.dp else 74.dp
-                val gap = if (compact) 10.dp else 16.dp
-                val fixed = statusHeight + gap + BracketOverhang * 2
-                val guideSize = min(maxWidth * GuideWidthFraction, maxHeight - fixed).coerceAtLeast(MinGuideSize)
-                val free = (maxHeight - guideSize - fixed).coerceAtLeast(0.dp)
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = BracketOverhang + free * 0.45f),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    ScanGuide(
-                        liveColors = state.liveColors,
-                        lockProgress = if (state.isComplete) 1f else capture.lockBoost.coerceAtLeast(state.captureProgress),
-                        complete = state.isComplete,
-                        flagCenter = state.hint != null,
-                        modifier = Modifier
-                            .size(guideSize)
-                            .onGloballyPositioned { guideInRoot = it.boundsInRoot() },
-                    )
-                    Spacer(Modifier.height(gap))
-                    ScanStatus(
-                        state = state,
-                        showReassurance = !compact,
-                        modifier = Modifier
-                            .height(statusHeight)
-                            .padding(horizontal = 20.dp),
-                    )
-                }
-            }
-
-            val caption = progressCaption(state)
-            if (!compact) {
-                Text(
-                    text = caption,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Brand.TextTertiary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
-                        .clearAndSetSemantics {},
-                )
-            }
-            FaceProgressRow(
-                state = state,
-                landing = capture.landing,
-                onSelect = onSelectStep,
-                onPlaced = { step, bounds -> thumbnailsInRoot[step] = bounds },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Announces each capture ("2 of 6 scanned"), in compact layouts too.
-                    .semantics {
-                        contentDescription = caption
-                        liveRegion = LiveRegionMode.Polite
-                    },
-            )
-            Spacer(Modifier.height(if (compact) 12.dp else 22.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                LabeledControl(label = if (state.autoCapture) "Auto on" else "Auto off") {
-                    AutoCaptureToggle(
-                        checked = state.autoCapture,
-                        onCheckedChange = onAutoCaptureChange,
-                        enabled = !state.isComplete,
-                    )
-                }
-                ShutterButton(
-                    progress = if (state.autoCapture) state.captureProgress else 0f,
-                    complete = state.isComplete,
-                    enabled = state.liveColors != null && !state.isComplete,
-                    onClick = onCapture,
-                    diameter = if (compact) 72.dp else 84.dp,
-                )
-                LabeledControl(label = "Type colors") {
-                    CircleIconButton(
-                        icon = Icons.Rounded.GridView,
-                        contentDescription = "Enter colors manually",
-                        onClick = onManualEntry,
-                        size = 52.dp,
-                    )
-                }
-            }
-            Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
-        }
-
-        CaptureFlight(
-            effects = capture,
-            guide = guide,
-            thumbnail = capture.landing?.let { step -> thumbnailsInRoot[step]?.translate(-rootOrigin) },
-        )
-        if (capture.flash.value > 0f) {
-            Box(
+            Column(
                 Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = capture.flash.value }
-                    .background(Color.White),
+                    .windowInsetsPadding(WindowInsets.systemBars),
+            ) {
+                TopBar(
+                    title = scanTitle(state, res),
+                    onBack = onBack,
+                    actions = {
+                        if (state.torchAvailable) {
+                            CircleIconButton(
+                                icon = if (state.torchOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
+                                contentDescription = res.getString(if (state.torchOn) R.string.scan_cd_torch_off else R.string.scan_cd_torch_on),
+                                onClick = { onTorchChange(!state.torchOn) },
+                                size = 44.dp,
+                                highlighted = state.torchOn,
+                            )
+                        }
+                    },
+                )
+                InstructionCard(
+                    step = state.currentStep,
+                    size = state.size,
+                    captures = state.captures,
+                    followsPreviousStep = state.followsPreviousStep,
+                    complete = state.isComplete,
+                    compact = compact,
+                    modifier = Modifier
+                        .padding(horizontal = 20.dp)
+                        .fillMaxWidth(),
+                )
+
+                BoxWithConstraints(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                ) {
+                    val statusHeight = if (compact) 56.dp else 74.dp
+                    val gap = if (compact) 10.dp else 16.dp
+                    val fixed = statusHeight + gap + BracketOverhang * 2
+                    val guideSize = min(maxWidth * GuideWidthFraction, maxHeight - fixed).coerceAtLeast(MinGuideSize)
+                    val free = (maxHeight - guideSize - fixed).coerceAtLeast(0.dp)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = BracketOverhang + free * 0.45f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        ScanGuide(
+                            n = state.size,
+                            liveColors = state.liveColors,
+                            lockProgress = if (state.isComplete) 1f else capture.lockBoost.coerceAtLeast(state.captureProgress),
+                            complete = state.isComplete,
+                            flagCenter = state.hasFixedCenters && state.hint != null,
+                            modifier = Modifier
+                                .size(guideSize)
+                                .onGloballyPositioned { guideInRoot = it.boundsInRoot() },
+                        )
+                        Spacer(Modifier.height(gap))
+                        ScanStatus(
+                            state = state,
+                            showReassurance = !compact,
+                            modifier = Modifier
+                                .height(statusHeight)
+                                .padding(horizontal = 20.dp),
+                        )
+                    }
+                }
+
+                val caption = progressCaption(state, res)
+                if (!compact) {
+                    Text(
+                        text = caption,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Brand.TextTertiary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .clearAndSetSemantics {},
+                    )
+                }
+                FaceProgressRow(
+                    state = state,
+                    landing = capture.landing,
+                    onSelect = onSelectStep,
+                    onPlaced = { step, bounds -> thumbnailsInRoot[step] = bounds },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // Announces each capture ("2 of 6 scanned"), in compact layouts too.
+                        .semantics {
+                            contentDescription = caption
+                            liveRegion = LiveRegionMode.Polite
+                        },
+                )
+                Spacer(Modifier.height(if (compact) 12.dp else 22.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    LabeledControl(label = res.getString(if (state.autoCapture) R.string.scan_auto_on else R.string.scan_auto_off)) {
+                        AutoCaptureToggle(
+                            checked = state.autoCapture,
+                            onCheckedChange = onAutoCaptureChange,
+                            enabled = !state.isComplete,
+                        )
+                    }
+                    ShutterButton(
+                        progress = if (state.autoCapture) state.captureProgress else 0f,
+                        complete = state.isComplete,
+                        enabled = state.liveColors != null && !state.isComplete,
+                        onClick = onCapture,
+                        diameter = if (compact) 72.dp else 84.dp,
+                    )
+                    LabeledControl(label = res.getString(R.string.scan_type_colors)) {
+                        CircleIconButton(
+                            icon = Icons.Rounded.GridView,
+                            contentDescription = res.getString(R.string.scan_cd_manual),
+                            onClick = onManualEntry,
+                            size = 52.dp,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
+            }
+
+            CaptureFlight(
+                effects = capture,
+                guide = guide,
+                thumbnail = capture.landing?.let { step -> thumbnailsInRoot[step]?.translate(-rootOrigin) },
             )
+            if (capture.flash.value > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = capture.flash.value }
+                        .background(Color.White),
+                )
+            }
         }
     }
-}
-
-/** The bar's title: which face this is, or that a face is being redone. */
-internal fun scanTitle(state: ScanUiState): String = when {
-    state.isComplete -> "All done"
-    state.isRetake -> "Redo ${state.currentStep.color.displayName.lowercase()}"
-    else -> "Face ${(state.capturedCount + 1).coerceAtMost(ScanStep.entries.size)} of ${ScanStep.entries.size}"
-}
-
-/** The line above the face thumbnails: progress, and how to retake a face. */
-private fun progressCaption(state: ScanUiState): String = when {
-    state.isComplete -> "Nice scanning!"
-    state.capturedCount == 0 -> "Six faces to go"
-    else -> "${state.capturedCount} of ${ScanStep.entries.size} scanned · tap one to redo it"
 }
 
 /** The guide's side as a fraction of the screen width (it shrinks on short screens). */

@@ -36,19 +36,24 @@ import com.andhab.cubelens.core.vision.StickerSample
 import kotlinx.coroutines.delay
 
 /**
- * Camera scanning flow: guides the user through all six faces and reports the raw samples.
+ * Camera scanning flow for a cube of any size: guides the user through all six faces and reports
+ * the raw samples.
  *
  * Without camera permission it explains why the camera is needed and asks for it (or, once the
  * permission was denied for good, sends the user to the app's settings and checks again on
- * return; see [CameraPermissionMemory]). With it, it shows the live camera with the scan guide
- * and captures each face, by itself once the face is held steady or with the shutter. After the
- * sixth face it pauses on a short success state and reports the scans. A scan in progress
- * survives activity recreation and process death.
+ * return; see [CameraPermissionMemory]). With it, it shows the live camera with an N×N scan guide
+ * and captures each face, by itself once the face is held steady or with the shutter. Cubes with
+ * fixed centers (odd sizes) are guided by color, cubes without (even sizes) by position; see
+ * [ScanStep]. The cube's own colors are learned as faces are captured, so pastel and knock-off
+ * cubes show in their colors. After the sixth face it pauses on a short success state and reports
+ * the scans. A scan in progress survives activity recreation and process death.
  *
- * @param onScanned called once with six scans, one per guided step in [ScanStep] order (the capture
- *   order, unless a face was retaken), each nine samples row-major as seen on screen; pass to
- *   [com.andhab.cubelens.core.vision.ScanResolver.resolve], which places faces by their centers.
+ * @param onScanned called once with six scans, one per guided step in [ScanStep] order (faces F,
+ *   R, B, L, U, D, whatever order they were captured in), each size² samples row-major as seen
+ *   upright on screen; pass to [com.andhab.cubelens.core.vision.ScanResolver.resolve] with those
+ *   scan positions.
  * @param onManualEntry the user prefers typing colors (e.g. camera permission denied).
+ * @param size the cube's size N, from 2 (2×2) up.
  */
 @Composable
 fun ScanScreen(
@@ -84,7 +89,7 @@ fun ScanScreen(
     val deniedForGood = memory.deniedForGood(granted, showRationale)
 
     if (granted) {
-        CameraScan(onScanned = onScanned, onBack = onBack, onManualEntry = onManualEntry, modifier = modifier)
+        CameraScan(size = size, onScanned = onScanned, onBack = onBack, onManualEntry = onManualEntry, modifier = modifier)
     } else {
         CameraGateContent(
             gate = if (deniedForGood) CameraGate.Denied else CameraGate.Rationale,
@@ -99,6 +104,7 @@ fun ScanScreen(
             onManualEntry = onManualEntry,
             onBack = onBack,
             modifier = modifier,
+            size = size,
         )
     }
 }
@@ -111,15 +117,17 @@ private const val CompletionPauseMillis = 1_300L
 
 @Composable
 private fun CameraScan(
+    size: Int,
     onScanned: (List<List<StickerSample>>) -> Unit,
     onBack: () -> Unit,
     onManualEntry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Saved, so a scan in progress survives rotation, theme or size changes and process death.
-    val controller = rememberSaveable(saver = ScanController.saver()) { ScanController() }
+    // Saved, so a scan in progress survives rotation, theme or size changes and process death. Each
+    // controller is one scan session, with its own classifier learning this cube's colors.
+    val controller = rememberSaveable(size, saver = ScanController.saver(size)) { ScanController(size) }
     val state by controller.state.collectAsStateWithLifecycle()
-    val analyzer = remember(controller) { CubeFrameAnalyzer(controller::onFrame) }
+    val analyzer = remember(controller) { CubeFrameAnalyzer(controller.size, controller::onFrame) }
     var guide by remember { mutableStateOf<GuideGeometry?>(null) }
     var cameraFailed by remember { mutableStateOf(false) }
     var cameraAttempt by remember { mutableIntStateOf(0) }
@@ -134,6 +142,7 @@ private fun CameraScan(
             onManualEntry = onManualEntry,
             onBack = onBack,
             modifier = modifier,
+            size = size,
         )
         return
     }

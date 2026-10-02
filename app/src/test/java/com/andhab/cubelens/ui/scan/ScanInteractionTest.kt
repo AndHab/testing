@@ -34,8 +34,8 @@ class ScanInteractionTest {
         val events = mutableListOf<String>()
         var guide: GuideGeometry? = null
         val state = ScanUiState(
-            currentStep = ScanStep.Red,
-            captures = ScanStep.entries.map { if (it == ScanStep.Green) List(9) { CubeColor.GREEN } else null },
+            currentStep = ScanStep.Right,
+            captures = ScanStep.entries.map { if (it == ScanStep.Front) List(9) { CubeColor.GREEN } else null },
             liveColors = live,
             torchAvailable = true,
         )
@@ -64,12 +64,47 @@ class ScanInteractionTest {
         compose.onNodeWithContentDescription("Enter colors manually").performClick()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("Face 2 of 6").assertExists()
-        assertEquals(listOf("capture", "auto=false", "torch=true", "select=Green", "manual", "back"), events)
+        assertEquals(listOf("capture", "auto=false", "torch=true", "select=Front", "manual", "back"), events)
 
         // The guide is reported in preview pixels: a centered square, about three quarters wide.
         val reported = checkNotNull(guide) { "The guide position was never reported" }
         assertTrue(reported.size in reported.viewWidth * 0.6f..reported.viewWidth * 0.8f)
         assertEquals(reported.viewWidth / 2f, reported.centerX, 2f)
+    }
+
+    @Test
+    fun cubesWithoutFixedCentersAreGuidedByPosition() {
+        val selected = mutableListOf<ScanStep>()
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CubeLensTheme {
+                ScanContent(
+                    state = ScanUiState(
+                        size = 4,
+                        currentStep = ScanStep.Right,
+                        captures = ScanStep.entries.map { if (it == ScanStep.Front) List(16) { CubeColor.BLUE } else null },
+                        captureCount = 1,
+                        lastCaptured = ScanStep.Front,
+                        liveColors = List(16) { CubeColor.RED },
+                    ),
+                    preview = { Box(Modifier.fillMaxSize()) },
+                    onBack = {},
+                    onCapture = {},
+                    onAutoCaptureChange = {},
+                    onTorchChange = {},
+                    onSelectStep = { selected += it },
+                    onManualEntry = {},
+                )
+            }
+        }
+        repeat(3) { compose.mainClock.advanceTimeByFrame() }
+        compose.onNodeWithText("Face 2 of 6").assertExists()
+        compose.onNodeWithText("Turn the cube left").assertExists()
+        compose.onNodeWithText("Same side on top").assertExists()
+        compose.onNodeWithContentDescription("Face 2, scanning now").assertExists()
+        compose.onNodeWithContentDescription("Face 6, not scanned yet").assertExists()
+        compose.onNodeWithContentDescription("Face 1, scanned").performClick()
+        assertEquals(listOf(ScanStep.Front), selected)
     }
 
     @Test

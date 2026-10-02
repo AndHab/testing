@@ -2,7 +2,9 @@ package com.andhab.cubelens.ui.solve
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -25,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -57,6 +60,7 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
@@ -115,20 +119,23 @@ internal data class PanelStages(
  * Screen readers hear the whole move ("Move 3 of 19: R prime, Right face · clockwise") whenever it
  * changes.
  *
- * The words come first: the panel measures every move of the solution once and picks the largest
- * [HeadlineSize] at which every move's words fit beside the notation and pictogram, first on one
- * line each, then letting the layer names of big cubes ("2nd layer from / the bottom") take two
- * balanced lines; on narrow screens or at large text sizes the pictogram is left out, then the
- * notation shrinks, and only then do the other lines wrap too. Rare
- * long notations ("2-3Rw′") are drawn smaller rather than squeezing every move. The headline keeps
- * the height of the tallest move, so the cube above never jumps. The notation is sized in dp: it is
- * already display-sized, and letting it grow with the font scale would only squeeze the words.
+ * The words come first: the panel measures every move of the solution once and, stage by stage,
+ * picks the largest [HeadlineSize] at which every move's words fit beside the notation and
+ * pictogram, first on one line each, then letting the layer names of big cubes ("2nd layer from /
+ * the bottom") take two balanced lines; on narrow screens or at large text sizes the pictogram is
+ * left out, then the notation shrinks, and only then do the other lines wrap too. Rare long
+ * notations ("2-3Rw′") are drawn smaller rather than squeezing every move. Within a stage the
+ * headline keeps the height of its tallest moves, so the cube above holds still while stepping;
+ * a stage of plain face turns is not held to the height of the long layer names of a later one,
+ * and a move too rare to be worth the room for all the others may grow the panel for a moment.
+ * The notation is sized in dp: it is already display-sized, and letting it grow with the font
+ * scale would only squeeze the words.
  *
  * @param n size of the cube.
  * @param currentIndex index of the move to show; clamped to the last move, so a finished solution
  *   keeps showing its final move while the panel leaves the screen.
  * @param position number of moves done, for the progress bar.
- * @param faceColor sticker color of each side, used to paint the pictogram.
+ * @param faceColor color the pictogram paints the turning layers of each side in.
  * @param stages stage header and segments; null for a solution in one stage.
  */
 @Composable
@@ -161,12 +168,16 @@ internal fun MovePanel(
             StageHeader(stages, moves.size, position)
             Spacer(Modifier.height(4.dp))
         }
-        val texts = headlineTexts(moves, n)
+        val starts = remember(stages?.stages, moves.size) { stages?.stages?.map { it.start } ?: listOf(0) }
+        val texts = headlineTexts(moves, n, starts)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val layout = rememberHeadlineLayout(texts, maxWidth)
+            val layouts = rememberHeadlineLayouts(texts, maxWidth)
+            val layout = layouts[stageAt(starts, index)]
+            // Each stage keeps its own height; moving into the next one eases the panel to it.
+            val minHeight by animateDpAsState(layout.minHeight, spring(stiffness = Spring.StiffnessMediumLow), label = "headlineHeight")
             Row(
                 modifier = Modifier
-                    .heightIn(min = layout.minHeight)
+                    .heightIn(min = minHeight)
                     .clearAndSetSemantics {
                         contentDescription = spoken
                         liveRegion = LiveRegionMode.Polite
@@ -185,7 +196,7 @@ internal fun MovePanel(
                     contentAlignment = Alignment.CenterStart,
                     label = "currentMove",
                 ) { shown ->
-                    MoveHeadline(moves[shown], n, layout)
+                    MoveHeadline(moves[shown], n, layouts[stageAt(starts, shown)])
                 }
                 layout.size.glyph?.let { glyphSize ->
                     Spacer(Modifier.width(GlyphGap))
@@ -218,7 +229,6 @@ internal fun MovePanel(
             )
         }
         Spacer(Modifier.height(10.dp))
-        val starts = remember(stages?.stages, moves.size) { stages?.stages?.map { it.start } ?: listOf(0) }
         SegmentedProgressBar(position = position, moveCount = moves.size, segmentStarts = starts)
     }
 }
@@ -268,44 +278,58 @@ private class HeadlineLayout(
     fun scaleOf(notation: String): Float = notationScales[notation] ?: 1f
 }
 
-/** The words of one move's headline, as shown. */
-private data class HeadlineText(val notation: String, val layers: String, val direction: String, val viewpoint: String?)
+/** The words of one move's headline, as shown, and how many times the move comes up in its stage. */
+private data class HeadlineText(val notation: String, val layers: String, val direction: String, val viewpoint: String?, val count: Int = 1)
 
-/** The headline words of each distinct move in [moves], measured once per solution. */
+/** Index of the stage that the move at [index] belongs to, given each stage's first move [starts]. */
+private fun stageAt(starts: List<Int>, index: Int): Int {
+    val found = starts.binarySearch(index)
+    return (if (found >= 0) found else -found - 2).coerceIn(0, starts.lastIndex)
+}
+
+/**
+ * The headline words of each distinct move of each stage of [moves] (stages begin at [starts]),
+ * measured once per solution.
+ */
 @Composable
-private fun headlineTexts(moves: List<LayerMove>, n: Int): List<HeadlineText> {
+private fun headlineTexts(moves: List<LayerMove>, n: Int, starts: List<Int>): List<List<HeadlineText>> {
     val locale = currentLocale()
     val resources = LocalResources.current
-    return remember(moves, n, locale, resources) {
-        moves.distinct().map { move ->
-            val words = resources.moveWords(move, n)
-            HeadlineText(
-                notation = displayNotation(move.notation),
-                layers = words.layers,
-                direction = words.direction.capitalizeFirst(locale),
-                viewpoint = words.viewpoint,
-            )
+    return remember(moves, n, starts, locale, resources) {
+        starts.indices.map { s ->
+            val end = starts.getOrNull(s + 1) ?: moves.size
+            moves.subList(starts[s].coerceAtMost(end), end).groupingBy { it }.eachCount().map { (move, count) ->
+                val words = resources.moveWords(move, n)
+                HeadlineText(
+                    notation = displayNotation(move.notation),
+                    layers = words.layers,
+                    direction = words.direction.capitalizeFirst(locale),
+                    viewpoint = words.viewpoint,
+                    count = count,
+                )
+            }
         }
     }
 }
 
 /**
- * The [HeadlineLayout] for [texts] in [width]: the largest [HeadlineSize] at which every move's
- * words fit with one line each, else the largest at which layer names may take two lines, else
- * [HeadlineSize.Tiny] with every line free to wrap. Measured once per solution and width, so
- * the layout holds still while stepping through the moves.
+ * A [HeadlineLayout] for each stage of [texts] in [width]: the largest [HeadlineSize] at which
+ * every move of the stage fits with one line of words each, else the largest at which layer names
+ * may take two lines, else [HeadlineSize.Tiny] with every line free to wrap. Measured once per
+ * solution and width, so the layout holds still while stepping through a stage.
  */
 @Composable
-private fun rememberHeadlineLayout(texts: List<HeadlineText>, width: Dp): HeadlineLayout {
+private fun rememberHeadlineLayouts(texts: List<List<HeadlineText>>, width: Dp): List<HeadlineLayout> {
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val density = LocalDensity.current
     val typography = MaterialTheme.typography
     return remember(texts, width, density, typography) {
-        HeadlineMeasure(measurer, density, typography.titleLarge, typography.bodyMedium, typography.bodySmall).layout(texts, width)
+        val measure = HeadlineMeasure(measurer, density, typography.titleLarge, typography.bodyMedium, typography.bodySmall)
+        texts.map { measure.layout(it, width) }
     }
 }
 
-/** Measures headline words for [rememberHeadlineLayout], each distinct string once. */
+/** Measures headline words for [rememberHeadlineLayouts], each distinct string once. */
 private class HeadlineMeasure(
     private val measurer: TextMeasurer,
     private val density: Density,
@@ -341,6 +365,7 @@ private class HeadlineMeasure(
     private fun longestWord(text: String, style: TextStyle): Dp =
         text.split(' ').filter { it.isNotEmpty() }.maxOfOrNull { width(it, style) } ?: 0.dp
 
+    /** The layout for one stage's [texts] in [width] (see [rememberHeadlineLayouts]). */
     fun layout(texts: List<HeadlineText>, width: Dp): HeadlineLayout {
         val ems = texts.associate { it.notation to notationEm(it.notation) }
         val scales = ems.mapValues { (_, em) -> minOf(1f, NotationMaxEm / em) }
@@ -370,14 +395,21 @@ private class HeadlineMeasure(
         val (size, lines) = candidates.firstOrNull { (size, lines) -> texts.all { fits(it, size, lines) } }
             ?: (HeadlineSize.Tiny to WrapAllLayerLines)
 
-        // The tallest move sets the height, so the panel never changes size between moves.
-        val wordsHeight = texts.maxOfOrNull { text ->
+        // The tallest move sets the height, so the panel keeps its size from move to move; only
+        // moves too rare to be worth the room for everyone else (a tenth of the stage at most)
+        // may grow it for a moment.
+        val heights = texts.map { text ->
             val words = wordsWidth(text, size).coerceAtLeast(1.dp)
             val layers = wrappedLayers(text.layers, words, lines).second
             val direction = wrappedHeight(text.direction, directionStyle, words)
             val viewpoint = text.viewpoint?.let { WordsSpacing + wrappedHeight(it, viewpointStyle, words - ViewIconSize - ViewIconGap) } ?: 0.dp
-            layers + WordsSpacing + direction + viewpoint
-        } ?: 0.dp
+            (layers + WordsSpacing + direction + viewpoint) to text.count
+        }.sortedByDescending { it.first }
+        val rareAllowance = heights.sumOf { it.second } * RareShare
+        var taller = 0
+        val wordsHeight = heights.firstOrNull { (_, count) ->
+            (taller + count > rareAllowance).also { if (!it) taller += count }
+        }?.first ?: 0.dp
         val minHeight = maxOf(wordsHeight, size.notation, size.glyph ?: 0.dp)
         return HeadlineLayout(size, lines, minHeight, scales)
     }
@@ -387,6 +419,9 @@ private class HeadlineMeasure(
         return with(density) { measurer.measure(text, style, constraints = Constraints(maxWidth = px)).size.height.toDp() }
     }
 }
+
+/** Share of a stage's moves whose words may outgrow the height the headline keeps. */
+private const val RareShare = 0.1f
 
 /** Lines a layer name may take when even the smallest headline needs every line of words to wrap. */
 private const val WrapAllLayerLines = 3
@@ -445,7 +480,11 @@ private fun MoveHeadline(move: LayerMove, n: Int, layout: HeadlineLayout) {
 
 /**
  * "STEP 2 OF 3 · EDGES" with buttons to the previous and next stage. On narrow screens the
- * overline shortens to "2/3 · EDGES". Screen readers hear the stage and how far into it playback is.
+ * overline shortens to "2/3 · EDGES"; when even that would be cut off (a long stage name such as
+ * "Corners & middle edges", or large text), the overline keeps just the step ("STEP 1 OF 3") and
+ * the stage name becomes a title of its own below it, across the whole width, wrapping onto a
+ * second line if it must. Moving between stages that differ in this eases the header to its new
+ * height. Screen readers hear the stage and how far into it playback is.
  */
 @Composable
 private fun StageHeader(stages: PanelStages, moveCount: Int, position: Int) {
@@ -457,42 +496,76 @@ private fun StageHeader(stages: PanelStages, moveCount: Int, position: Int) {
     val done = (position - stage.start).coerceIn(0, stageSize)
     val full = stringResource(R.string.solve_stage_overline, current + 1, count, stage.name)
     val short = stringResource(R.string.solve_stage_overline_short, current + 1, count, stage.name)
+    val step = stringResource(R.string.solve_stage_step, current + 1, count)
+    val stepShort = stringResource(R.string.solve_stage_step_short, current + 1, count)
     val spoken = stringResource(R.string.solve_stage_spoken, stage.name, current + 1, count, done, stageSize)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        BoxWithConstraints(
-            Modifier
-                .weight(1f)
-                .clearAndSetSemantics { contentDescription = spoken },
-        ) {
-            val measurer = rememberTextMeasurer()
-            val density = LocalDensity.current
-            val style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.2.em)
-            val locale = currentLocale()
-            val text = remember(full, short, style, density, maxWidth, locale) {
-                val fullWidth = with(density) { measurer.measure(full.uppercase(locale), style, softWrap = false, maxLines = 1).size.width.toDp() }
-                if (fullWidth + OverlineChrome <= maxWidth) full else short
+    val style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.2.em)
+    val locale = currentLocale()
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize()) {
+        // Room for the overline beside the two buttons.
+        val room = maxWidth - StageButtonsWidth - OverlineChrome
+        val (overline, ownLine) = remember(full, short, step, stepShort, style, density, room, locale) {
+            fun fits(text: String) = with(density) {
+                measurer.measure(text.uppercase(locale), style, softWrap = false, maxLines = 1).size.width.toDp()
+            } <= room
+            when {
+                fits(full) -> full to null
+                fits(short) -> short to null
+                fits(step) -> step to stage.name
+                else -> stepShort to stage.name
             }
-            Overline(text = text)
         }
-        Spacer(Modifier.width(8.dp))
-        StageJumpButton(
-            icon = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
-            contentDescription = stringResource(R.string.solve_stage_previous),
-            enabled = stages.hasPrevious,
-            onClick = stages.onPrevious,
-        )
-        Spacer(Modifier.width(8.dp))
-        StageJumpButton(
-            icon = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-            contentDescription = stringResource(R.string.solve_stage_next),
-            enabled = stages.hasNext,
-            onClick = stages.onNext,
-        )
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clearAndSetSemantics { contentDescription = spoken },
+                ) {
+                    Overline(text = overline)
+                }
+                Spacer(Modifier.width(StageButtonGap))
+                StageJumpButton(
+                    icon = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                    contentDescription = stringResource(R.string.solve_stage_previous),
+                    enabled = stages.hasPrevious,
+                    onClick = stages.onPrevious,
+                )
+                Spacer(Modifier.width(StageButtonGap))
+                StageJumpButton(
+                    icon = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    contentDescription = stringResource(R.string.solve_stage_next),
+                    enabled = stages.hasNext,
+                    onClick = stages.onNext,
+                )
+            }
+            ownLine?.let { name ->
+                // A title under the overline, lined up with its text and free to use the whole width
+                // (already spoken above).
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleSmall.copy(lineBreak = LineBreak.Heading),
+                    color = Brand.TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .padding(start = OverlineChrome)
+                        .semantics { hideFromAccessibility() },
+                )
+            }
+        }
     }
 }
 
 /** Width the [Overline] adds before its text: the accent bar and the gap after it. */
 private val OverlineChrome = 14.dp + 8.dp
+
+/** Size of a [StageJumpButton], the gap before each, and the width the pair takes beside the overline. */
+private val StageButtonSize = 32.dp
+private val StageButtonGap = 8.dp
+private val StageButtonsWidth = (StageButtonSize + StageButtonGap) * 2
 
 /**
  * A small dark-glass disc with a chevron. The disc is 32dp to sit lightly in the header; touches
@@ -509,7 +582,7 @@ private fun StageJumpButton(icon: ImageVector, contentDescription: String, enabl
     )
     Box(
         modifier = Modifier
-            .size(32.dp)
+            .size(StageButtonSize)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale

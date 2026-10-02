@@ -27,21 +27,25 @@ import com.andhab.cubelens.ui.components.drawSoftGlow
 import com.andhab.cubelens.ui.components.drawSticker
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.StickerFinish
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
  * Pictogram of a turn, in [faceColor] (the sticker color of the side the layers are counted from,
- * from [com.andhab.cubelens.ui.theme.LocalStickerPalette]) with a sunset arrow.
+ * from [com.andhab.cubelens.ui.theme.LocalStickerPalette], or a neutral tint for a cube without
+ * fixed centers) with a sunset arrow.
  *
  *  - A single outer face of a 2×2 or 3×3 cube: the face seen head-on as a small glossy N×N grid,
  *    ringed by a curved arrow. A quarter turn sweeps a third of the way round, clockwise or
  *    counter-clockwise as seen looking at the face; a half turn sweeps well over half way round.
  *  - Any other turn (wide moves, inner slices, layer ranges, and every move of a bigger cube): a
  *    small N×N cube seen from the front-top-right, as the 3D cube first appears, with the turning
- *    layers lit up as a band in [faceColor] and the rest dimmed, and an arrow running along the band
- *    the way its stickers travel. A half turn gets a double arrowhead.
+ *    layers lit up as a band in [faceColor] and the rest dimmed, and an arrow running the way its
+ *    stickers travel: down the middle of the band, or for a thin band (a single layer of a 4×4 or
+ *    bigger cube) right beside it, with small tabs past the outline marking the band's ends, so the
+ *    whole band stays in view. A half turn gets a double arrowhead.
  *
  * Whenever [key] changes (e.g. a new current move), the arrow draws itself in from its tail.
  * Purely decorative: give the turn a text description nearby.
@@ -169,18 +173,39 @@ private fun DrawScope.drawMiniFace(color: Color, n: Int, center: Offset, side: F
 private fun DrawScope.drawLayerGlyph(move: LayerMove, n: Int, faceColor: Color, reveal: Float) {
     val unit = size.minDimension
     val center = Offset(size.width / 2f, size.height / 2f)
-    val side = unit * 0.98f
     val pictogram = CubePictogram.of(n)
+    // Cubes whose single layers are thin bands leave room for the band tabs, for every move alike,
+    // so the little cube keeps its size from move to move.
+    val tabbed = isNarrowBand(LayerMove(move.face, 1, 1, 1), n)
+    val side = unit * 0.98f * (if (tabbed) CubePictogram.tabFit else 1f)
+    val narrow = isNarrowBand(move, n)
 
     drawSoftGlow(faceColor, alpha = 0.2f, center = center, radiusX = unit * 0.48f)
-    drawCubePictogram(pictogram, center, side) { sticker -> faceColor.takeIf { pictogram.isMoved(sticker.index, move) } }
+    drawCubePictogram(pictogram, center, side, glass = if (n >= QUIET_GLASS_SIZE) QUIET_GLASS else 1f) { sticker ->
+        faceColor.takeIf { pictogram.isMoved(sticker.index, move) }
+    }
+    if (narrow) {
+        // Tabs past the outline mark where a thin band runs, whatever the arrow beside it covers.
+        for (tab in bandTabs(move, n)) {
+            val corners = tab.map { center + pictogram.project(it) * side }
+            val shaded = StickerFinish.of(faceColor).shade(0.95f)
+            drawPath(roundedPolygon(corners, unit * 0.012f), shaded)
+        }
+    }
 
     if (reveal <= 0f) return
-    val points = turnArrowPath(move, n).map { center + pictogram.project(it) * side }
-    // A face spans about half the drawing. The arrow stays thin enough that a single lit layer of a
-    // big cube still shows on both sides of it, keyline included.
+    // A face spans about half the drawing. On a band wide enough, the arrow runs down its middle and
+    // stays thin enough that the band still shows on both sides of it, keyline included; a thin
+    // band gets a full-weight arrow running beside it instead.
     val layerWidth = side * 0.5f / n
-    val stroke = minOf(unit * 0.036f, layerWidth * 0.36f)
+    val stroke = if (narrow) unit * 0.032f else minOf(unit * 0.036f, layerWidth * 0.36f)
+    // The head keeps a readable size even on the thin arrows of big cubes.
+    val headLength = if (narrow) unit * 0.09f else maxOf(stroke * 3.1f, unit * 0.1f)
+    val headWidth = headLength * if (narrow) 1f else 1.1f
+    // Clear of the band by the half-width of the head (with its keyline) plus a hairline gap.
+    val clearance = (headWidth * 1.25f / 2f + unit * 0.025f) / (pictogram.laneSpacing(move.face) * side)
+    val lane = arrowLane(move, n, clearance)
+    val points = turnArrowPath(move, n, lane).map { center + pictogram.project(it) * side }
     val bend = unit * 0.06f
     val path = Path().apply {
         val (a, b, c) = points
@@ -195,9 +220,6 @@ private fun DrawScope.drawLayerGlyph(move: LayerMove, n: Int, faceColor: Color, 
     }
     val measure = PathMeasure().apply { setPath(path, false) }
     val length = measure.length
-    // The head keeps a readable size even on the thin arrows of big cubes.
-    val headLength = maxOf(stroke * 3.1f, unit * 0.1f)
-    val headWidth = headLength * 1.1f
     val tipAt = length * reveal
     val double = move.turns == 2
     // The shaft stops short of the (last) arrowhead so its round cap never shows past the tip.
@@ -224,6 +246,10 @@ private fun DrawScope.drawLayerGlyph(move: LayerMove, n: Int, faceColor: Color, 
         drawArrowHead(tip - tangent * (headLength * 0.45f), tangent, headLength, headWidth, stroke, brush)
     }
 }
+
+/** From this size up, the unlit stickers of the layer pictogram are drawn as quieter glass. */
+private const val QUIET_GLASS_SIZE = 6
+private const val QUIET_GLASS = 0.65f
 
 /**
  * A rounded triangular arrowhead whose base is centered on [anchor], pointing along the unit vector

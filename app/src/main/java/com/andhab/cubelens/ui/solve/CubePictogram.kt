@@ -13,6 +13,7 @@ import com.andhab.cubelens.core.nxn.NxNGeometry
 import com.andhab.cubelens.ui.theme.CubePalette
 import com.andhab.cubelens.ui.theme.StickerFinish
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -48,7 +49,7 @@ internal class CubePictogram private constructor(val n: Int) {
         val corners = buildList {
             for (x in CORNER_SIGNS) for (y in CORNER_SIGNS) for (z in CORNER_SIGNS) add(rawProject(CubePoint(x, y, z)))
         }
-        val extent = corners.maxOf { max(kotlin.math.abs(it.x), kotlin.math.abs(it.y)) }
+        val extent = corners.maxOf { max(abs(it.x), abs(it.y)) }
         scale = 0.5f / extent
         outline = convexHull(corners.map { it * scale })
         val half = (1f - STICKER_GAP) / n
@@ -85,6 +86,19 @@ internal class CubePictogram private constructor(val n: Int) {
     /** True if [move] turns the sticker at [index]. */
     fun isMoved(index: Int, move: LayerMove): Boolean = geometry.isMovedBy(index, move)
 
+    /**
+     * How far apart on screen (in pictogram units) two lines along the band of a turn of [face]'s
+     * layers are, per cube unit between them along the turn's axis: the smaller of its two visible
+     * faces, where the band is seen more foreshortened.
+     */
+    fun laneSpacing(face: Face): Float {
+        val axis = project(axisOf(face))
+        return bandDirections(face).minOf { direction ->
+            val d = project(direction)
+            abs(axis.x * d.y - axis.y * d.x) / hypot(d.x, d.y)
+        }
+    }
+
     companion object {
         /** Turn of the view about the vertical axis, toward the right face. */
         private const val YAW_DEGREES = 36f
@@ -93,7 +107,7 @@ internal class CubePictogram private constructor(val n: Int) {
         private const val PITCH_DEGREES = 27f
 
         /** Fraction of a cubie's width left between neighbouring stickers. */
-        private const val STICKER_GAP = 0.16f
+        internal const val STICKER_GAP = 0.16f
 
         private val CORNER_SIGNS = floatArrayOf(-1f, 1f)
         private val VISIBLE_FACES = listOf(Face.U, Face.F, Face.R)
@@ -106,6 +120,33 @@ internal class CubePictogram private constructor(val n: Int) {
 
         /** The pictogram of an [n]×[n] cube (cached). */
         fun of(n: Int): CubePictogram = cache.getOrPut(n) { CubePictogram(n) }
+
+        /**
+         * Factor (< 1) to draw a pictogram at so that band tabs ([bandTabs]) on any side still fit
+         * the same square as a pictogram without them.
+         */
+        val tabFit: Float by lazy {
+            val corners = buildList {
+                for (x in CORNER_SIGNS) for (y in CORNER_SIGNS) for (z in CORNER_SIGNS) add(rawProject(CubePoint(x, y, z)))
+            }
+            val tabs = Face.entries.flatMap { tabQuads(it, -1f, 1f) }.flatten().map(::rawProject)
+            fun extent(points: List<Offset>) = points.maxOf { max(abs(it.x), abs(it.y)) }
+            extent(corners) / extent(corners + tabs)
+        }
+
+        /** Unit vector of the axis a turn of [face]'s layers turns about. */
+        private fun axisOf(face: Face): CubePoint = when (face) {
+            Face.R, Face.L -> CubePoint(1f, 0f, 0f)
+            Face.U, Face.D -> CubePoint(0f, 1f, 0f)
+            Face.F, Face.B -> CubePoint(0f, 0f, 1f)
+        }
+
+        /** Directions the band of a turn of [face]'s layers runs along, on its two visible faces. */
+        private fun bandDirections(face: Face): List<CubePoint> = when (face) {
+            Face.R, Face.L -> listOf(CubePoint(0f, 1f, 0f), CubePoint(0f, 0f, 1f))
+            Face.U, Face.D -> listOf(CubePoint(1f, 0f, 0f), CubePoint(0f, 0f, 1f))
+            Face.F, Face.B -> listOf(CubePoint(1f, 0f, 0f), CubePoint(0f, 1f, 0f))
+        }
 
         /** Orthographic projection: yaw about y, then pitch about x; screen y points down. */
         private fun rawProject(p: CubePoint): Offset {
@@ -144,10 +185,56 @@ internal class CubePictogram private constructor(val n: Int) {
 private operator fun CubePoint.plus(o: CubePoint) = CubePoint(x + o.x, y + o.y, z + o.z)
 private operator fun CubePoint.times(f: Float) = CubePoint(x * f, y * f, z * f)
 
+/** +1 for the sides at the positive end of their axis (R, U, F), −1 for L, D and B. */
+private fun sideSign(face: Face): Float = if (face == Face.R || face == Face.U || face == Face.F) 1f else -1f
+
+/**
+ * Where the middle of [move]'s band of turning layers lies along its axis (x for R/L, y for U/D,
+ * z for F/B), in cube units: the cube spans −1 to 1 and each layer is 2/[n] thick.
+ */
+internal fun bandCenter(move: LayerMove, n: Int): Float =
+    sideSign(move.face) * (1f - (move.fromDepth + move.toDepth - 1).toFloat() / n)
+
+/** Half the thickness of [move]'s band along its axis, in cube units. */
+internal fun bandHalfWidth(move: LayerMove, n: Int): Float = move.width.toFloat() / n
+
+/**
+ * True when [move]'s band is too thin for an arrow to run down its middle and still leave the band
+ * in view (a single layer of a 4×4 or bigger cube): its arrow runs beside the band instead, and tabs
+ * at the band's ends mark it on the outline.
+ */
+internal fun isNarrowBand(move: LayerMove, n: Int): Boolean = move.width.toFloat() / n < NARROW_BAND
+
+/** Bands thinner than this fraction of the cube are [isNarrowBand]. */
+private const val NARROW_BAND = 0.27f
+
+/**
+ * Where along [move]'s axis its arrow runs, in cube units: down the middle of the band, or for a
+ * narrow band ([isNarrowBand]), alongside it, [clearance] beyond its edge on the side toward the
+ * middle of the cube, so the whole band stays in view.
+ */
+internal fun arrowLane(move: LayerMove, n: Int, clearance: Float): Float {
+    val center = bandCenter(move, n)
+    if (!isNarrowBand(move, n)) return center
+    val toward = when {
+        center > LANE_EPSILON -> -1f
+        center < -LANE_EPSILON -> 1f
+        // The middle layer of an odd cube: go deeper, away from the side it is counted from.
+        else -> -sideSign(move.face)
+    }
+    return (center + toward * (bandHalfWidth(move, n) + clearance)).coerceIn(-LANE_LIMIT, LANE_LIMIT)
+}
+
+private const val LANE_EPSILON = 1e-4f
+
+/** How close to the cube's edge an arrow lane may run, in cube units. */
+private const val LANE_LIMIT = 0.85f
+
 /**
  * The path a turn of [move]'s layers carries stickers along, as seen on the pictogram: across the
  * two visible faces that show those layers as a band, ending where the stickers go. Three points:
- * start, the cube edge where the path bends, end.
+ * start, the cube edge where the path bends, end. The path runs at [lane] along the move's axis
+ * (the middle of the band unless given; see [arrowLane]).
  *
  *  - Layers counted from the right or left run as columns: up the front face and back over the top
  *    for R clockwise (and L counter-clockwise), the other way round for L clockwise.
@@ -158,19 +245,15 @@ private operator fun CubePoint.times(f: Float) = CubePoint(x * f, y * f, z * f)
  *
  * A half turn follows the clockwise path.
  */
-internal fun turnArrowPath(move: LayerMove, n: Int): List<CubePoint> {
-    val positiveSide = move.face == Face.R || move.face == Face.U || move.face == Face.F
-    val sign = if (positiveSide) 1f else -1f
-    // Center of the band of turning layers along the move's axis.
-    val c = sign * (1f - (move.fromDepth + move.toDepth - 1).toFloat() / n)
+internal fun turnArrowPath(move: LayerMove, n: Int, lane: Float = bandCenter(move, n)): List<CubePoint> {
     val reach = ARROW_REACH
     val forward = when (move.face) {
-        Face.R, Face.L -> listOf(CubePoint(c, -reach, 1f), CubePoint(c, 1f, 1f), CubePoint(c, 1f, -reach))
-        Face.U, Face.D -> listOf(CubePoint(1f, c, -reach), CubePoint(1f, c, 1f), CubePoint(-reach, c, 1f))
-        Face.F, Face.B -> listOf(CubePoint(-reach, 1f, c), CubePoint(1f, 1f, c), CubePoint(1f, -reach, c))
+        Face.R, Face.L -> listOf(CubePoint(lane, -reach, 1f), CubePoint(lane, 1f, 1f), CubePoint(lane, 1f, -reach))
+        Face.U, Face.D -> listOf(CubePoint(1f, lane, -reach), CubePoint(1f, lane, 1f), CubePoint(-reach, lane, 1f))
+        Face.F, Face.B -> listOf(CubePoint(-reach, 1f, lane), CubePoint(1f, 1f, lane), CubePoint(1f, -reach, lane))
     }
     // The forward paths are the clockwise turns of R, U and F; the opposite sides turn the other way.
-    val clockwiseForward = positiveSide
+    val clockwiseForward = sideSign(move.face) > 0f
     val counterClockwise = move.turns == 3
     return if (clockwiseForward != counterClockwise) forward else forward.asReversed()
 }
@@ -179,14 +262,56 @@ internal fun turnArrowPath(move: LayerMove, n: Int): List<CubePoint> {
 private const val ARROW_REACH = 0.55f
 
 /**
+ * Two small tabs that continue [move]'s band a little past the cube's outline, where the band
+ * meets it on the two visible faces that show it (e.g. below the front face and behind the top for
+ * layers counted from the right), each as four corners. They pin down a thin band at a glance, even
+ * with the arrow beside it.
+ */
+internal fun bandTabs(move: LayerMove, n: Int): List<List<CubePoint>> {
+    val center = bandCenter(move, n)
+    // Inset like the stickers, so a tab is exactly as wide as the band's stickers.
+    val half = bandHalfWidth(move, n) - CubePictogram.STICKER_GAP / n
+    return tabQuads(move.face, center - half, center + half)
+}
+
+/** The two tabs of [bandTabs] for a turn of [face]'s layers, spanning [lo] to [hi] along its axis. */
+internal fun tabQuads(face: Face, lo: Float, hi: Float): List<List<CubePoint>> {
+    val near = -1f - TAB_GAP
+    val far = near - TAB_LENGTH
+    return when (face) {
+        // Below the front face, and behind the top.
+        Face.R, Face.L -> listOf(
+            listOf(CubePoint(lo, near, 1f), CubePoint(hi, near, 1f), CubePoint(hi, far, 1f), CubePoint(lo, far, 1f)),
+            listOf(CubePoint(lo, 1f, near), CubePoint(hi, 1f, near), CubePoint(hi, 1f, far), CubePoint(lo, 1f, far)),
+        )
+        // Left of the front face, and behind the right face.
+        Face.U, Face.D -> listOf(
+            listOf(CubePoint(near, lo, 1f), CubePoint(near, hi, 1f), CubePoint(far, hi, 1f), CubePoint(far, lo, 1f)),
+            listOf(CubePoint(1f, lo, near), CubePoint(1f, hi, near), CubePoint(1f, hi, far), CubePoint(1f, lo, far)),
+        )
+        // Left of the top face, and below the right face.
+        Face.F, Face.B -> listOf(
+            listOf(CubePoint(near, 1f, lo), CubePoint(near, 1f, hi), CubePoint(far, 1f, hi), CubePoint(far, 1f, lo)),
+            listOf(CubePoint(1f, near, lo), CubePoint(1f, near, hi), CubePoint(1f, far, hi), CubePoint(1f, far, lo)),
+        )
+    }
+}
+
+/** Gap between the cube's edge and a band tab, and the tab's length, in cube units. */
+private const val TAB_GAP = 0.07f
+private const val TAB_LENGTH = 0.13f
+
+/**
  * Draws [pictogram] centered on [center] with side [side]: a dark body and every visible sticker
  * filled by [stickerColor] (glossy, with the top face lit brightest, then the front, then the
- * right), or as faint glass where it returns null.
+ * right), or as faint glass where it returns null. [glass] scales how much the glass shows (less
+ * on big cubes, so their many unlit stickers stay quiet next to the lit ones).
  */
 internal fun DrawScope.drawCubePictogram(
     pictogram: CubePictogram,
     center: Offset,
     side: Float,
+    glass: Float = 1f,
     stickerColor: (CubePictogram.Sticker) -> Color?,
 ) {
     val outline = pictogram.outline.map { center + it * side }
@@ -202,7 +327,7 @@ internal fun DrawScope.drawCubePictogram(
                 Face.F -> 0.8f
                 else -> 0.6f
             }
-            drawPath(path, Color.White.copy(alpha = 0.1f + 0.08f * light))
+            drawPath(path, Color.White.copy(alpha = (0.1f + 0.08f * light) * glass))
         } else {
             // Colored stickers darken less than the glass, so lit layers stand out on every face.
             val light = when (sticker.face) {

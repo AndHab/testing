@@ -6,8 +6,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -23,6 +25,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * The solve screen on big cubes with staged solutions from the app's solver: the stage header and
@@ -78,6 +81,30 @@ class SolveScreenStagesTest {
         settle()
         assertEquals(sizes[0], playback.position)
         assertEquals(fixture.colorsAfter(sizes[0]), cube.colors)
+    }
+
+    // The longest stage name would be cut off beside the jump buttons on the narrowest phones: it
+    // gets a line of its own under "STEP 1 OF 3" instead, in full. (Real text measuring needs the
+    // native graphics.)
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h640dp-xxhdpi")
+    fun aLongStageNameGetsALineOfItsOwnOnNarrowPhones() {
+        val fiveByFive = RealSolutions.of(5)
+        show { SolveScreen(fiveByFive.startColors, fiveByFive.solution, onBack = {}, onDone = {}) }
+        compose.onNodeWithText("STEP 1 OF 3", useUnmergedTree = true).assertExists()
+        // The header's own line, and the timeline's divider.
+        compose.onAllNodesWithText("Corners & middle edges", useUnmergedTree = true).assertCountEquals(2)
+        compose.onNodeWithContentDescription("Corners & middle edges, step 1 of 3, 0 of ${fiveByFive.solution.stages[0].moves.size} moves done")
+            .assertExists()
+    }
+
+    // Where it fits, the stage stays in the one-line overline.
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun aShortStageNameStaysInTheOverline() {
+        showStage()
+        compose.onNodeWithText("STEP 1 OF 3 · CORNERS", useUnmergedTree = true).assertExists()
     }
 
     @Test

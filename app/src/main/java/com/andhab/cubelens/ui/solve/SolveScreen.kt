@@ -47,11 +47,9 @@ import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Move
-import com.andhab.cubelens.core.nxn.NxNCube
 import com.andhab.cubelens.core.nxn.NxNGeometry
 import com.andhab.cubelens.core.nxn.NxNSolution
 import com.andhab.cubelens.core.nxn.NxNSolver
-import com.andhab.cubelens.core.nxn.NxNValidator
 import com.andhab.cubelens.core.nxn.SolveStage
 import com.andhab.cubelens.core.nxn.toLayerMove
 import com.andhab.cubelens.ui.components.AuroraBackground
@@ -130,6 +128,9 @@ fun SolveScreen(
     SolveScreen(startColors, solution, onBack, onDone, modifier)
 }
 
+/** Color of the turning layers in the pictogram of a cube without fixed centers. */
+private val NeutralHighlight = Brand.TextSecondary
+
 /** Camera angles the cube starts at, and returns to with "Reset view". */
 private const val HomeYaw = -35f
 private const val HomePitch = 28f
@@ -154,8 +155,10 @@ internal fun SolveContent(
     )
     val orientation = remember(playback) { CubeOrientation.of(playback.n, playback.colorsAt(0)) }
     val palette = LocalStickerPalette.current
+    // The turn pictogram paints a side in its center color; a side of an even cube has none to
+    // point to while scrambled, so its turning layers light up in a neutral pearl instead.
     val faceColor = remember(orientation, palette) {
-        { face: Face -> orientation.scheme?.get(face)?.let(palette::color) ?: Brand.TextSecondary }
+        { face: Face -> orientation.scheme?.get(face)?.let(palette::color) ?: NeutralHighlight }
     }
     val stages = rememberTimelineStages(playback)
     val scope = rememberCoroutineScope()
@@ -232,28 +235,25 @@ private fun rememberTimelineStages(playback: SolvePlayback): List<TimelineStage>
 }
 
 /**
- * What the start colors say about holding the cube: the color of each side once solved
- * ([scheme], from the fixed centers of odd sizes, inferred from the corners for even sizes; null
- * if it cannot be told) and the [hold] hint.
+ * What the start colors say about holding the cube: the color of each side ([scheme], from the
+ * fixed centers of an odd size; null for an even size, which has no fixed centers, so its sides
+ * show no single color until solved) and the [hold] hint.
  */
 @Immutable
 private class CubeOrientation(val scheme: Map<Face, CubeColor>?, val hold: HoldOrientation) {
     companion object {
         fun of(n: Int, colors: List<CubeColor>): CubeOrientation {
-            if (n % 2 == 1) {
-                val geometry = NxNGeometry.of(n)
-                val centers = Face.entries.associateWith { colors[geometry.index(it, n / 2, n / 2)] }
-                return CubeOrientation(
-                    scheme = centers,
-                    hold = HoldOrientation.Centers(
-                        front = centers.getValue(Face.F),
-                        top = centers.getValue(Face.U),
-                        right = centers.getValue(Face.R),
-                    ),
-                )
-            }
-            val scheme = NxNValidator.validate(NxNCube.of(n, colors)).scheme
-            return CubeOrientation(scheme, HoldOrientation.AsScanned)
+            if (n % 2 == 0) return CubeOrientation(scheme = null, hold = HoldOrientation.AsScanned)
+            val geometry = NxNGeometry.of(n)
+            val centers = Face.entries.associateWith { colors[geometry.index(it, n / 2, n / 2)] }
+            return CubeOrientation(
+                scheme = centers,
+                hold = HoldOrientation.Centers(
+                    front = centers.getValue(Face.F),
+                    top = centers.getValue(Face.U),
+                    right = centers.getValue(Face.R),
+                ),
+            )
         }
     }
 }

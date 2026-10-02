@@ -171,6 +171,31 @@ class SolveScreenshotTest {
         shot("solve_5x5_large_text", qualifiers = "w360dp-h740dp-xxhdpi", fontScale = 1.3f) { Stage(fixture, position = slice) }
     }
 
+    // The longest stage name ("Corners & middle edges") on the narrowest phones: it gets a line of its own.
+    @Test
+    fun fiveByFiveFirstStageNarrow() {
+        val fixture = RealSolutions.of(5)
+        shot("solve_5x5_first_stage_narrow", qualifiers = "w320dp-h640dp-xxhdpi") { Stage(fixture, position = 4) }
+    }
+
+    // The same with large text on a 7×7, whose layer names are the longest: an ordinary outer move
+    // still leaves the cube room to breathe.
+    @Test
+    fun sevenBySevenNarrowLargeText() {
+        val fixture = RealSolutions.of(7)
+        val outer = checkNotNull(fixture.firstMoveIn(0) { it.isOuter && it.turns != 2 })
+        shot("solve_7x7_narrow_large_text", qualifiers = "w320dp-h640dp-xxhdpi", fontScale = 1.3f) { Stage(fixture, position = outer) }
+    }
+
+    // An inner slice of a 7×7 in the centers stage at the narrowest width with large text.
+    @Test
+    fun sevenBySevenSliceNarrowLargeText() {
+        val fixture = RealSolutions.of(7)
+        val centers = fixture.solution.stages.lastIndex
+        val slice = checkNotNull(fixture.firstMoveIn(centers) { it.fromDepth > 1 && it.fromDepth == it.toDepth && it.face == Face.D })
+        shot("solve_7x7_slice_narrow_large_text", qualifiers = "w320dp-h640dp-xxhdpi", fontScale = 1.3f) { Stage(fixture, position = slice) }
+    }
+
     /** A playback of [fixture] frozen at [position], optionally with the next move [turnProgress] of the way through. */
     @Composable
     private fun Stage(

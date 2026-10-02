@@ -1,5 +1,6 @@
 package com.andhab.cubelens.ui.solve
 
+import androidx.compose.ui.geometry.Offset
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.core.nxn.NxNGeometry
@@ -7,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 /**
  * The layer pictogram of [TurnGlyph]: which stickers light up for a move, and which way its arrow
@@ -117,6 +119,96 @@ class TurnPictogramTest {
             val middleDepth = (move.fromDepth + move.toDepth) / 2f
             assertEquals(notation, sign * (1f - (2f * middleDepth - 1f) / n), axisValues.first(), 1e-5f)
         }
+    }
+
+    /** Every layer move of one layer on an [n]×[n] cube, outer and inner, from every side. */
+    private fun singleLayers(n: Int) = Face.entries.flatMap { face -> (1..n).map { LayerMove(face, it, it, 1) } }
+
+    private fun axisValue(face: Face, point: CubePoint) = when (face) {
+        Face.R, Face.L -> point.x
+        Face.U, Face.D -> point.y
+        Face.F, Face.B -> point.z
+    }
+
+    @Test
+    fun thinBandsGetTheirArrowAlongsideSoTheWholeBandShows() {
+        for (n in 4..7) {
+            for (move in singleLayers(n)) {
+                assertTrue("$move on $n", isNarrowBand(move, n))
+                val center = bandCenter(move, n)
+                val half = bandHalfWidth(move, n)
+                val lane = arrowLane(move, n, clearance = 0.2f)
+                // Clear of the band, on the cube, and toward its middle.
+                assertTrue("${move.notation} on $n clear of the band", abs(lane - center) >= half + 0.2f - 1e-4f || abs(lane) == 0.85f)
+                assertTrue("${move.notation} on $n on the cube", abs(lane) <= 0.85f)
+                if (abs(center) > 1e-3f) assertTrue("${move.notation} on $n toward the middle", abs(lane) < abs(center) || lane * center < 0f)
+                // The arrow still runs the way the stickers go, just beside the band.
+                val path = turnArrowPath(move, n, lane)
+                assertEquals(1, path.map { axisValue(move.face, it) }.distinct().size)
+                val pictogram = CubePictogram.of(n)
+                val onBand = turnArrowPath(move, n).map(pictogram::project)
+                val beside = path.map(pictogram::project)
+                val bandTravel = onBand.last() - onBand.first()
+                val besideTravel = beside.last() - beside.first()
+                assertTrue("${move.notation} on $n same way", bandTravel.x * besideTravel.x + bandTravel.y * besideTravel.y > 0f)
+            }
+        }
+    }
+
+    @Test
+    fun bandsWideEnoughKeepTheArrowDownTheirMiddle() {
+        for ((notation, n) in listOf("2R" to 3, "M" to 3, "Rw" to 4, "2-3Rw" to 4, "Uw'" to 5, "2-3Dw" to 6, "3Fw" to 7, "2-3Bw" to 7)) {
+            val move = if (notation == "M") LayerMove(Face.L, 2, 2, 1) else LayerMove.parse(notation)
+            assertFalse("$notation on $n", isNarrowBand(move, n))
+            assertEquals("$notation on $n", bandCenter(move, n), arrowLane(move, n, clearance = 0.2f), 0f)
+        }
+    }
+
+    @Test
+    fun tabsMarkTheBandJustOutsideTheOutline() {
+        for (n in listOf(4, 5, 7)) {
+            val pictogram = CubePictogram.of(n)
+            val outline = pictogram.outline
+            for (move in singleLayers(n)) {
+                val tabs = bandTabs(move, n)
+                assertEquals(2, tabs.size)
+                val center = bandCenter(move, n)
+                val half = bandHalfWidth(move, n)
+                for (tab in tabs) {
+                    for (corner in tab) {
+                        // Across the band's own layers...
+                        val along = axisValue(move.face, corner)
+                        assertTrue("${move.notation} on $n within the band", along in (center - half)..(center + half))
+                        // ...and off the cube on screen.
+                        assertFalse("${move.notation} on $n outside the outline", inside(pictogram.project(corner), outline))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun tabsStillFitTheSquare() {
+        assertTrue(CubePictogram.tabFit in 0.75f..0.99f)
+        for (n in listOf(4, 7)) {
+            val pictogram = CubePictogram.of(n)
+            for (move in singleLayers(n)) {
+                for (corner in bandTabs(move, n).flatten()) {
+                    val p = pictogram.project(corner) * CubePictogram.tabFit
+                    assertTrue("${move.notation} on $n", abs(p.x) <= 0.5f + 1e-4f && abs(p.y) <= 0.5f + 1e-4f)
+                }
+            }
+        }
+    }
+
+    /** True if [point] lies inside the convex polygon [polygon]. */
+    private fun inside(point: Offset, polygon: List<Offset>): Boolean {
+        val signs = polygon.indices.map { i ->
+            val a = polygon[i]
+            val b = polygon[(i + 1) % polygon.size]
+            (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)
+        }
+        return signs.all { it > 0f } || signs.all { it < 0f }
     }
 
     @Test

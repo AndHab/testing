@@ -4,8 +4,7 @@ import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Facelets
-import kotlin.math.exp
-import kotlin.math.ln
+import com.andhab.cubelens.core.nxn.NxNValidator
 
 /**
  * Turns all scanned faces into a validated cube.
@@ -50,6 +49,10 @@ import kotlin.math.ln
  * it yields a result with `isValid == false`. So do scans whose clusters are not six clearly
  * different colors, five of them (besides white) mostly colored: e.g. one face scanned twice, or six
  * grey surfaces.
+ *
+ * **Other sizes.** `resolve(n, scans, scanPositions)` does the same for N×N cubes (N = 2..10; 2..7 are
+ * the sizes the app scans) and returns an [NxNScanAnalysis]; see that function. For N = 3 it gives
+ * exactly the result of the 3x3 [resolve].
  */
 object ScanResolver {
 
@@ -57,30 +60,9 @@ object ScanResolver {
     const val UNCERTAIN_MARGIN = 6f
 
     private const val MAX_ROUNDS = 10
-    private const val MODEL_ROUNDS = 4
-    private const val GAIN_PRIOR = 0.02 // weight pulling scan gains towards 1, in squared linear units
-    private const val MIN_GAIN = 0.2
-    private const val MAX_GAIN = 5.0
-    private const val SWAP_CANDIDATES = 12
-    private const val MAX_CLUSTER_SWAPS = 3
-    private const val MAX_SWAP_COST = 40.0
 
-    /**
-     * Smallest CIEDE2000 distance between two cluster colors of a real cube. The six colors of real
-     * cubes, pastel ones included, are about 15 deltaE or more apart; this only rejects clusters that
-     * are clearly the same color (e.g. one face scanned twice), leaving the rest to validation.
-     */
-    private const val MIN_COLOR_SEPARATION = 4f
-
-    /**
-     * A cluster counts as colored from this CIELAB chroma on (white-balanced on the white cluster and
-     * exposure-normalized, see [PaletteEstimator.normalize]); the light blue of a very pale pastel
-     * cube still has about 8.
-     */
-    private const val MIN_CHROMA = 5f
-
-    /** At least this many of the five non-white clusters must be colored ([MIN_CHROMA]). */
-    private const val MIN_COLORED_CLUSTERS = 4
+    /** Position of the center sticker in a 3x3 scan. */
+    private const val CENTER = 4
 
     private val scheme = ColorScheme.STANDARD
 
@@ -109,19 +91,96 @@ object ScanResolver {
         val byColor = labels.indices.associate { labels[it] to measured[it] }
         val palette = PaletteEstimator.estimate(byColor)
         val byCenters = facesByCenterColor(labels)
-        if (!areDistinct(measured) || !isColored(byColor)) {
+        if (!JointClustering.areDistinct(measured) || !JointClustering.isColored(byColor)) {
             // E.g. the same face scanned twice, or something grey: the clusters are arbitrary, and so
             // would be any cube built from them.
-            val raw = clusters.classification(labels, byCenters).colors
+            val raw = clusters.classification(labels, byCenters, CENTER).colors
             return ScanAnalysis(raw, raw, Face.entries.associateWith { 0 }, false, (0 until Facelets.COUNT).toSet(), palette)
         }
 
-        val first = analyze(clusters.classification(labels, byCenters), Placement.CENTER_COLORS, palette)
+        val first = analyze(clusters.classification(labels, byCenters, CENTER), Placement.CENTER_COLORS, palette)
         if (first.isValid) return first
         val positions = scanPositions?.takeIf { it.size == 6 && it.toSet().size == 6 } ?: return first
         if (positions == byCenters) return first
-        val second = analyze(clusters.classification(labels, positions), Placement.SCAN_ORDER, palette)
+        val second = analyze(clusters.classification(labels, positions, CENTER), Placement.SCAN_ORDER, palette)
         return if (second.isValid) second else first
+    }
+
+    /**
+     * Resolves an [n]x[n] cube (n in 2..10) from its six scanned faces.
+     *
+     * [scans] are the six faces, each `n * n` samples row-major as seen on screen
+     * ([GridSampler.sample] with the same [n]), each captured at any rotation (0 to 3 quarter turns).
+     * All `6 * n * n` stickers are clustered jointly into six colors of exactly `n * n` stickers each,
+     * under the per-photo lighting model of the 3x3 resolver, and the colors are named by how they
+     * relate to each other ([PaletteLabeler]), so pastel and other unusual palettes work too.
+     *
+     *  - **Odd sizes** have fixed centers. They seed the clusters, and the scans are placed by their
+     *    center colors in the standard scheme, or else by [scanPositions] (as the 3x3 [resolve]
+     *    does): scans may come in any order for standard cubes, and in the order of [scanPositions]
+     *    for other color arrangements.
+     *  - **Even sizes** have no fixed centers, so neither the colors nor the faces can be anchored on
+     *    a center. The clustering starts from several seeds (the live classifier's reading of every
+     *    sticker, and reproducible k-means++ starts) and keeps the clustering that explains the
+     *    stickers best; if that doesn't give a valid cube, the next best ones are tried. Scan `i` is
+     *    placed on face [scanPositions]`[i]`; when [scanPositions] is null (or not six different
+     *    faces), the scans are taken to be in the app's guided order F, R, B, L, U, D. The color
+     *    arrangement need not be standard: it is read from the corners ([NxNValidator], which holds
+     *    the cube with the corner at DBL home).
+     *
+     * Face rotations are then fixed for any size ([NxNOrientationFixer]: every combination of quarter
+     * turns of the six faces is searched, pruned piece by piece, preferring the fewest rotated faces
+     * and then the fewest quarter turns). If no rotation gives a valid cube, swapping the colors of
+     * two low-confidence stickers is tried, and from 4x4 on also correcting one confidently misread
+     * sticker (with hundreds of stickers per cube, one read partly off its tile is the commonest
+     * reason for an invalid scan). [NxNScanAnalysis.uncertain] holds the close calls, the corrected
+     * stickers and every sticker whose color differs in another valid reading, as for 3x3 cubes; the
+     * other readings considered also include those with two close calls exchanged, or with the
+     * misread being another sticker of the same color (from 4x4 on, two movable center stickers of
+     * one orbit with their colors exchanged still form a valid cube, as do two wings with the same
+     * second color with their first colors exchanged, so validation alone cannot tell which one was
+     * misread).
+     *
+     * **One face photographed twice** (the user forgot to turn the cube) puts one face's colors on the
+     * cube twice and leaves another out. When two scans look alike sticker for sticker (under some
+     * quarter turn, allowing for each photo's exposure and white balance) and the reading had to force
+     * stickers into colors they don't show, the first problem says so and highlights the later of the
+     * two scans, to be retaken. Bigger cubes never pass validation that way; a 2x2 cube, which has only
+     * its corners to check, often did, so a valid 2x2 reading is rejected in that case, and also when
+     * it rests on any sticker read as a color it clearly doesn't show (a misread cannot be told from
+     * the right reading on a 2x2 cube); a 2x2 reading that may rest on a duplicate in a less clear way
+     * has every sticker flagged. A wrong scan order (e.g. the side faces in mirrored order, or up and
+     * down swapped) is not detectable in general: on rendered 2x2 cubes with up and down, or front
+     * and back, swapped, about one session in 40 still gave a valid (wrong) cube, so scan screens
+     * should guide the order clearly.
+     *
+     * For n = 3 this returns exactly what the 3x3 [resolve] returns for the same arguments. Malformed
+     * scans (not six scans of `n * n`), garbage such as grey surfaces or one face scanned six times,
+     * never throw: they give a result with `isValid == false`.
+     *
+     * @throws IllegalArgumentException if [n] is not a supported size (2..10).
+     */
+    fun resolve(n: Int, scans: List<List<StickerSample>>, scanPositions: List<Face>? = null): NxNScanAnalysis {
+        require(n in NxNScanResolver.MIN_SIZE..NxNScanResolver.MAX_SIZE) { "Cube size must be in ${NxNScanResolver.MIN_SIZE}..${NxNScanResolver.MAX_SIZE}, got $n" }
+        if (n != 3) return NxNScanResolver.resolve(n, scans, scanPositions)
+        val analysis = resolve(scans, scanPositions)
+        val problems = when {
+            analysis.isValid -> emptyList()
+            scans.size != 6 || scans.any { it.size != 9 } -> listOf(NxNScanResolver.malformedProblem(3, scans)) + NxNScanResolver.problemsOf(3, analysis.colors)
+            // Colors that validate but were rejected: the clusters were not six clearly different colors.
+            else -> NxNScanResolver.problemsOf(3, analysis.colors).ifEmpty { listOf(NxNScanResolver.IMPLAUSIBLE) }
+        }
+        return NxNScanAnalysis(
+            n = 3,
+            rawColors = analysis.rawColors,
+            colors = analysis.colors,
+            faceRotations = analysis.faceRotations,
+            isValid = analysis.isValid,
+            uncertain = analysis.uncertain,
+            palette = analysis.palette,
+            placement = analysis.placement,
+            problems = problems,
+        )
     }
 
     /** Orientation fixing, repair and uncertainty for one placement of the scans. */
@@ -147,50 +206,8 @@ object ScanResolver {
         }
     }
 
-    /** Whether the six cluster colors (linear RGB) are clearly different from each other ([MIN_COLOR_SEPARATION]). */
-    private fun areDistinct(colors: List<DoubleArray>): Boolean {
-        val labs = colors.map { ColorMath.linearToLab(it[0], it[1], it[2]) }
-        for (i in labs.indices) {
-            for (j in i + 1 until labs.size) {
-                if (!(ColorMath.deltaE(labs[i], labs[j]) >= MIN_COLOR_SEPARATION)) return false
-            }
-        }
-        return true
-    }
-
-    /**
-     * Whether the clusters (linear RGB per color) look like the stickers of a cube: besides white,
-     * nearly all of them are clearly colored. Six grey levels, for example, are not.
-     */
-    private fun isColored(linear: Map<CubeColor, DoubleArray>): Boolean {
-        val normalized = PaletteEstimator.normalize(linear).first
-        return normalized.count { (color, lab) -> color != CubeColor.WHITE && lab.chroma >= MIN_CHROMA } >= MIN_COLORED_CLUSTERS
-    }
-
     /** The face of each scan when placed by its center's color in the standard scheme. */
     private fun facesByCenterColor(labels: List<CubeColor>): List<Face> = labels.map { scheme.faceOf(it) }
-
-    /** Outcome of the joint classification for one placement, before orientation fixing and repair. */
-    internal class Classification(
-        /** Color of every facelet, scans placed on their faces as captured. */
-        val colors: List<CubeColor>,
-        /** cost[i * 6 + c]: distance of facelet i to color c (by ordinal) after lighting compensation. */
-        val cost: DoubleArray,
-    ) {
-        /** Second-best cost minus own cost per facelet (infinite for centers); negative if forced by the quotas. */
-        val margin: DoubleArray = DoubleArray(Facelets.COUNT) { i ->
-            if (i % 9 == 4) {
-                Double.POSITIVE_INFINITY
-            } else {
-                val own = colors[i].ordinal
-                var second = Double.POSITIVE_INFINITY
-                for (c in 0 until 6) if (c != own) second = minOf(second, cost[i * 6 + c])
-                second - cost[i * 6 + own]
-            }
-        }
-
-        fun uncertain(): Set<Int> = (0 until Facelets.COUNT).filter { margin[it] < UNCERTAIN_MARGIN }.toSet()
-    }
 
     /**
      * Steps 1 to 3 for well-formed scans with the center-color placement: classifies all stickers
@@ -201,7 +218,7 @@ object ScanResolver {
         require(scans.size == 6 && scans.all { it.size == 9 }) { "Need six scans of nine samples" }
         val clusters = cluster(scans)
         val labels = PaletteLabeler.labelAll(clusters.robustColors())
-        return clusters.classification(labels, facesByCenterColor(labels))
+        return clusters.classification(labels, facesByCenterColor(labels), CENTER)
     }
 
     /**
@@ -213,32 +230,14 @@ object ScanResolver {
             val s = scans[i / 9][i % 9]
             doubleArrayOf(ColorMath.srgbToLinear(s.r), ColorMath.srgbToLinear(s.g), ColorMath.srgbToLinear(s.b))
         }
-        val model = LightingModel(linear)
+        val model = LightingModel(linear, 6, 9)
         val assigned = IntArray(Facelets.COUNT) { -1 }
-        for (k in 0 until 6) assigned[k * 9 + 4] = k
-        model.seedFromCenters()
-        var best = converge(model, assigned, model.costs())
-
-        // Repair an unlucky start: when two centers look alike in their photos (a white center under a
-        // cool cast and a light blue one under a warm cast), the other stickers of the two colors can
-        // end up with the wrong center each. Then each center fits the other's cluster better than its
-        // own; exchanging the two clusters' members and refitting must explain the stickers better.
-        val tried = mutableSetOf<Int>()
-        repeat(MAX_CLUSTER_SWAPS) {
-            val pair = swappedPair(best, tried) ?: return best
-            tried += pair
-            val a = pair / 6
-            val b = pair % 6
-            val swapped = best.cluster.copyOf()
-            for (i in NON_CENTERS) {
-                if (swapped[i] == a) swapped[i] = b else if (swapped[i] == b) swapped[i] = a
-            }
-            val trial = LightingModel(linear)
-            trial.fit(swapped)
-            val candidate = converge(trial, swapped, trial.costs())
-            if (candidate.totalCost() < best.totalCost()) best = candidate
-        }
-        return best
+        for (k in 0 until 6) assigned[k * 9 + CENTER] = k
+        model.seedFromPosition(CENTER)
+        val start = converge(model, assigned, model.costs())
+        // Repair an unlucky start: two centers that look alike in their photos can each end up with the
+        // other's stickers (see JointClustering.undoSwappedCenters).
+        return JointClustering.undoSwappedCenters(start, CENTER, NON_CENTERS) { trial, swapped -> converge(trial, swapped, trial.costs()) }
     }
 
     /** Alternates balanced assignment and lighting fits from [assigned] and [cost] until nothing changes. */
@@ -249,72 +248,7 @@ object ScanResolver {
             model.fit(assigned)
             current = model.costs()
         }
-        return Clusters(model.linear, assigned, current, model.gain)
-    }
-
-    /**
-     * Two clusters (encoded `a * 6 + b`, `a < b`, not in [tried]) whose centers each fit the other
-     * cluster better than their own, or null.
-     */
-    private fun swappedPair(clusters: Clusters, tried: Set<Int>): Int? {
-        val cost = clusters.cost
-        for (a in 0 until 6) {
-            val centerA = a * 9 + 4
-            for (b in a + 1 until 6) {
-                if (a * 6 + b in tried) continue
-                val centerB = b * 9 + 4
-                if (cost[centerA * 6 + b] < cost[centerA * 6 + a] && cost[centerB * 6 + a] < cost[centerB * 6 + b]) return a * 6 + b
-            }
-        }
-        return null
-    }
-
-    /**
-     * The joint classification in scan order: sticker index `k * 9 + p` is sticker p of scan k, and
-     * cluster k is the color of scan k's center.
-     */
-    private class Clusters(
-        /** Linear RGB of every sticker. */
-        val linear: Array<DoubleArray>,
-        /** Cluster of every sticker. */
-        val cluster: IntArray,
-        /** cost[i * 6 + k]: distance of sticker i to cluster k after lighting compensation. */
-        val cost: DoubleArray,
-        /** Per-scan channel gains of the lighting model. */
-        val gain: Array<DoubleArray>,
-    ) {
-        /** Sum of every sticker's distance to its cluster: how well the clusters explain the stickers. */
-        fun totalCost(): Double = (0 until Facelets.COUNT).sumOf { cost[it * 6 + cluster[it]] }
-
-        /**
-         * Each cluster's color in the common light of the lighting model: the per-channel median of
-         * its stickers with their scan's gains undone (robust to a highlight or a misread sticker).
-         */
-        fun robustColors(): List<DoubleArray> = List(6) { k ->
-            val members = (0 until Facelets.COUNT).filter { cluster[it] == k }
-            DoubleArray(3) { ch ->
-                val values = members.map { linear[it][ch] / gain[it / 9][ch] }.sorted()
-                if (values.isEmpty()) 0.0 else values[values.size / 2]
-            }
-        }
-
-        /** Facelet-order colors and costs with cluster k named [labels]`[k]` and scan k placed on [faces]`[k]`. */
-        fun classification(labels: List<CubeColor>, faces: List<Face>): Classification {
-            val clusterOfColor = IntArray(6)
-            for (k in 0 until 6) clusterOfColor[labels[k].ordinal] = k
-            val placed = arrayOfNulls<CubeColor>(Facelets.COUNT)
-            val placedCost = DoubleArray(Facelets.COUNT * 6)
-            for (k in 0 until 6) {
-                val f = faces[k].ordinal
-                for (p in 0 until 9) {
-                    val i = k * 9 + p
-                    val j = f * 9 + p
-                    placed[j] = labels[cluster[i]]
-                    for (c in 0 until 6) placedCost[j * 6 + c] = cost[i * 6 + clusterOfColor[c]]
-                }
-            }
-            return Classification(placed.map { it!! }, placedCost)
-        }
+        return Clusters(model.linear, assigned, current, model.gain, 9)
     }
 
     /**
@@ -345,32 +279,8 @@ object ScanResolver {
      * Tries exchanging the colors of two low-margin stickers (keeps nine of each color), cheapest
      * first. Returns the new raw colors, their oriented version and the swapped facelets.
      */
-    private fun repairBySwap(classification: Classification): Triple<List<CubeColor>, OrientationFixer.Orientation, Set<Int>>? {
-        val raw = classification.colors
-        val cost = classification.cost
-        val candidates = NON_CENTERS.sortedBy { classification.margin[it] }.take(SWAP_CANDIDATES)
-        val swaps = mutableListOf<Triple<Int, Int, Double>>()
-        for (x in candidates.indices) {
-            for (y in x + 1 until candidates.size) {
-                val i = candidates[x]
-                val j = candidates[y]
-                val ci = raw[i].ordinal
-                val cj = raw[j].ordinal
-                if (ci == cj) continue
-                val delta = cost[i * 6 + cj] + cost[j * 6 + ci] - cost[i * 6 + ci] - cost[j * 6 + cj]
-                if (delta <= MAX_SWAP_COST) swaps += Triple(i, j, delta)
-            }
-        }
-        swaps.sortBy { it.third }
-        for ((i, j, _) in swaps) {
-            val candidate = raw.toMutableList()
-            candidate[i] = raw[j]
-            candidate[j] = raw[i]
-            val oriented = OrientationFixer.orient(candidate) ?: continue
-            return Triple(candidate, oriented, setOf(i, j))
-        }
-        return null
-    }
+    private fun repairBySwap(classification: Classification): Triple<List<CubeColor>, OrientationFixer.Orientation, Set<Int>>? =
+        JointClustering.repairBySwap(classification) { OrientationFixer.orient(it) }
 
     /** Best-effort result for input that is not six scans of nine: per-sticker guesses, all uncertain. */
     private fun malformed(scans: List<List<StickerSample>>): ScanAnalysis {
@@ -381,69 +291,5 @@ object ScanResolver {
         return ScanAnalysis(raw, raw, Face.entries.associateWith { 0 }, false, (0 until Facelets.COUNT).toSet())
     }
 
-    private val NON_CENTERS: IntArray = (0 until Facelets.COUNT).filter { it % 9 != 4 }.toIntArray()
-
-    /**
-     * Linear RGB of sticker i of scan k with color (cluster) c is modeled as gain[k] * mean[c] per channel.
-     */
-    private class LightingModel(val linear: Array<DoubleArray>) {
-        val gain = Array(6) { DoubleArray(3) { 1.0 } }
-        val mean = Array(6) { DoubleArray(3) }
-
-        /** Each cluster's mean starts as its scan's center sticker, with neutral gains. */
-        fun seedFromCenters() {
-            for (k in 0 until 6) linear[k * 9 + 4].copyInto(mean[k])
-        }
-
-        /** Alternating least squares for gains and means given the cluster of every sticker. */
-        fun fit(assigned: IntArray) {
-            repeat(MODEL_ROUNDS) {
-                for (c in 0 until 6) {
-                    for (ch in 0 until 3) {
-                        var num = 0.0
-                        var den = 0.0
-                        for (i in 0 until Facelets.COUNT) {
-                            if (assigned[i] != c) continue
-                            val g = gain[i / 9][ch]
-                            num += g * linear[i][ch]
-                            den += g * g
-                        }
-                        if (den > 0.0) mean[c][ch] = num / den
-                    }
-                }
-                for (k in 0 until 6) {
-                    for (ch in 0 until 3) {
-                        var num = GAIN_PRIOR
-                        var den = GAIN_PRIOR
-                        for (p in 0 until 9) {
-                            val i = k * 9 + p
-                            val m = mean[assigned[i]][ch]
-                            num += m * linear[i][ch]
-                            den += m * m
-                        }
-                        gain[k][ch] = (num / den).coerceIn(MIN_GAIN, MAX_GAIN)
-                    }
-                }
-                // Fix the gauge: per channel, the gains' geometric mean is 1.
-                for (ch in 0 until 3) {
-                    var logSum = 0.0
-                    for (k in 0 until 6) logSum += ln(gain[k][ch])
-                    val norm = exp(logSum / 6.0)
-                    for (k in 0 until 6) gain[k][ch] /= norm
-                }
-            }
-        }
-
-        /** cost[i * 6 + c]: distance of sticker i (with its scan's gains undone) to cluster c's mean. */
-        fun costs(): DoubleArray {
-            val means = Array(6) { c -> ColorMath.linearToLab(mean[c][0], mean[c][1], mean[c][2]) }
-            val cost = DoubleArray(Facelets.COUNT * 6)
-            for (i in 0 until Facelets.COUNT) {
-                val g = gain[i / 9]
-                val lab = ColorMath.linearToLab(linear[i][0] / g[0], linear[i][1] / g[1], linear[i][2] / g[2])
-                for (c in 0 until 6) cost[i * 6 + c] = ColorMath.deltaE(lab, means[c]).toDouble()
-            }
-            return cost
-        }
-    }
+    private val NON_CENTERS: IntArray = (0 until Facelets.COUNT).filter { it % 9 != CENTER }.toIntArray()
 }

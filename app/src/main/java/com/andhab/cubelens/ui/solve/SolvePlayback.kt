@@ -13,9 +13,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.MotionDurationScale
 import com.andhab.cubelens.core.cube.CubeColor
-import com.andhab.cubelens.core.cube.FaceletCube
-import com.andhab.cubelens.core.cube.Facelets
-import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
+import com.andhab.cubelens.core.nxn.NxNCube
+import com.andhab.cubelens.core.nxn.NxNGeometry
+import com.andhab.cubelens.core.nxn.NxNSolution
+import com.andhab.cubelens.core.nxn.SolveStage
 import com.andhab.cubelens.ui.cube.CubeViewState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -33,12 +35,12 @@ import kotlin.math.roundToLong
 interface CubeAnimator {
 
     /**
-     * Animates [move] over [durationMillis] and then shows its result; suspends until the turn is
-     * done. If the calling coroutine is cancelled mid-turn, the move must not be applied.
+     * Animates [move] (any layers) over [durationMillis] and then shows its result; suspends until
+     * the turn is done. If the calling coroutine is cancelled mid-turn, the move must not be applied.
      */
-    suspend fun turn(move: Move, durationMillis: Int)
+    suspend fun turn(move: LayerMove, durationMillis: Int)
 
-    /** Shows [colors] at once (54 colors, facelet order), abandoning any turn in progress. */
+    /** Shows [colors] at once (6·N² colors, [NxNGeometry] order), abandoning any turn in progress. */
     fun snapTo(colors: List<CubeColor>)
 }
 
@@ -47,9 +49,10 @@ enum class PlaybackSpeed(val factor: Float) {
     Slow(0.5f),
     Normal(1f),
     Fast(2f),
+    Faster(4f),
     ;
 
-    /** Short on-screen label, e.g. "0.5×", "1×", "2×". */
+    /** Short on-screen label, e.g. "0.5×", "1×", "4×". */
     val label: String
         get() = (if (factor % 1f == 0f) factor.toInt().toString() else factor.toString()) + "×"
 
@@ -58,21 +61,28 @@ enum class PlaybackSpeed(val factor: Float) {
 }
 
 /**
- * The state of a step-by-step solution: which moves have been applied, whether it is auto-playing
- * and how fast. It drives a [CubeAnimator] so the cube on screen always matches [position].
+ * The state of a step-by-step, staged solution for a cube of any size: which moves have been
+ * applied, whether it is auto-playing and how fast. It drives a [CubeAnimator] so the cube on screen
+ * always matches [position].
  *
  * ### Model
- * [position] (often called *k*) is the number of [moves] applied to the cube so far, `0..moveCount`.
- * Commands move a [target] position; a single driver coroutine walks [position] towards it one
- * animated turn at a time. Because every turn goes through that one coroutine, commands may arrive
- * as fast as the user can tap and the cube can never fall out of step with [position]:
+ * [moves] is the whole solution, every stage's moves one after another. [position] (often called
+ * *k*) is the number of them applied to the cube so far, `0..moveCount`; the cube then shows
+ * `NxNCube.of(n, startColors)` with `moves[0 until k]` applied. Commands move a [target] position;
+ * a single driver coroutine walks [position] towards it one animated turn at a time. Because every
+ * turn goes through that one coroutine, commands may arrive as fast as the user can tap and the
+ * cube can never fall out of step with [position]:
  *  - [next] animates `moves[k]` and then increments k; [previous] animates the inverse of
  *    `moves[k - 1]` and then decrements k. Taps that arrive while a turn is running are queued
  *    (as a further step of the target) and the backlog plays out in quicker turns.
- *  - [jumpTo] and [restart] cancel any running turn and snap the cube to the state after `moves[0 until k]`.
+ *  - [jumpTo], [restart], [nextStage] and [previousStage] cancel any running turn and snap the
+ *    cube to the state after `moves[0 until k]`.
  *  - [play] advances on its own with a short pause between moves and stops at the end. Any manual
  *    command while playing pauses playback first. Pressing play drops a backlog of queued steps
  *    back: only the turn in flight finishes before the cube heads forward again.
+ *
+ * Every state along the way is computed once, up front, so stepping and jumping are O(1) however
+ * long the solution is.
  *
  * When the system animator duration scale is 0 ("Remove animations"), turns are snapped instead of
  * animated; the pause between auto-played moves is kept so each move can still be read.
@@ -80,8 +90,10 @@ enum class PlaybackSpeed(val factor: Float) {
  * All members must be used from the thread of [scope] (the main thread in the app). The state is
  * snapshot state, so Compose observes it directly.
  *
- * @param startColors the scrambled cube: 54 sticker colors in facelet order with six distinct centers.
- * @param moves the solution; applying all of them to [startColors] solves the cube.
+ * @param startColors the scrambled cube: 6·N² sticker colors in [NxNGeometry] order (N is inferred
+ *   from their number).
+ * @param solution the staged solution for an N×N cube; applying its moves to [startColors] solves
+ *   the cube. Stages without moves are left out.
  * @param animator shows the turns; it is snapped to the state at [initialPosition] on creation.
  * @param scope runs the turns; cancelling it stops playback.
  * @param initialPosition the number of moves already applied, e.g. when restoring saved state.
@@ -91,11 +103,13 @@ enum class PlaybackSpeed(val factor: Float) {
  *   then starts playing again.
  * @param motionScale returns the current animator duration scale; the default reads Compose's
  *   [MotionDurationScale] from the calling coroutine's context.
+ * @throws IllegalArgumentException if [startColors] is not a whole cube of [solution]'s size or a
+ *   move needs more layers than the cube has.
  */
 @Stable
 class SolvePlayback(
     startColors: List<CubeColor>,
-    val moves: List<Move>,
+    solution: NxNSolution,
     private val animator: CubeAnimator,
     private val scope: CoroutineScope,
     initialPosition: Int = 0,
@@ -104,15 +118,32 @@ class SolvePlayback(
     resumePlaying: Boolean = false,
     private val motionScale: suspend () -> Float = ::contextMotionScale,
 ) {
+    /** Size of the cube (N for an N×N×N cube). */
+    val n: Int = cubeSizeOf(startColors.size)
+
+    /** The stages of the solution that have moves, in order. */
+    val stages: List<SolveStage> = solution.stages.filter { it.moves.isNotEmpty() }
+
+    /** The whole solution: every stage's moves, one after another. */
+    val moves: List<LayerMove> = stages.flatMap { it.moves }
+
     /** Number of moves in the solution. */
     val moveCount: Int = moves.size
 
-    /** The cube's colors after each prefix of [moves]: `states[k]` is the cube at position k. */
-    private val states: List<List<CubeColor>> = statesAlong(startColors, moves)
+    /** `stageStarts[s]` is the index of stage s's first move; the last entry is [moveCount]. */
+    private val stageStarts: IntArray = IntArray(stages.size + 1).also { starts ->
+        stages.forEachIndexed { s, stage -> starts[s + 1] = starts[s] + stage.moves.size }
+    }
 
     init {
+        require(solution.n == n) { "The solution is for a ${solution.n}x${solution.n} cube, the colors are a ${n}x$n" }
+        moves.firstOrNull { it.toDepth > n }?.let { throw IllegalArgumentException("Move $it needs more layers than a ${n}x$n cube has") }
         require(initialPosition in 0..moveCount) { "initialPosition $initialPosition is outside 0..$moveCount" }
     }
+
+    /** The cube's colors after each prefix of [moves]: `states[k]` is the cube at position k. */
+    private val states: List<List<CubeColor>> =
+        moves.runningFold(NxNCube.of(n, startColors)) { cube, move -> cube.apply(move) }.map { it.toColors() }
 
     /** Number of moves applied to the cube on screen (k), `0..moveCount`. Changes after each turn. */
     var position: Int by mutableIntStateOf(initialPosition)
@@ -145,8 +176,15 @@ class SolvePlayback(
         get() = if (target < position) position - 1 else position
 
     /** The move at [currentIndex], or null when every move is done. */
-    val currentMove: Move?
+    val currentMove: LayerMove?
         get() = moves.getOrNull(currentIndex)
+
+    /**
+     * Index into [stages] of the stage of the current move (the last stage once every move is
+     * done), or -1 for a solution without moves.
+     */
+    val currentStage: Int
+        get() = if (moveCount == 0) -1 else stageOf(currentIndex)
 
     /** True when every move has been applied and nothing is queued: the cube is solved. */
     val isFinished: Boolean
@@ -159,6 +197,14 @@ class SolvePlayback(
     /** True if there is a move to step back over. */
     val canGoBack: Boolean
         get() = target > 0
+
+    /** True if a later stage follows the current one ([nextStage] does something). */
+    val hasNextStage: Boolean
+        get() = currentStage in 0 until stages.lastIndex
+
+    /** True if [previousStage] does something: any move has been made or is under way. */
+    val hasPreviousStage: Boolean
+        get() = position > 0 || target > 0
 
     /**
      * Index of the move the cube is waiting for while playback stands still (paused, nothing in
@@ -188,8 +234,28 @@ class SolvePlayback(
         animator.snapTo(states[initialPosition])
     }
 
-    /** The cube's 54 colors after the first [k] moves. */
+    /** The cube's 6·N² colors after the first [k] moves. */
     fun colorsAt(k: Int): List<CubeColor> = states[k]
+
+    /** Index into [stages] of the stage that move [moveIndex] belongs to; [moveCount] counts as the last stage. */
+    fun stageOf(moveIndex: Int): Int {
+        require(moveCount > 0) { "A solution without moves has no stages" }
+        val index = moveIndex.coerceIn(0, moveCount - 1)
+        // The last stage whose first move is at or before index.
+        var lo = 0
+        var hi = stages.lastIndex
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (stageStarts[mid] <= index) lo = mid else hi = mid - 1
+        }
+        return lo
+    }
+
+    /** Index into [moves] of the first move of stage [stage]. */
+    fun stageStart(stage: Int): Int = stageStarts[stage]
+
+    /** Number of moves in stage [stage]. */
+    fun stageSize(stage: Int): Int = stageStarts[stage + 1] - stageStarts[stage]
 
     /** Steps one move forward (pausing playback). Does nothing at the end. */
     fun next() {
@@ -226,6 +292,25 @@ class SolvePlayback(
 
     /** Back to the scrambled cube, ready to go again. */
     fun restart() = jumpTo(0)
+
+    /** Jumps to the start of the stage after the current one (see [jumpTo]). Does nothing in the last stage. */
+    fun nextStage() {
+        if (hasNextStage) jumpTo(stageStart(currentStage + 1))
+    }
+
+    /**
+     * Jumps back to the start of the current stage, or, when no move of it has been made yet, to
+     * the start of the stage before (see [jumpTo]); like "previous track" on a music player.
+     */
+    fun previousStage() {
+        val stage = currentStage
+        if (stage < 0) return
+        val start = stageStart(stage)
+        when {
+            position > start || target > start -> jumpTo(start)
+            stage > 0 -> jumpTo(stageStart(stage - 1))
+        }
+    }
 
     /**
      * Starts auto-playing from the current move; from the solved end it starts over. Steps back that
@@ -265,7 +350,7 @@ class SolvePlayback(
         if (position < moveCount) play()
     }
 
-    /** Moves to the next speed, wrapping around (0.5× → 1× → 2× → 0.5×). */
+    /** Moves to the next speed, wrapping around (0.5× → 1× → 2× → 4× → 0.5×). */
     fun cycleSpeed() {
         speed = speed.next()
     }
@@ -337,7 +422,7 @@ class SolvePlayback(
         }
     }
 
-    private suspend fun turn(move: Move, to: Int, backlog: Boolean) {
+    private suspend fun turn(move: LayerMove, to: Int, backlog: Boolean) {
         if (motionScale() == 0f) {
             animator.snapTo(states[to])
             return
@@ -358,12 +443,12 @@ class SolvePlayback(
 
         /**
          * Saves position, speed, celebration count and whether it was playing; restoring creates a
-         * playback for the same [startColors] and [moves] that drives [animator] in [scope] and
+         * playback for the same [startColors] and [solution] that drives [animator] in [scope] and
          * resumes playing on [resumeAfterRestore].
          */
         fun saver(
             startColors: List<CubeColor>,
-            moves: List<Move>,
+            solution: NxNSolution,
             animator: CubeAnimator,
             scope: CoroutineScope,
         ): Saver<SolvePlayback, IntArray> = Saver(
@@ -371,10 +456,10 @@ class SolvePlayback(
             restore = { saved ->
                 SolvePlayback(
                     startColors = startColors,
-                    moves = moves,
+                    solution = solution,
                     animator = animator,
                     scope = scope,
-                    initialPosition = saved[0].coerceIn(0, moves.size),
+                    initialPosition = saved[0].coerceIn(0, solution.length),
                     initialSpeed = PlaybackSpeed.entries.getOrElse(saved[1]) { PlaybackSpeed.Normal },
                     initialCelebration = saved[2],
                     resumePlaying = saved.getOrElse(3) { 0 } == 1,
@@ -385,25 +470,25 @@ class SolvePlayback(
 }
 
 /**
- * Remembers the [SolvePlayback] for [moves] on [startColors], driving [cubeState]. Position, speed,
- * the celebration count and auto-play survive configuration changes and process death; playback
- * stops when this leaves the composition.
+ * Remembers the [SolvePlayback] for [solution] on [startColors], driving [cubeState]. Position,
+ * speed, the celebration count and auto-play survive configuration changes and process death;
+ * playback stops when this leaves the composition.
  */
 @Composable
 fun rememberSolvePlayback(
     startColors: List<CubeColor>,
-    moves: List<Move>,
+    solution: NxNSolution,
     cubeState: CubeViewState,
 ): SolvePlayback {
     val scope = rememberCoroutineScope()
     val animator = remember(cubeState) { CubeViewAnimator(cubeState) }
     val playback = rememberSaveable(
         startColors,
-        moves,
+        solution,
         animator,
-        saver = SolvePlayback.saver(startColors, moves, animator, scope),
+        saver = SolvePlayback.saver(startColors, solution, animator, scope),
     ) {
-        SolvePlayback(startColors, moves, animator, scope)
+        SolvePlayback(startColors, solution, animator, scope)
     }
     LaunchedEffect(playback) { playback.resumeAfterRestore() }
     return playback
@@ -411,7 +496,7 @@ fun rememberSolvePlayback(
 
 /** Plays turns on the 3D cube. */
 internal class CubeViewAnimator(private val state: CubeViewState) : CubeAnimator {
-    override suspend fun turn(move: Move, durationMillis: Int) = state.animateMove(move, durationMillis)
+    override suspend fun turn(move: LayerMove, durationMillis: Int) = state.animateMove(move, durationMillis)
 
     override fun snapTo(colors: List<CubeColor>) = state.snapTo(colors)
 }
@@ -420,13 +505,9 @@ internal class CubeViewAnimator(private val state: CubeViewState) : CubeAnimator
 private suspend fun contextMotionScale(): Float =
     currentCoroutineContext()[MotionDurationScale]?.scaleFactor ?: 1f
 
-/**
- * The colors of [startColors] after each prefix of [moves] (`moves.size + 1` states), computed on
- * the cube model so the solution is replayed exactly as the solver meant it.
- */
-private fun statesAlong(startColors: List<CubeColor>, moves: List<Move>): List<List<CubeColor>> {
-    require(startColors.size == Facelets.COUNT) { "Need ${Facelets.COUNT} colors, got ${startColors.size}" }
-    val scheme = requireNotNull(FaceletCube.schemeOf(startColors)) { "The six centers must have six different colors" }
-    val start = requireNotNull(FaceletCube.fromColors(startColors))
-    return moves.runningFold(start) { cube, move -> cube.apply(move) }.map { it.toColors(scheme) }
-}
+/** N of a whole N×N×N cube given its 6·N² sticker colors. */
+private fun cubeSizeOf(stickerCount: Int): Int =
+    (NxNGeometry.MIN_SIZE..NxNGeometry.MAX_SIZE).firstOrNull { 6 * it * it == stickerCount }
+        ?: throw IllegalArgumentException(
+            "A cube needs 6·N² colors with N in ${NxNGeometry.MIN_SIZE}..${NxNGeometry.MAX_SIZE}, got $stickerCount",
+        )

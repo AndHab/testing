@@ -27,7 +27,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.unit.IntSize
 import com.andhab.cubelens.core.cube.CubeColor
-import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
 import kotlin.math.PI
@@ -39,7 +39,8 @@ import kotlin.random.Random
 
 /**
  * Celebration overlay. When [trigger] becomes a non-null value other than the last one that fired,
- * a burst of confetti in the six sticker colors explodes from the upper middle of the overlay,
+ * a burst of confetti in the six sticker colors (of [LocalStickerPalette], so a pastel cube
+ * celebrates in its own colors) explodes from the upper middle of the overlay,
  * tumbles under gravity and air drag, and fades out after about three seconds. A new trigger
  * during a burst adds to it.
  *
@@ -61,8 +62,10 @@ import kotlin.random.Random
  */
 @Composable
 fun ConfettiBurst(trigger: Any?, modifier: Modifier = Modifier) {
+    val palette = LocalStickerPalette.current
+    val colors = remember(palette) { CubeColor.entries.map(palette::color) }
     if (LocalInspectionMode.current) {
-        FrozenConfetti(trigger, modifier)
+        FrozenConfetti(trigger, colors, modifier)
         return
     }
     val simulation = remember { ConfettiSimulation() }
@@ -113,7 +116,7 @@ fun ConfettiBurst(trigger: Any?, modifier: Modifier = Modifier) {
             .fillMaxSize()
             .onSizeChanged { canvasSize = it },
     ) {
-        if (frameNanos != 0L) drawConfetti(simulation)
+        if (frameNanos != 0L) drawConfetti(simulation, colors)
     }
 }
 
@@ -127,7 +130,7 @@ private const val BurstOriginY = 0.36f
 private const val FrozenFrameSeconds = 0.34f
 
 @Composable
-private fun FrozenConfetti(trigger: Any?, modifier: Modifier) {
+private fun FrozenConfetti(trigger: Any?, colors: List<Color>, modifier: Modifier) {
     val density = LocalDensity.current.density
     Canvas(modifier.fillMaxSize()) {
         if (trigger == null) return@Canvas
@@ -135,20 +138,19 @@ private fun FrozenConfetti(trigger: Any?, modifier: Modifier) {
         simulation.burst(size.width / 2f, size.height * BurstOriginY, density)
         val dt = 1f / 60f
         repeat((FrozenFrameSeconds / dt).toInt()) { simulation.step(dt, size.height) }
-        drawConfetti(simulation)
+        drawConfetti(simulation, colors)
     }
 }
 
-private val ConfettiColors: List<Color> = CubeColor.entries.map(CubePalette::color)
-
-private fun DrawScope.drawConfetti(simulation: ConfettiSimulation) {
+/** Draws the live pieces of [simulation]; piece colors index into [colors] (one per [CubeColor]). */
+private fun DrawScope.drawConfetti(simulation: ConfettiSimulation, colors: List<Color>) {
     for (p in simulation.particles) {
         val alpha = simulation.alphaOf(p)
         if (alpha <= 0f) continue
         // Tumbling: the piece's apparent height follows the flip angle, and it darkens when seen
         // edge-on, which reads as paper twisting in 3D.
         val flip = cos(p.flipAngle)
-        val base = ConfettiColors[p.colorIndex]
+        val base = colors[p.colorIndex]
         val color = lerp(base, Color.Black, (1f - abs(flip)) * 0.35f).copy(alpha = alpha)
         withTransform({
             translate(p.x, p.y)

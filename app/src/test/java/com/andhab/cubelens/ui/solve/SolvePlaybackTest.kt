@@ -2,10 +2,13 @@ package com.andhab.cubelens.ui.solve
 
 import androidx.compose.runtime.saveable.SaverScope
 import com.andhab.cubelens.core.cube.CubeColor
-import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.FaceletCube
-import com.andhab.cubelens.core.cube.Facelets
-import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
+import com.andhab.cubelens.core.nxn.NxNCube
+import com.andhab.cubelens.core.nxn.NxNGeometry
+import com.andhab.cubelens.core.nxn.NxNSolution
+import com.andhab.cubelens.core.nxn.NxNSolver
+import com.andhab.cubelens.core.nxn.SolveStage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -22,19 +25,21 @@ import org.junit.Test
 import kotlin.random.Random
 
 /**
- * Behavior of [SolvePlayback] with a fake animator on virtual time (plain JVM, no Compose clock).
+ * Behavior of [SolvePlayback] with a fake animator on virtual time (plain JVM, no Compose clock),
+ * on the user's 3×3 and its 20-move solution. [SolvePlaybackSizesTest] covers every size.
  *
  * The fake checks on every turn that the cube it shows is the state at [SolvePlayback.position] and
  * that the turn is the next move or the inverse of the previous one, so any desync fails loudly.
  */
 class SolvePlaybackTest {
 
-    private val moves = UserCube.solution
+    private val moves = UserCube.moves
+    private val solution = UserCube.fixture.solution
     private val n = moves.size
 
     @Test
     fun solutionFixtureSolvesTheUsersCube() {
-        assertTrue(UserCube.cube.apply(moves).isSolved)
+        assertTrue(UserCube.cube.apply(UserCube.solution).isSolved)
         val solved = FaceletCube.fromColors(UserCube.colorsAfter(n))
         assertNotNull(solved)
         assertTrue(solved!!.isSolved)
@@ -168,7 +173,7 @@ class SolvePlaybackTest {
         assertFalse(playback.isPlaying)
         assertEquals(1, playback.celebration)
         assertEquals(moves, animator.turnedMoves)
-        assertTrue(FaceletCube.fromColors(animator.colors)!!.isSolved)
+        assertTrue(NxNCube.of(3, animator.colors).isSolved)
         assertNull(playback.currentMove)
     }
 
@@ -408,29 +413,42 @@ class SolvePlaybackTest {
         playback.next()
         advanceUntilIdle()
         playback.cycleSpeed()
+        assertEquals(PlaybackSpeed.Faster, playback.speed)
+        playback.next()
+        advanceUntilIdle()
+        playback.cycleSpeed()
         assertEquals(PlaybackSpeed.Slow, playback.speed)
         playback.next()
         advanceUntilIdle()
-        assertEquals(listOf(SolvePlayback.TURN_MILLIS / 2, SolvePlayback.TURN_MILLIS * 2), animator.durations)
+        assertEquals(
+            listOf(SolvePlayback.TURN_MILLIS / 2, SolvePlayback.TURN_MILLIS / 4, SolvePlayback.TURN_MILLIS * 2),
+            animator.durations,
+        )
 
-        playback.speed = PlaybackSpeed.Fast
+        playback.speed = PlaybackSpeed.Faster
         playback.play()
         runCurrent()
-        advanceTimeBy(SolvePlayback.TURN_MILLIS / 2 + SolvePlayback.PAUSE_MILLIS / 2 + 1)
-        assertEquals(4, animator.durations.size)
+        advanceTimeBy(SolvePlayback.TURN_MILLIS / 4 + SolvePlayback.PAUSE_MILLIS / 4 + 1)
+        assertEquals(5, animator.durations.size)
     }
 
     @Test
     fun speedLabelsAndCycle() {
-        assertEquals(listOf("0.5×", "1×", "2×"), PlaybackSpeed.entries.map { it.label })
+        assertEquals(listOf("0.5×", "1×", "2×", "4×"), PlaybackSpeed.entries.map { it.label })
         assertEquals(PlaybackSpeed.Fast, PlaybackSpeed.Normal.next())
-        assertEquals(PlaybackSpeed.Slow, PlaybackSpeed.Fast.next())
+        assertEquals(PlaybackSpeed.Faster, PlaybackSpeed.Fast.next())
+        assertEquals(PlaybackSpeed.Slow, PlaybackSpeed.Faster.next())
     }
 
     @Test
     fun anEmptySolutionIsFinishedFromTheStart() = runTest {
         val solved = FaceletCube.SOLVED.toColors()
         val (playback, animator) = playback(moves = emptyList(), start = solved)
+        assertEquals(-1, playback.currentStage)
+        assertFalse(playback.hasNextStage)
+        assertFalse(playback.hasPreviousStage)
+        playback.nextStage()
+        playback.previousStage()
         assertTrue(playback.isFinished)
         assertEquals(1, playback.celebration)
         assertNull(playback.currentMove)
@@ -449,11 +467,11 @@ class SolvePlaybackTest {
         playback.jumpTo(n)
         playback.jumpTo(6)
         playback.speed = PlaybackSpeed.Slow
-        val saver = SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), backgroundScope)
+        val saver = SolvePlayback.saver(UserCube.startColors, solution, FakeAnimator(), backgroundScope)
         val saved = with(saver) { SaverScope { true }.save(playback) }!!
 
         val restoredAnimator = FakeAnimator()
-        val restored = SolvePlayback.saver(UserCube.startColors, moves, restoredAnimator, backgroundScope).restore(saved)!!
+        val restored = SolvePlayback.saver(UserCube.startColors, solution, restoredAnimator, backgroundScope).restore(saved)!!
         assertEquals(6, restored.position)
         assertEquals(PlaybackSpeed.Slow, restored.speed)
         assertEquals(1, restored.celebration)
@@ -468,14 +486,14 @@ class SolvePlaybackTest {
         playback.play()
         runCurrent()
         advanceTimeBy(100)
-        val saved = with(SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), this)) {
+        val saved = with(SolvePlayback.saver(UserCube.startColors, solution, FakeAnimator(), this)) {
             SaverScope { true }.save(playback)
         }!!
         playback.pause()
         advanceUntilIdle()
 
         val restoredAnimator = FakeAnimator()
-        val restored = SolvePlayback.saver(UserCube.startColors, moves, restoredAnimator, this).restore(saved)!!
+        val restored = SolvePlayback.saver(UserCube.startColors, solution, restoredAnimator, this).restore(saved)!!
         restoredAnimator.playback = restored
         // Restored where the last finished turn left the cube, and not playing until shown.
         assertEquals(3, restored.position)
@@ -497,68 +515,84 @@ class SolvePlaybackTest {
     fun aPausedSavedStateStaysPaused() = runTest {
         val (playback, _) = playback()
         playback.jumpTo(3)
-        val saved = with(SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), this)) {
+        val saved = with(SolvePlayback.saver(UserCube.startColors, solution, FakeAnimator(), this)) {
             SaverScope { true }.save(playback)
         }!!
-        val restored = SolvePlayback.saver(UserCube.startColors, moves, FakeAnimator(), this).restore(saved)!!
+        val restored = SolvePlayback.saver(UserCube.startColors, solution, FakeAnimator(), this).restore(saved)!!
         restored.resumeAfterRestore()
         assertFalse(restored.isPlaying)
         assertEquals(3, restored.position)
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun rejectsCentersThatRepeat() = runTest {
-        val bad = UserCube.startColors.toMutableList().apply { this[Facelets.center(Face.U)] = CubeColor.GREEN }
-        playback(start = bad)
+    fun rejectsColorsOfNoCubeSize() = runTest {
+        playback(start = UserCube.startColors.drop(1))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsASolutionForAnotherSize() = runTest {
+        SolvePlayback(UserCube.startColors, NxNSolution(4, solution.stages), FakeAnimator(), this)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsMovesDeeperThanTheCube() = runTest {
+        playback(moves = listOf(LayerMove.parse("4Rw")))
     }
 
     private fun TestScope.playback(
-        moves: List<Move> = this@SolvePlaybackTest.moves,
+        moves: List<LayerMove> = this@SolvePlaybackTest.moves,
         start: List<CubeColor> = UserCube.startColors,
         motionScale: Float = 1f,
     ): Pair<SolvePlayback, FakeAnimator> {
         val animator = FakeAnimator()
-        val playback = SolvePlayback(start, moves, animator, this, motionScale = { motionScale })
+        val stages = if (moves.isEmpty()) emptyList() else listOf(SolveStage(NxNSolver.STAGE_SOLVE, moves))
+        val playback = SolvePlayback(start, NxNSolution(3, stages), animator, this, motionScale = { motionScale })
         animator.playback = playback
         return playback to animator
     }
 
-    /**
-     * Stands in for the 3D cube: a turn takes its duration in virtual time and is only applied if it
-     * runs to the end, like [com.andhab.cubelens.ui.cube.CubeViewState.animateMove].
-     */
-    private class FakeAnimator : CubeAnimator {
-        var playback: SolvePlayback? = null
-        var colors: List<CubeColor> = emptyList()
-            private set
-        var inFlight: Move? = null
-            private set
-        val turnedMoves = mutableListOf<Move>()
-        val durations = mutableListOf<Int>()
+}
 
-        override suspend fun turn(move: Move, durationMillis: Int) {
-            playback?.let { p ->
-                val k = p.position
-                assertEquals("cube shown at the start of a turn from k=$k", p.colorsAt(k), colors)
-                assertTrue("$move is neither the next move nor an undo at k=$k", move == p.moves.getOrNull(k) || move == p.moves.getOrNull(k - 1)?.inverse)
-            }
-            check(inFlight == null) { "Two turns at once" }
-            turnedMoves += move
-            durations += durationMillis
-            inFlight = move
-            try {
-                delay(durationMillis.toLong())
-            } finally {
-                inFlight = null
-            }
-            val permutation = move.permutation
-            val before = colors
-            colors = List(Facelets.COUNT) { before[permutation[it]] }
+/**
+ * Stands in for the 3D cube: a turn takes its duration in virtual time and is only applied if it
+ * runs to the end, like [com.andhab.cubelens.ui.cube.CubeViewState.animateMove].
+ *
+ * Every turn checks that the cube it shows is the state at [SolvePlayback.position] and that the
+ * turn is the next move or the inverse of the previous one, so any desync fails loudly.
+ */
+internal class FakeAnimator : CubeAnimator {
+    var playback: SolvePlayback? = null
+    var colors: List<CubeColor> = emptyList()
+        private set
+    var inFlight: LayerMove? = null
+        private set
+    val turnedMoves = mutableListOf<LayerMove>()
+    val durations = mutableListOf<Int>()
+
+    override suspend fun turn(move: LayerMove, durationMillis: Int) {
+        playback?.let { p ->
+            val k = p.position
+            assertEquals("cube shown at the start of a turn from k=$k", p.colorsAt(k), colors)
+            assertTrue("$move is neither the next move nor an undo at k=$k", move == p.moves.getOrNull(k) || move == p.moves.getOrNull(k - 1)?.inverse)
         }
-
-        override fun snapTo(colors: List<CubeColor>) {
+        check(inFlight == null) { "Two turns at once" }
+        turnedMoves += move
+        durations += durationMillis
+        inFlight = move
+        try {
+            delay(durationMillis.toLong())
+        } finally {
             inFlight = null
-            this.colors = colors
         }
+        val before = colors
+        val permutation = NxNGeometry.of(cubeSize(before.size)).permutation(move)
+        colors = List(before.size) { before[permutation[it]] }
     }
+
+    override fun snapTo(colors: List<CubeColor>) {
+        inFlight = null
+        this.colors = colors
+    }
+
+    private fun cubeSize(stickers: Int): Int = (NxNGeometry.MIN_SIZE..NxNGeometry.MAX_SIZE).first { 6 * it * it == stickers }
 }

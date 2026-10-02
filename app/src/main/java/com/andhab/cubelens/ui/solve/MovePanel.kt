@@ -2,7 +2,9 @@ package com.andhab.cubelens.ui.solve
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -12,7 +14,11 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,107 +26,162 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.ui.components.GlassCard
 import com.andhab.cubelens.ui.components.GradientText
+import com.andhab.cubelens.ui.components.Overline
 import com.andhab.cubelens.ui.components.displayNotation
 import com.andhab.cubelens.ui.components.drawSoftGlow
-import com.andhab.cubelens.ui.components.spokenNotation
+import com.andhab.cubelens.ui.components.glassSurface
 import com.andhab.cubelens.ui.theme.Brand
+import com.andhab.cubelens.ui.theme.CubeLensMotion
 import com.andhab.cubelens.ui.theme.DisplayFont
 import com.andhab.cubelens.ui.theme.NotationStyle
 
 /**
- * The move to make now, front and center: the notation huge in sunset, the face and direction in
- * plain words (with where to look from, for faces that point away from the person), a [TurnGlyph]
+ * Where the panel is in a solution of several stages, and how to jump between them.
+ *
+ * @property stages every stage, in order.
+ * @property current index of the stage of the current move.
+ */
+@Immutable
+internal data class PanelStages(
+    val stages: List<TimelineStage>,
+    val current: Int,
+    val hasPrevious: Boolean,
+    val hasNext: Boolean,
+    val onPrevious: () -> Unit,
+    val onNext: () -> Unit,
+)
+
+/**
+ * The move to make now, front and center: the notation huge in sunset, the layers and direction in
+ * plain words (with where to look from, for sides that point away from the person), a [TurnGlyph]
  * pictogram, and "Move 3 of 19" above a slim sunset progress bar.
+ *
+ * For a solution in several [stages], an overline names the stage under way ("STEP 2 OF 3 ·
+ * EDGES") beside buttons that jump to the previous and next stage, and the progress bar is split
+ * into one segment per stage.
  *
  * Moving to another move slides the old one out and the new one in, in the direction of travel.
  * Screen readers hear the whole move ("Move 3 of 19: R prime, Right face · clockwise") whenever it
  * changes.
  *
- * The words come first: the panel measures every move of the solution and picks the largest
- * [HeadlineSize] whose words fit on one line beside the notation and pictogram, shrinking both and
- * then leaving the pictogram out on narrow screens or at large text sizes. Should even that not be
- * enough, the words wrap rather than cut off. The notation is sized in dp: it is already
- * display-sized, and letting it grow with the font scale would only squeeze the words beside it.
+ * The words come first: the panel measures every move of the solution once and, stage by stage,
+ * picks the largest [HeadlineSize] at which every move's words fit beside the notation and
+ * pictogram, first on one line each, then letting the layer names of big cubes ("2nd layer from /
+ * the bottom") take two balanced lines; on narrow screens or at large text sizes the pictogram is
+ * left out, then the notation shrinks, and only then do the other lines wrap too. Rare long
+ * notations ("2-3Rw′") are drawn smaller rather than squeezing every move. Within a stage the
+ * headline keeps the height of its tallest moves, so the cube above holds still while stepping;
+ * a stage of plain face turns is not held to the height of the long layer names of a later one,
+ * and a move too rare to be worth the room for all the others may grow the panel for a moment.
+ * The notation is sized in dp: it is already display-sized, and letting it grow with the font
+ * scale would only squeeze the words.
  *
+ * @param n size of the cube.
  * @param currentIndex index of the move to show; clamped to the last move, so a finished solution
  *   keeps showing its final move while the panel leaves the screen.
  * @param position number of moves done, for the progress bar.
- * @param faceColor sticker color of each face's center, used to paint the pictogram.
+ * @param faceColor color the pictogram paints the turning layers of each side in.
+ * @param stages stage header and segments; null for a solution in one stage.
  */
 @Composable
 internal fun MovePanel(
-    moves: List<Move>,
+    moves: List<LayerMove>,
+    n: Int,
     currentIndex: Int,
     position: Int,
     faceColor: (Face) -> Color,
     modifier: Modifier = Modifier,
+    stages: PanelStages? = null,
 ) {
     if (moves.isEmpty()) return
     val index = currentIndex.coerceIn(0, moves.lastIndex)
     val move = moves[index]
     val counter = stringResource(R.string.solve_move_counter, index + 1, moves.size)
-    val viewpoint = turnViewpoint(move.face)
-    val spoken = if (viewpoint == null) {
-        stringResource(R.string.solve_current_move_spoken, counter, spokenNotation(move.notation), moveDescription(move))
+    val words = moveWords(move, n)
+    val description = moveDescription(move, n)
+    val spoken = if (words.viewpoint == null) {
+        stringResource(R.string.solve_current_move_spoken, counter, spokenMove(move), description)
     } else {
-        stringResource(
-            R.string.solve_current_move_spoken_viewpoint,
-            counter,
-            spokenNotation(move.notation),
-            moveDescription(move),
-            viewpoint,
-        )
+        stringResource(R.string.solve_current_move_spoken_viewpoint, counter, spokenMove(move), description, words.viewpoint)
     }
 
     GlassCard(
         modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(start = 22.dp, end = 14.dp, top = 14.dp, bottom = 18.dp),
+        contentPadding = PaddingValues(start = 22.dp, end = 14.dp, top = if (stages != null) 10.dp else 14.dp, bottom = 18.dp),
     ) {
-        val texts = headlineTexts(moves)
+        if (stages != null) {
+            StageHeader(stages, moves.size, position)
+            Spacer(Modifier.height(4.dp))
+        }
+        val starts = remember(stages?.stages, moves.size) { stages?.stages?.map { it.start } ?: listOf(0) }
+        val texts = headlineTexts(moves, n, starts)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val size = rememberHeadlineSize(texts, maxWidth)
+            val layouts = rememberHeadlineLayouts(texts, maxWidth)
+            val layout = layouts[stageAt(starts, index)]
+            // Each stage keeps its own height; moving into the next one eases the panel to it.
+            val minHeight by animateDpAsState(layout.minHeight, spring(stiffness = Spring.StiffnessMediumLow), label = "headlineHeight")
             Row(
-                modifier = Modifier.clearAndSetSemantics {
-                    contentDescription = spoken
-                    liveRegion = LiveRegionMode.Polite
-                },
+                modifier = Modifier
+                    .heightIn(min = minHeight)
+                    .clearAndSetSemantics {
+                        contentDescription = spoken
+                        liveRegion = LiveRegionMode.Polite
+                    },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AnimatedContent(
@@ -132,14 +193,16 @@ internal fun MovePanel(
                         val exit = slideOutHorizontally(MoveSlideSpec) { -direction * it / 5 } + fadeOut(tween(140))
                         (enter togetherWith exit).using(SizeTransform(clip = false))
                     },
+                    contentAlignment = Alignment.CenterStart,
                     label = "currentMove",
                 ) { shown ->
-                    MoveHeadline(moves[shown], size)
+                    MoveHeadline(moves[shown], n, layouts[stageAt(starts, shown)])
                 }
-                size.glyph?.let { glyphSize ->
+                layout.size.glyph?.let { glyphSize ->
                     Spacer(Modifier.width(GlyphGap))
                     TurnGlyph(
-                        turns = move.turns,
+                        move = move,
+                        n = n,
                         faceColor = faceColor(move.face),
                         modifier = Modifier.size(glyphSize),
                         key = index,
@@ -166,7 +229,7 @@ internal fun MovePanel(
             )
         }
         Spacer(Modifier.height(10.dp))
-        SunsetProgressBar(fraction = position.toFloat() / moves.size, steps = moves.size)
+        SegmentedProgressBar(position = position, moveCount = moves.size, segmentStarts = starts)
     }
 }
 
@@ -179,6 +242,15 @@ private val GlyphGap = 6.dp
 private val ViewIconSize = 14.dp
 private val ViewIconGap = 5.dp
 
+/** Space between the lines of words. */
+private val WordsSpacing = 2.dp
+
+/** Widest a notation is drawn at full size, in multiples of its font size ("3Rw′" fits; "2-3Rw′" shrinks). */
+private const val NotationMaxEm = 2.45f
+
+/** Slack kept when deciding whether words fit, so rounding never wraps a line that was measured to fit. */
+private val FitSlack = 2.dp
+
 /**
  * Sizes of the move headline, largest first: the notation, the gap after it and the pictogram
  * (null leaves it out).
@@ -186,86 +258,205 @@ private val ViewIconGap = 5.dp
 private enum class HeadlineSize(val notation: Dp, val gap: Dp, val glyph: Dp?) {
     Regular(notation = 72.dp, gap = 16.dp, glyph = 78.dp),
     Compact(notation = 60.dp, gap = 12.dp, glyph = 64.dp),
-    Small(notation = 50.dp, gap = 10.dp, glyph = 52.dp),
+    Small(notation = 50.dp, gap = 10.dp, glyph = 56.dp),
     WordsOnly(notation = 50.dp, gap = 10.dp, glyph = null),
+    Tiny(notation = 40.dp, gap = 8.dp, glyph = null),
 }
 
-/** The words of one move's headline, as shown. */
-private data class HeadlineText(val notation: String, val face: String, val direction: String, val viewpoint: String?)
+/**
+ * How the headline is laid out for a whole solution: its [size], how many lines a layer name may
+ * take, the height that holds the tallest move, and how much each long notation is scaled down.
+ */
+@Immutable
+private class HeadlineLayout(
+    val size: HeadlineSize,
+    val layerLines: Int,
+    val minHeight: Dp,
+    private val notationScales: Map<String, Float>,
+) {
+    /** Factor (≤ 1) for the font size of [notation]. */
+    fun scaleOf(notation: String): Float = notationScales[notation] ?: 1f
+}
 
-/** The headline words of each distinct move in [moves]. */
+/** The words of one move's headline, as shown, and how many times the move comes up in its stage. */
+private data class HeadlineText(val notation: String, val layers: String, val direction: String, val viewpoint: String?, val count: Int = 1)
+
+/** Index of the stage that the move at [index] belongs to, given each stage's first move [starts]. */
+private fun stageAt(starts: List<Int>, index: Int): Int {
+    val found = starts.binarySearch(index)
+    return (if (found >= 0) found else -found - 2).coerceIn(0, starts.lastIndex)
+}
+
+/**
+ * The headline words of each distinct move of each stage of [moves] (stages begin at [starts]),
+ * measured once per solution.
+ */
 @Composable
-private fun headlineTexts(moves: List<Move>): List<HeadlineText> {
+private fun headlineTexts(moves: List<LayerMove>, n: Int, starts: List<Int>): List<List<HeadlineText>> {
     val locale = currentLocale()
-    return moves.distinct().map { move ->
-        HeadlineText(
-            notation = displayNotation(move.notation),
-            face = faceName(move.face),
-            direction = turnDirection(move).capitalizeFirst(locale),
-            viewpoint = turnViewpoint(move.face),
-        )
+    val resources = LocalResources.current
+    return remember(moves, n, starts, locale, resources) {
+        starts.indices.map { s ->
+            val end = starts.getOrNull(s + 1) ?: moves.size
+            moves.subList(starts[s].coerceAtMost(end), end).groupingBy { it }.eachCount().map { (move, count) ->
+                val words = resources.moveWords(move, n)
+                HeadlineText(
+                    notation = displayNotation(move.notation),
+                    layers = words.layers,
+                    direction = words.direction.capitalizeFirst(locale),
+                    viewpoint = words.viewpoint,
+                    count = count,
+                )
+            }
+        }
     }
 }
 
 /**
- * The largest [HeadlineSize] at which every one of [texts] fits in [width] with each line of words
- * on one line; [HeadlineSize.WordsOnly] (whose words may wrap) when none does. Measured once per
- * solution and width, so the layout holds still while stepping through the moves.
+ * A [HeadlineLayout] for each stage of [texts] in [width]: the largest [HeadlineSize] at which
+ * every move of the stage fits with one line of words each, else the largest at which layer names
+ * may take two lines, else [HeadlineSize.Tiny] with every line free to wrap. Measured once per
+ * solution and width, so the layout holds still while stepping through a stage.
  */
 @Composable
-private fun rememberHeadlineSize(texts: List<HeadlineText>, width: Dp): HeadlineSize {
-    val measurer = rememberTextMeasurer()
+private fun rememberHeadlineLayouts(texts: List<List<HeadlineText>>, width: Dp): List<HeadlineLayout> {
+    val measurer = rememberTextMeasurer(cacheSize = 64)
     val density = LocalDensity.current
     val typography = MaterialTheme.typography
     return remember(texts, width, density, typography) {
-        fun measure(text: String, style: TextStyle): Dp =
-            with(density) { measurer.measure(text, style, softWrap = false, maxLines = 1).size.width.toDp() }
-
-        fun fits(text: HeadlineText, size: HeadlineSize): Boolean {
-            val notationSize = with(density) { size.notation.toSp() }
-            val notation = measure(text.notation, NotationStyle.copy(fontSize = notationSize, lineHeight = notationSize))
-            val words = maxOf(
-                measure(text.face, typography.titleLarge),
-                measure(text.direction, typography.bodyMedium),
-                text.viewpoint?.let { measure(it, typography.bodySmall) + ViewIconSize + ViewIconGap } ?: 0.dp,
-            )
-            val glyph = size.glyph?.let { it + GlyphGap } ?: 0.dp
-            return notation + size.gap + words + glyph <= width
-        }
-
-        HeadlineSize.entries.firstOrNull { size -> texts.all { fits(it, size) } } ?: HeadlineSize.WordsOnly
+        val measure = HeadlineMeasure(measurer, density, typography.titleLarge, typography.bodyMedium, typography.bodySmall)
+        texts.map { measure.layout(it, width) }
     }
 }
 
+/** Measures headline words for [rememberHeadlineLayouts], each distinct string once. */
+private class HeadlineMeasure(
+    private val measurer: TextMeasurer,
+    private val density: Density,
+    private val layersStyle: TextStyle,
+    private val directionStyle: TextStyle,
+    private val viewpointStyle: TextStyle,
+) {
+    private val oneLine = HashMap<Pair<String, TextStyle>, Dp>()
+    private val wrapped = HashMap<Triple<String, Int, Int>, Pair<Int, Dp>>()
+
+    /** Width of a notation in multiples of its font size. */
+    private fun notationEm(notation: String): Float {
+        val reference = 100.dp
+        val fontSize = with(density) { reference.toSp() }
+        val width = width(notation, NotationStyle.copy(fontSize = fontSize, lineHeight = fontSize))
+        return width / reference
+    }
+
+    private fun width(text: String, style: TextStyle): Dp = oneLine.getOrPut(text to style) {
+        with(density) { measurer.measure(text, style, softWrap = false, maxLines = 1).size.width.toDp() }
+    }
+
+    /** Line count and height of [text] in [layersStyle] wrapped (balanced) into [width], up to [maxLines] lines. */
+    private fun wrappedLayers(text: String, width: Dp, maxLines: Int): Pair<Int, Dp> {
+        val px = with(density) { width.roundToPx() }.coerceAtLeast(1)
+        return wrapped.getOrPut(Triple(text, px, maxLines)) {
+            val result = measurer.measure(text, layersStyle.copy(lineBreak = LineBreak.Heading), maxLines = maxLines, constraints = Constraints(maxWidth = px))
+            val lines = if (result.hasVisualOverflow) maxLines + 1 else result.lineCount
+            lines to with(density) { result.size.height.toDp() }
+        }
+    }
+
+    private fun longestWord(text: String, style: TextStyle): Dp =
+        text.split(' ').filter { it.isNotEmpty() }.maxOfOrNull { width(it, style) } ?: 0.dp
+
+    /** The layout for one stage's [texts] in [width] (see [rememberHeadlineLayouts]). */
+    fun layout(texts: List<HeadlineText>, width: Dp): HeadlineLayout {
+        val ems = texts.associate { it.notation to notationEm(it.notation) }
+        val scales = ems.mapValues { (_, em) -> minOf(1f, NotationMaxEm / em) }
+
+        fun wordsWidth(text: HeadlineText, size: HeadlineSize): Dp {
+            val notation = size.notation * minOf(ems.getValue(text.notation), NotationMaxEm)
+            val glyph = size.glyph?.let { it + GlyphGap } ?: 0.dp
+            return width - glyph - notation - size.gap - FitSlack
+        }
+
+        fun fits(text: HeadlineText, size: HeadlineSize, layerLines: Int): Boolean {
+            val words = wordsWidth(text, size)
+            if (words <= 0.dp) return false
+            val oneLine = width(text.layers, layersStyle) <= words
+            val layersFit = oneLine || layerLines > 1 &&
+                longestWord(text.layers, layersStyle) <= words &&
+                wrappedLayers(text.layers, words, layerLines).first <= layerLines
+            return layersFit &&
+                width(text.direction, directionStyle) <= words &&
+                (text.viewpoint == null || width(text.viewpoint, viewpointStyle) + ViewIconSize + ViewIconGap <= words)
+        }
+
+        // The pictogram matters more than one-line layer names; both matter more than a big notation.
+        val withGlyph = HeadlineSize.entries.filter { it.glyph != null }
+        val candidates = withGlyph.map { it to 1 } + withGlyph.map { it to 2 } +
+            listOf(HeadlineSize.WordsOnly to 2, HeadlineSize.Tiny to 2)
+        val (size, lines) = candidates.firstOrNull { (size, lines) -> texts.all { fits(it, size, lines) } }
+            ?: (HeadlineSize.Tiny to WrapAllLayerLines)
+
+        // The tallest move sets the height, so the panel keeps its size from move to move; only
+        // moves too rare to be worth the room for everyone else (a tenth of the stage at most)
+        // may grow it for a moment.
+        val heights = texts.map { text ->
+            val words = wordsWidth(text, size).coerceAtLeast(1.dp)
+            val layers = wrappedLayers(text.layers, words, lines).second
+            val direction = wrappedHeight(text.direction, directionStyle, words)
+            val viewpoint = text.viewpoint?.let { WordsSpacing + wrappedHeight(it, viewpointStyle, words - ViewIconSize - ViewIconGap) } ?: 0.dp
+            (layers + WordsSpacing + direction + viewpoint) to text.count
+        }.sortedByDescending { it.first }
+        val rareAllowance = heights.sumOf { it.second } * RareShare
+        var taller = 0
+        val wordsHeight = heights.firstOrNull { (_, count) ->
+            (taller + count > rareAllowance).also { if (!it) taller += count }
+        }?.first ?: 0.dp
+        val minHeight = maxOf(wordsHeight, size.notation, size.glyph ?: 0.dp)
+        return HeadlineLayout(size, lines, minHeight, scales)
+    }
+
+    private fun wrappedHeight(text: String, style: TextStyle, width: Dp): Dp {
+        val px = with(density) { width.roundToPx() }.coerceAtLeast(1)
+        return with(density) { measurer.measure(text, style, constraints = Constraints(maxWidth = px)).size.height.toDp() }
+    }
+}
+
+/** Share of a stage's moves whose words may outgrow the height the headline keeps. */
+private const val RareShare = 0.1f
+
+/** Lines a layer name may take when even the smallest headline needs every line of words to wrap. */
+private const val WrapAllLayerLines = 3
+
 /**
- * Big notation plus the face, the turn direction and (for faces pointing away) where to look from,
- * in words, at [size]. The words wrap onto a second line rather than cut off.
+ * Big notation plus the layers, the turn direction and (for sides pointing away) where to look
+ * from, in words, as [layout] says. The words wrap rather than cut off.
  */
 @Composable
-private fun MoveHeadline(move: Move, size: HeadlineSize) {
-    val notationSize = with(LocalDensity.current) { size.notation.toSp() }
+private fun MoveHeadline(move: LayerMove, n: Int, layout: HeadlineLayout) {
+    val notation = displayNotation(move.notation)
+    val notationSize = with(LocalDensity.current) { layout.size.notation.toSp() }
+    val words = moveWords(move, n)
     Row(verticalAlignment = Alignment.CenterVertically) {
         GradientText(
-            text = displayNotation(move.notation),
-            style = NotationStyle.copy(fontSize = notationSize, lineHeight = notationSize),
+            text = notation,
+            style = NotationStyle.copy(fontSize = notationSize * layout.scaleOf(notation), lineHeight = notationSize),
         )
-        Spacer(Modifier.width(size.gap))
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Spacer(Modifier.width(layout.size.gap))
+        Column(verticalArrangement = Arrangement.spacedBy(WordsSpacing)) {
             Text(
-                text = faceName(move.face),
-                style = MaterialTheme.typography.titleLarge,
+                text = words.layers,
+                style = MaterialTheme.typography.titleLarge.copy(lineBreak = LineBreak.Heading),
                 color = Brand.TextPrimary,
-                maxLines = 2,
+                maxLines = layout.layerLines,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = turnDirection(move).capitalizeFirst(currentLocale()),
+                text = words.direction.capitalizeFirst(currentLocale()),
                 style = MaterialTheme.typography.bodyMedium,
                 color = Brand.TextSecondary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            turnViewpoint(move.face)?.let { viewpoint ->
+            words.viewpoint?.let { viewpoint ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Rounded.Visibility,
@@ -287,47 +478,192 @@ private fun MoveHeadline(move: Move, size: HeadlineSize) {
     }
 }
 
-
 /**
- * Slim progress bar: a faint track and a sunset fill whose glowing head eases to [fraction].
- *
- * @param steps number of discrete steps, for accessibility.
+ * "STEP 2 OF 3 · EDGES" with buttons to the previous and next stage. On narrow screens the
+ * overline shortens to "2/3 · EDGES"; when even that would be cut off (a long stage name such as
+ * "Corners & middle edges", or large text), the overline keeps just the step ("STEP 1 OF 3") and
+ * the stage name becomes a title of its own below it, across the whole width, wrapping onto a
+ * second line if it must. Moving between stages that differ in this eases the header to its new
+ * height. Screen readers hear the stage and how far into it playback is.
  */
 @Composable
-private fun SunsetProgressBar(fraction: Float, steps: Int, modifier: Modifier = Modifier) {
+private fun StageHeader(stages: PanelStages, moveCount: Int, position: Int) {
+    val count = stages.stages.size
+    val current = stages.current
+    val stage = stages.stages[current]
+    val stageEnd = stages.stages.getOrNull(current + 1)?.start ?: moveCount
+    val stageSize = stageEnd - stage.start
+    val done = (position - stage.start).coerceIn(0, stageSize)
+    val full = stringResource(R.string.solve_stage_overline, current + 1, count, stage.name)
+    val short = stringResource(R.string.solve_stage_overline_short, current + 1, count, stage.name)
+    val step = stringResource(R.string.solve_stage_step, current + 1, count)
+    val stepShort = stringResource(R.string.solve_stage_step_short, current + 1, count)
+    val spoken = stringResource(R.string.solve_stage_spoken, stage.name, current + 1, count, done, stageSize)
+    val style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.2.em)
+    val locale = currentLocale()
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize()) {
+        // Room for the overline beside the two buttons.
+        val room = maxWidth - StageButtonsWidth - OverlineChrome
+        val (overline, ownLine) = remember(full, short, step, stepShort, style, density, room, locale) {
+            fun fits(text: String) = with(density) {
+                measurer.measure(text.uppercase(locale), style, softWrap = false, maxLines = 1).size.width.toDp()
+            } <= room
+            when {
+                fits(full) -> full to null
+                fits(short) -> short to null
+                fits(step) -> step to stage.name
+                else -> stepShort to stage.name
+            }
+        }
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clearAndSetSemantics { contentDescription = spoken },
+                ) {
+                    Overline(text = overline)
+                }
+                Spacer(Modifier.width(StageButtonGap))
+                StageJumpButton(
+                    icon = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                    contentDescription = stringResource(R.string.solve_stage_previous),
+                    enabled = stages.hasPrevious,
+                    onClick = stages.onPrevious,
+                )
+                Spacer(Modifier.width(StageButtonGap))
+                StageJumpButton(
+                    icon = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    contentDescription = stringResource(R.string.solve_stage_next),
+                    enabled = stages.hasNext,
+                    onClick = stages.onNext,
+                )
+            }
+            ownLine?.let { name ->
+                // A title under the overline, lined up with its text and free to use the whole width
+                // (already spoken above).
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleSmall.copy(lineBreak = LineBreak.Heading),
+                    color = Brand.TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .padding(start = OverlineChrome)
+                        .semantics { hideFromAccessibility() },
+                )
+            }
+        }
+    }
+}
+
+/** Width the [Overline] adds before its text: the accent bar and the gap after it. */
+private val OverlineChrome = 14.dp + 8.dp
+
+/** Size of a [StageJumpButton], the gap before each, and the width the pair takes beside the overline. */
+private val StageButtonSize = 32.dp
+private val StageButtonGap = 8.dp
+private val StageButtonsWidth = (StageButtonSize + StageButtonGap) * 2
+
+/**
+ * A small dark-glass disc with a chevron. The disc is 32dp to sit lightly in the header; touches
+ * within the standard 48dp target around it still land.
+ */
+@Composable
+private fun StageJumpButton(icon: ImageVector, contentDescription: String, enabled: Boolean, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.9f else 1f,
+        animationSpec = CubeLensMotion.press(),
+        label = "stageJumpScale",
+    )
+    Box(
+        modifier = Modifier
+            .size(StageButtonSize)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                alpha = if (enabled) 1f else 0.35f
+            }
+            .glassSurface(shape = CircleShape, fill = if (pressed) Brand.GlassHigh else Brand.Glass)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = Brand.TextPrimary, modifier = Modifier.size(20.dp))
+    }
+}
+
+/**
+ * Slim progress bar: one faint track per stage (a single track for a one-stage solution) and a
+ * sunset fill whose glowing head eases to [position].
+ *
+ * @param segmentStarts index of the first move of each segment, starting with 0.
+ */
+@Composable
+private fun SegmentedProgressBar(position: Int, moveCount: Int, segmentStarts: List<Int>, modifier: Modifier = Modifier) {
     val progress by animateFloatAsState(
-        targetValue = fraction.coerceIn(0f, 1f),
+        targetValue = position.toFloat().coerceIn(0f, moveCount.toFloat()),
         animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessLow),
         label = "solveProgress",
     )
+    val fraction = if (moveCount == 0) 1f else position.toFloat() / moveCount
     Canvas(
         modifier
             .fillMaxWidth()
             .height(10.dp)
             .clearAndSetSemantics {
-                progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f, steps = (steps - 1).coerceAtLeast(0))
+                progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f, steps = (moveCount - 1).coerceAtLeast(0))
             },
     ) {
         val thickness = 4.dp.toPx()
+        val gap = if (segmentStarts.size > 1) 4.dp.toPx() else 0f
+        val minSegment = 6.dp.toPx()
         val y = size.height / 2f
-        val startX = thickness / 2f
-        val endX = size.width - thickness / 2f
-        drawLine(
-            color = Color.White.copy(alpha = 0.09f),
-            start = Offset(startX, y),
-            end = Offset(endX, y),
-            strokeWidth = thickness,
-            cap = StrokeCap.Round,
-        )
-        if (progress <= 0f) return@Canvas
-        val headX = startX + (endX - startX) * progress
-        drawSoftGlow(Brand.Tangerine, alpha = 0.45f, center = Offset(headX, y), radiusX = 14.dp.toPx(), radiusY = 8.dp.toPx())
-        drawLine(
-            brush = Brush.horizontalGradient(Brand.SunsetColors, startX = 0f, endX = size.width),
-            start = Offset(startX, y),
-            end = Offset(headX, y),
-            strokeWidth = thickness,
-            cap = StrokeCap.Round,
-        )
+        val segments = segmentStarts.size
+        val sizes = List(segments) { s -> (segmentStarts.getOrNull(s + 1) ?: moveCount) - segmentStarts[s] }
+        // Every segment gets a minimum width; the rest is shared in proportion to its moves.
+        val free = (size.width - gap * (segments - 1) - minSegment * segments).coerceAtLeast(0f)
+        val brush = Brush.horizontalGradient(Brand.SunsetColors, startX = 0f, endX = size.width)
+        // Segment bounds and how much of each is filled; the glowing head sits at the end of the fill.
+        val lefts = FloatArray(segments)
+        val widths = FloatArray(segments)
+        val fills = FloatArray(segments)
+        var head: Offset? = null
+        var x = 0f
+        for (s in 0 until segments) {
+            lefts[s] = x
+            widths[s] = minSegment + free * sizes[s] / moveCount.coerceAtLeast(1)
+            fills[s] = if (sizes[s] == 0) 0f else ((progress - segmentStarts[s]) / sizes[s]).coerceIn(0f, 1f)
+            if (fills[s] > 0f) head = Offset(x + (widths[s] * fills[s]).coerceAtLeast(thickness), y)
+            x += widths[s] + gap
+        }
+        for (s in 0 until segments) {
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.09f),
+                topLeft = Offset(lefts[s], y - thickness / 2f),
+                size = Size(widths[s], thickness),
+                cornerRadius = CornerRadius(thickness / 2f),
+            )
+        }
+        head?.let { drawSoftGlow(Brand.Tangerine, alpha = 0.45f, center = it, radiusX = 14.dp.toPx(), radiusY = 8.dp.toPx()) }
+        for (s in 0 until segments) {
+            if (fills[s] <= 0f) continue
+            drawRoundRect(
+                brush = brush,
+                topLeft = Offset(lefts[s], y - thickness / 2f),
+                size = Size((widths[s] * fills[s]).coerceAtLeast(thickness), thickness),
+                cornerRadius = CornerRadius(thickness / 2f),
+            )
+        }
     }
 }

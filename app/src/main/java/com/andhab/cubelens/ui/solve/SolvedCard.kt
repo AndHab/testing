@@ -41,6 +41,7 @@ import com.andhab.cubelens.ui.theme.Brand
  * sign-off, then the way out ("Scan another cube") and a [onReplay] to watch it again.
  *
  * @param moveCount length of the solution; 0 shows the "Already solved!" variant without replay.
+ * @param staged the solution came in several stages (a big cube), which the sign-off honors.
  */
 @Composable
 internal fun SolvedCard(
@@ -48,6 +49,7 @@ internal fun SolvedCard(
     onScanAnother: () -> Unit,
     onReplay: () -> Unit,
     modifier: Modifier = Modifier,
+    staged: Boolean = false,
 ) {
     val alreadySolved = moveCount == 0
     GlassCard(
@@ -73,7 +75,13 @@ internal fun SolvedCard(
             }
             Spacer(Modifier.height(12.dp))
             Text(
-                text = stringResource(if (alreadySolved) R.string.solve_already_solved_subtitle else R.string.solve_solved_subtitle),
+                text = stringResource(
+                    when {
+                        alreadySolved -> R.string.solve_already_solved_subtitle
+                        staged -> R.string.solve_solved_subtitle_staged
+                        else -> R.string.solve_solved_subtitle
+                    },
+                ),
                 style = MaterialTheme.typography.bodyLarge,
                 color = Brand.TextSecondary,
                 textAlign = TextAlign.Center,

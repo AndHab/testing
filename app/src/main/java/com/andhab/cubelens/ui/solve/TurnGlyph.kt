@@ -15,34 +15,50 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalInspectionMode
+import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.ui.components.drawSoftGlow
 import com.andhab.cubelens.ui.components.drawSticker
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.StickerFinish
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
- * Pictogram of a face turn: the face seen head-on as a small glossy 3x3 grid in [faceColor], ringed
- * by a curved sunset arrow. A quarter turn sweeps a third of the way round, clockwise or
- * counter-clockwise as seen looking at the face; a half turn sweeps well over half way round.
+ * Pictogram of a turn, in [faceColor] (the sticker color of the side the layers are counted from,
+ * from [com.andhab.cubelens.ui.theme.LocalStickerPalette], or a neutral tint for a cube without
+ * fixed centers) with a sunset arrow.
+ *
+ *  - A single outer face of a 2×2 or 3×3 cube: the face seen head-on as a small glossy N×N grid,
+ *    ringed by a curved arrow. A quarter turn sweeps a third of the way round, clockwise or
+ *    counter-clockwise as seen looking at the face; a half turn sweeps well over half way round.
+ *  - Any other turn (wide moves, inner slices, layer ranges, and every move of a bigger cube): a
+ *    small N×N cube seen from the front-top-right, as the 3D cube first appears, with the turning
+ *    layers lit up as a band in [faceColor] and the rest dimmed, and an arrow running the way its
+ *    stickers travel: down the middle of the band, or for a thin band (a single layer of a 4×4 or
+ *    bigger cube) right beside it, with small tabs past the outline marking the band's ends, so the
+ *    whole band stays in view. A half turn gets a double arrowhead.
  *
  * Whenever [key] changes (e.g. a new current move), the arrow draws itself in from its tail.
  * Purely decorative: give the turn a text description nearby.
  *
- * @param turns clockwise quarter turns: 1, 2 or 3 (3 = counter-clockwise).
+ * @param n size of the cube.
  */
 @Composable
 internal fun TurnGlyph(
-    turns: Int,
+    move: LayerMove,
+    n: Int,
     faceColor: Color,
     modifier: Modifier = Modifier,
-    key: Any? = turns,
+    key: Any? = move,
 ) {
     val static = LocalInspectionMode.current
     // Starts hidden so the first frame does not flash the full arrow before it draws in.
@@ -52,12 +68,20 @@ internal fun TurnGlyph(
         reveal.snapTo(0f)
         reveal.animateTo(1f, tween(durationMillis = 520, easing = FastOutSlowInEasing))
     }
+    val layerView = usesLayerView(move, n)
     Canvas(modifier) {
-        drawTurnGlyph(turns, faceColor, reveal.value)
+        if (layerView) {
+            drawLayerGlyph(move, n, faceColor, reveal.value)
+        } else {
+            drawFaceGlyph(move.turns, n, faceColor, reveal.value)
+        }
     }
 }
 
-/** Arc of the arrow for a turn: where it starts (degrees, clockwise from 3 o'clock) and how far it sweeps. */
+/** True when [move] is shown on the small cube rather than as a face seen head-on. */
+internal fun usesLayerView(move: LayerMove, n: Int): Boolean = n >= 4 || !move.isOuter
+
+/** Arc of the arrow for a face turn: where it starts (degrees, clockwise from 3 o'clock) and how far it sweeps. */
 private fun arcFor(turns: Int): Pair<Float, Float> = when (turns) {
     // Over the top, left to right.
     1 -> -152f to 124f
@@ -67,7 +91,7 @@ private fun arcFor(turns: Int): Pair<Float, Float> = when (turns) {
     else -> 158f to 224f
 }
 
-private fun DrawScope.drawTurnGlyph(turns: Int, faceColor: Color, reveal: Float) {
+private fun DrawScope.drawFaceGlyph(turns: Int, n: Int, faceColor: Color, reveal: Float) {
     val unit = size.minDimension
     val center = Offset(size.width / 2f, size.height / 2f)
     val radius = unit * 0.40f
@@ -75,7 +99,7 @@ private fun DrawScope.drawTurnGlyph(turns: Int, faceColor: Color, reveal: Float)
 
     // The face, lit by its own color.
     drawSoftGlow(faceColor, alpha = 0.22f, center = center, radiusX = unit * 0.42f)
-    drawMiniFace(faceColor, center, side = unit * 0.40f)
+    drawMiniFace(faceColor, n, center, side = unit * 0.40f)
 
     // A faint full ring: the path the face turns along.
     drawCircle(
@@ -118,22 +142,11 @@ private fun DrawScope.drawTurnGlyph(turns: Int, faceColor: Color, reveal: Float)
     val end = Math.toRadians((start + sweep).toDouble()).toFloat()
     val radial = Offset(cos(end), sin(end))
     val tangent = if (clockwise) Offset(-radial.y, radial.x) else Offset(radial.y, -radial.x)
-    val anchor = center + radial * radius
-    val tip = anchor + tangent * (headLength * 0.45f)
-    val back = anchor - tangent * (headLength * 0.55f)
-    val head = Path().apply {
-        moveTo(tip.x, tip.y)
-        lineTo(back.x + radial.x * headWidth / 2f, back.y + radial.y * headWidth / 2f)
-        lineTo(back.x - radial.x * headWidth / 2f, back.y - radial.y * headWidth / 2f)
-        close()
-    }
-    drawPath(head, brush)
-    // Round off the corners of the head.
-    drawPath(head, brush, style = Stroke(width = stroke * 0.5f, join = StrokeJoin.Round))
+    drawArrowHead(center + radial * radius, tangent, headLength, headWidth, stroke, brush)
 }
 
-/** A 3x3 face of glossy stickers on a black body, centered on [center]. */
-private fun DrawScope.drawMiniFace(color: Color, center: Offset, side: Float) {
+/** An N×N face of glossy stickers on a black body, centered on [center]. */
+private fun DrawScope.drawMiniFace(color: Color, n: Int, center: Offset, side: Float) {
     val topLeft = center - Offset(side / 2f, side / 2f)
     drawRoundRect(
         color = CubePalette.Body,
@@ -142,10 +155,11 @@ private fun DrawScope.drawMiniFace(color: Color, center: Offset, side: Float) {
         cornerRadius = CornerRadius(side * 0.16f),
     )
     val padding = side * 0.07f
-    val gap = side * 0.05f
-    val cell = (side - 2f * padding - 2f * gap) / 3f
-    for (row in 0 until 3) {
-        for (col in 0 until 3) {
+    // Gaps shrink with the grid so bigger faces keep solid-looking stickers (5% of the face at 3×3).
+    val gap = side * 0.15f / n
+    val cell = (side - 2f * padding - (n - 1) * gap) / n
+    for (row in 0 until n) {
+        for (col in 0 until n) {
             drawSticker(
                 color = color,
                 topLeft = topLeft + Offset(padding + col * (cell + gap), padding + row * (cell + gap)),
@@ -154,4 +168,116 @@ private fun DrawScope.drawMiniFace(color: Color, center: Offset, side: Float) {
             )
         }
     }
+}
+
+private fun DrawScope.drawLayerGlyph(move: LayerMove, n: Int, faceColor: Color, reveal: Float) {
+    val unit = size.minDimension
+    val center = Offset(size.width / 2f, size.height / 2f)
+    val pictogram = CubePictogram.of(n)
+    // Cubes whose single layers are thin bands leave room for the band tabs, for every move alike,
+    // so the little cube keeps its size from move to move.
+    val tabbed = isNarrowBand(LayerMove(move.face, 1, 1, 1), n)
+    val side = unit * 0.98f * (if (tabbed) CubePictogram.tabFit else 1f)
+    val narrow = isNarrowBand(move, n)
+
+    drawSoftGlow(faceColor, alpha = 0.2f, center = center, radiusX = unit * 0.48f)
+    drawCubePictogram(pictogram, center, side, glass = if (n >= QUIET_GLASS_SIZE) QUIET_GLASS else 1f) { sticker ->
+        faceColor.takeIf { pictogram.isMoved(sticker.index, move) }
+    }
+    if (narrow) {
+        // Tabs past the outline mark where a thin band runs, whatever the arrow beside it covers.
+        for (tab in bandTabs(move, n)) {
+            val corners = tab.map { center + pictogram.project(it) * side }
+            val shaded = StickerFinish.of(faceColor).shade(0.95f)
+            drawPath(roundedPolygon(corners, unit * 0.012f), shaded)
+        }
+    }
+
+    if (reveal <= 0f) return
+    // A face spans about half the drawing. On a band wide enough, the arrow runs down its middle and
+    // stays thin enough that the band still shows on both sides of it, keyline included; a thin
+    // band gets a full-weight arrow running beside it instead.
+    val layerWidth = side * 0.5f / n
+    val stroke = if (narrow) unit * 0.032f else minOf(unit * 0.036f, layerWidth * 0.36f)
+    // The head keeps a readable size even on the thin arrows of big cubes.
+    val headLength = if (narrow) unit * 0.09f else maxOf(stroke * 3.1f, unit * 0.1f)
+    val headWidth = headLength * if (narrow) 1f else 1.1f
+    // Clear of the band by the half-width of the head (with its keyline) plus a hairline gap.
+    val clearance = (headWidth * 1.25f / 2f + unit * 0.025f) / (pictogram.laneSpacing(move.face) * side)
+    val lane = arrowLane(move, n, clearance)
+    val points = turnArrowPath(move, n, lane).map { center + pictogram.project(it) * side }
+    val bend = unit * 0.06f
+    val path = Path().apply {
+        val (a, b, c) = points
+        val inDir = (b - a).unit()
+        val outDir = (c - b).unit()
+        moveTo(a.x, a.y)
+        val beforeBend = b - inDir * bend
+        val afterBend = b + outDir * bend
+        lineTo(beforeBend.x, beforeBend.y)
+        quadraticTo(b.x, b.y, afterBend.x, afterBend.y)
+        lineTo(c.x, c.y)
+    }
+    val measure = PathMeasure().apply { setPath(path, false) }
+    val length = measure.length
+    val tipAt = length * reveal
+    val double = move.turns == 2
+    // The shaft stops short of the (last) arrowhead so its round cap never shows past the tip.
+    val shaftEnd = (tipAt - headLength * 0.55f).coerceAtLeast(0f)
+    val brush = Brush.linearGradient(Brand.SunsetColors, start = points.first(), end = points.last())
+
+    val shaft = Path()
+    if (shaftEnd > 0f) measure.getSegment(0f, shaftEnd, shaft, true)
+    // A dark keyline under the arrow keeps it readable over light stickers.
+    val keyline = Brand.Ink.copy(alpha = 0.6f)
+    drawPath(shaft, keyline, style = Stroke(width = stroke * 1.6f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    val heads = if (double) listOf(tipAt, tipAt - headLength * 0.8f) else listOf(tipAt)
+    for (at in heads) {
+        if (at <= 0f) continue
+        val tip = measure.getPosition(at)
+        val tangent = measure.getTangent(at)
+        drawArrowHead(tip - tangent * (headLength * 0.45f), tangent, headLength * 1.1f, headWidth * 1.25f, stroke, SolidColor(keyline))
+    }
+    drawPath(shaft, brush, style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    for (at in heads) {
+        if (at <= 0f) continue
+        val tip = measure.getPosition(at)
+        val tangent = measure.getTangent(at)
+        drawArrowHead(tip - tangent * (headLength * 0.45f), tangent, headLength, headWidth, stroke, brush)
+    }
+}
+
+/** From this size up, the unlit stickers of the layer pictogram are drawn as quieter glass. */
+private const val QUIET_GLASS_SIZE = 6
+private const val QUIET_GLASS = 0.65f
+
+/**
+ * A rounded triangular arrowhead whose base is centered on [anchor], pointing along the unit vector
+ * [direction].
+ */
+private fun DrawScope.drawArrowHead(
+    anchor: Offset,
+    direction: Offset,
+    headLength: Float,
+    headWidth: Float,
+    stroke: Float,
+    brush: Brush,
+) {
+    val normal = Offset(-direction.y, direction.x)
+    val tip = anchor + direction * (headLength * 0.45f)
+    val back = anchor - direction * (headLength * 0.55f)
+    val head = Path().apply {
+        moveTo(tip.x, tip.y)
+        lineTo(back.x + normal.x * headWidth / 2f, back.y + normal.y * headWidth / 2f)
+        lineTo(back.x - normal.x * headWidth / 2f, back.y - normal.y * headWidth / 2f)
+        close()
+    }
+    drawPath(head, brush)
+    // Round off the corners of the head.
+    drawPath(head, brush, style = Stroke(width = stroke * 0.5f, join = StrokeJoin.Round))
+}
+
+private fun Offset.unit(): Offset {
+    val length = hypot(x, y)
+    return if (length == 0f) Offset.Zero else this / length
 }

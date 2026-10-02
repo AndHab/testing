@@ -184,7 +184,7 @@ class SolveScreenTest {
         val scope = rememberCoroutineScope()
         cube = remember { CubeViewState(start) }
         playback = remember {
-            SolvePlayback(start, moves, CubeViewAnimator(cube), scope, initialPosition = position)
+            SolvePlayback(start, UserCube.fixture.solution, CubeViewAnimator(cube), scope, initialPosition = position)
         }
         SolveContent(playback = playback, cubeState = cube, onBack = {}, onDone = onDone)
     }

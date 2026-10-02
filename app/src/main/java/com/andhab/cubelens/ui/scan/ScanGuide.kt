@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -40,7 +41,7 @@ import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.components.drawSoftGlow
 import com.andhab.cubelens.ui.components.drawSticker
 import com.andhab.cubelens.ui.theme.Brand
-import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 
 /** Corner radius of the guide's window, as a fraction of its side. */
 internal const val GuideCornerFraction = 0.075f
@@ -88,23 +89,31 @@ internal fun ScanScrim(guide: Rect?, modifier: Modifier = Modifier) {
 private val ScrimColor = Brand.Ink.copy(alpha = 0.6f)
 
 /**
- * The scan guide: a square window with glowing sunset corner brackets, thin dividers into nine
- * cells and, in each cell, a small swatch of the color currently read there.
+ * The scan guide: a square window with glowing sunset corner brackets, thin dividers into N×N
+ * cells and, in each cell, a small swatch of the color currently read there, drawn in the cube's
+ * own colors ([LocalStickerPalette]). Swatches shrink with the cells, so a 7×7 face stays legible.
  *
  * The brackets reach further along the edges as [lockProgress] grows, closing into a full frame
  * when the face is about to be captured; with [complete] they turn mint and a check appears.
  *
- * @param liveColors the nine live colors, row-major, or null to hide the swatches.
- * @param flagCenter rings the center swatch in amber (the face in view isn't the expected one).
+ * @param n the cube's size N.
+ * @param liveColors the N² live colors, row-major, or null to hide the swatches.
+ * @param flagCenter rings the center swatch in amber (the face in view isn't the expected one);
+ *   only meaningful for odd sizes, which have a center sticker.
  */
 @Composable
 internal fun ScanGuide(
+    n: Int,
     liveColors: List<CubeColor>?,
     lockProgress: Float,
     complete: Boolean,
     flagCenter: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val res = LocalResources.current
+    val palette = LocalStickerPalette.current
+    val cells = n * n
+    val centerCell = if (n % 2 == 1) cells / 2 else -1
     val lock by animateFloatAsState(lockProgress, spring(dampingRatio = 0.9f, stiffness = 400f), label = "guideLock")
     val done by animateFloatAsState(if (complete) 1f else 0f, tween(420), label = "guideDone")
     val swatchAlpha by animateFloatAsState(
@@ -112,19 +121,15 @@ internal fun ScanGuide(
         animationSpec = tween(240),
         label = "swatchAlpha",
     )
-    val flag by animateFloatAsState(if (flagCenter) 1f else 0f, tween(200), label = "centerFlag")
-    val swatchColors: List<State<Color>> = List(9) { index ->
+    val flag by animateFloatAsState(if (flagCenter && centerCell >= 0) 1f else 0f, tween(200), label = "centerFlag")
+    val swatchColors: List<State<Color>> = List(cells) { index ->
         animateColorAsState(
-            targetValue = CubePalette.color(liveColors?.get(index)),
+            targetValue = palette.color(liveColors?.getOrNull(index)),
             animationSpec = tween(160),
             label = "swatch$index",
         )
     }
-    val description = when {
-        complete -> "All faces scanned"
-        liveColors == null -> "Scan frame"
-        else -> "Scan frame. Seeing " + liveColors.joinToString { it.displayName.lowercase() }
-    }
+    val description = guideDescription(n, liveColors, complete, res)
 
     Box(
         modifier = modifier
@@ -132,13 +137,14 @@ internal fun ScanGuide(
             .drawWithCache {
                 val bracketBrush = Brush.linearGradient(Brand.SunsetColors, start = Offset.Zero, end = Offset(size.width, size.height))
                 val divider = Stroke(1.dp.toPx())
-                val swatch = SwatchSize.toPx()
-                val plate = swatch + 2 * SwatchPlate.toPx()
+                val cell = size.width / n
+                val swatch = (cell * SwatchCellFraction).coerceIn(MinSwatchSize.toPx(), MaxSwatchSize.toPx())
+                val plate = swatch * (1f + 2f * SwatchPlateFraction)
                 val window = CornerRadius(size.width * GuideCornerFraction)
                 onDrawBehind {
                     // Once done, the camera image inside settles back so the check stands out.
                     if (done > 0f) drawRoundRect(Brand.Ink.copy(alpha = 0.45f * done), cornerRadius = window)
-                    drawDividers(alpha = 1f - done, stroke = divider)
+                    drawDividers(n, alpha = 1f - done, stroke = divider)
                     drawGuideBrackets(
                         bounds = Rect(Offset.Zero, size),
                         lock = lock,
@@ -147,15 +153,15 @@ internal fun ScanGuide(
                         accentAmount = done,
                     )
                     if (swatchAlpha > 0f) {
-                        for (index in 0 until 9) {
-                            val center = Offset(size.width * (1 + 2 * (index % 3)) / 6f, size.height * (1 + 2 * (index / 3)) / 6f)
+                        for (index in 0 until cells) {
+                            val cellCenter = Offset(cell * (index % n + 0.5f), cell * (index / n + 0.5f))
                             drawLiveSwatch(
                                 color = swatchColors[index].value,
-                                center = center,
+                                center = cellCenter,
                                 swatch = swatch,
                                 plate = plate,
                                 alpha = swatchAlpha,
-                                flag = if (index == 4) flag else 0f,
+                                flag = if (index == centerCell) flag else 0f,
                             )
                         }
                     }
@@ -186,17 +192,23 @@ internal fun ScanGuide(
     }
 }
 
-private val SwatchSize: Dp = 20.dp
-private val SwatchPlate: Dp = 3.dp
+/** A live swatch's side as a fraction of its cell, within [MinSwatchSize]..[MaxSwatchSize]. */
+private const val SwatchCellFraction = 0.3f
+private val MinSwatchSize: Dp = 10.dp
+private val MaxSwatchSize: Dp = 20.dp
 
-/** Hairlines between the nine cells, stopping short of the outer edge. */
-private fun DrawScope.drawDividers(alpha: Float, stroke: Stroke) {
+/** The dark plate around a swatch, each side, as a fraction of the swatch. */
+private const val SwatchPlateFraction = 0.15f
+
+/** Hairlines between the [n]×[n] cells, stopping short of the outer edge. */
+private fun DrawScope.drawDividers(n: Int, alpha: Float, stroke: Stroke) {
     if (alpha <= 0f) return
     val inset = size.width * 0.05f
-    val color = Color.White.copy(alpha = 0.26f * alpha)
-    for (i in 1..2) {
-        val x = size.width * i / 3f
-        val y = size.height * i / 3f
+    // Many lines would net the face over; finer grids get fainter ones.
+    val color = Color.White.copy(alpha = (if (n <= 3) 0.26f else 0.2f) * alpha)
+    for (i in 1 until n) {
+        val x = size.width * i / n
+        val y = size.height * i / n
         drawLine(color, Offset(x, inset), Offset(x, size.height - inset), stroke.width)
         drawLine(color, Offset(inset, y), Offset(size.width - inset, y), stroke.width)
     }
@@ -289,8 +301,8 @@ private fun DrawScope.drawLiveSwatch(
         cornerRadius = CornerRadius(plate * 0.32f),
     )
     if (flag > 0f) {
-        val ring = 2.dp.toPx()
-        val outer = plate + 2 * ring + 2.dp.toPx()
+        val ring = (swatch * 0.1f).coerceAtLeast(1.5.dp.toPx())
+        val outer = plate + 2 * ring + swatch * 0.1f
         drawRoundRect(
             color = Brand.Amber.copy(alpha = flag * alpha),
             topLeft = center - Offset(outer / 2f, outer / 2f),

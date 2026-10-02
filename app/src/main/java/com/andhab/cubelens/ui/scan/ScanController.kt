@@ -30,9 +30,14 @@ data class ScanTuning(
     val cellsPerFlickeringCell: Int = 16,
     /** Most stickers allowed to flicker while a face still counts as steady. */
     val maxFlickeringCells: Int = 2,
+    /**
+     * For this long after an auto-capture (in frame time) the shutter is ignored: a tap meant for
+     * the face just captured automatically would otherwise put that same face into the next step.
+     */
+    val shutterGuardMillis: Long = 400,
 ) {
     init {
-        require(stableMillis > 0 && hintDelayMillis >= 0 && maxFrameGapMillis > 0)
+        require(stableMillis > 0 && hintDelayMillis >= 0 && maxFrameGapMillis > 0 && shutterGuardMillis >= 0)
         require(smoothingFrames >= 1 && captureFrames >= 1)
         require(cellsPerFlickeringCell >= 1 && maxFlickeringCells >= 0)
     }
@@ -62,6 +67,29 @@ sealed interface ScanHint {
 }
 
 /**
+ * Two captured faces of a cube without fixed centers that look identical (in some way the face can
+ * be turned in the frame): often the same face scanned twice, though two different faces of a
+ * scrambled cube can look alike too (most often on a 2×2).
+ *
+ * @property first the earlier of the two in step order.
+ * @property second the later of the two.
+ */
+@Immutable
+data class LookAlike(val first: ScanStep, val second: ScanStep) {
+    init {
+        require(first.ordinal < second.ordinal) { "$first must come before $second" }
+    }
+
+    /** Whether [step] is one of the two faces. */
+    operator fun contains(step: ScanStep): Boolean = step == first || step == second
+
+    companion object {
+        /** The pair of [a] and [b], in either order. */
+        fun of(a: ScanStep, b: ScanStep): LookAlike = if (a.ordinal < b.ordinal) LookAlike(a, b) else LookAlike(b, a)
+    }
+}
+
+/**
  * Everything the scan screen shows, as one immutable snapshot.
  *
  * @property size the cube's size N: every face has N×N stickers.
@@ -74,9 +102,10 @@ sealed interface ScanHint {
  *   held steady. Zero when auto-capture is off or would not fire for the face in view.
  * @property autoCapture whether a steady face that fits this step is captured automatically.
  * @property hint a heads-up about the face in view, if any.
- * @property lookAlikes cubes without fixed centers: captured faces that look identical to another
- *   captured face (in any of the four ways it can be turned), so one of them is most likely the
- *   same face scanned twice.
+ * @property lookAlikePairs cubes without fixed centers: pairs of captured faces that look identical
+ *   (in any of the four ways a face can be turned), so one of them may be the same face scanned
+ *   twice. A pair is dropped once one of its faces is redone and still looks like the
+ *   other: then they are two different faces that happen to look alike.
  * @property isComplete all six faces are captured.
  * @property captureCount number of captures so far; changes exactly when a capture happens.
  * @property lastCaptured the step of the latest capture.
@@ -94,7 +123,7 @@ data class ScanUiState(
     val captureProgress: Float = 0f,
     val autoCapture: Boolean = true,
     val hint: ScanHint? = null,
-    val lookAlikes: Set<ScanStep> = emptySet(),
+    val lookAlikePairs: List<LookAlike> = emptyList(),
     val isComplete: Boolean = false,
     val captureCount: Int = 0,
     val lastCaptured: ScanStep? = null,
@@ -107,6 +136,9 @@ data class ScanUiState(
 
     /** Index of the center sticker in a row-major face (meaningful for [hasFixedCenters] only). */
     val centerIndex: Int get() = size * size / 2
+
+    /** The faces in [lookAlikePairs]. */
+    val lookAlikes: Set<ScanStep> get() = lookAlikePairs.flatMapTo(mutableSetOf()) { listOf(it.first, it.second) }
 
     /** Whether [step] has been captured. */
     fun isCaptured(step: ScanStep): Boolean = captures[step.ordinal] != null
@@ -144,10 +176,13 @@ data class ScanUiState(
  *    be a face captured already ([ScanHint.WrongFace], [ScanHint.AlreadyScanned] otherwise).
  *  - Even sizes have no fixed centers, so any face goes, as long as it doesn't look exactly like a
  *    face captured already, however it is turned in the frame ([ScanHint.SameAsCaptured]); faces
- *    captured by hand that look alike are reported in [ScanUiState.lookAlikes].
+ *    captured by hand that look alike are reported in [ScanUiState.lookAlikePairs]. Redoing one of
+ *    them by hand while it still looks like the other tells the controller they really are two
+ *    faces that look alike: the pair is no longer reported or checked against each other.
  *
  * Steadiness tolerates a sticker or two that keeps flickering on big faces
- * ([ScanTuning.toleratedFlicker]). Manual capture ([capture]) is always allowed. After every capture
+ * ([ScanTuning.toleratedFlicker]). Manual capture ([capture]) is always allowed, except for a
+ * moment right after an auto-capture ([ScanTuning.shutterGuardMillis]). After every capture
  * the classifier learns the cube's colors from all captured faces
  * ([AdaptiveLiveClassifier.learnFaces]); the captured faces are read again with what it learned, and
  * [ScanUiState.stickerColors] gives the cube's own display colors. After a capture the flow moves on
@@ -207,6 +242,16 @@ class ScanController(
     private val capturedSamples = arrayOfNulls<List<StickerSample>>(STEPS)
 
     /**
+     * Pairs of faces that look alike but that the user confirmed are different, by redoing one of
+     * them and capturing it by hand while it still looked like the other. Kept only while the two
+     * captures still look alike.
+     */
+    private val distinctPairs = mutableSetOf<LookAlike>()
+
+    /** Frame time of the latest auto-capture, while the shutter is still guarded against a late tap. */
+    private var autoCapturedAt: Long? = null
+
+    /**
      * Processes one analyzed frame.
      *
      * @param samples the N² stickers inside the guide, row-major as seen on screen.
@@ -247,19 +292,29 @@ class ScanController(
                 quietSubject = null
             }
 
-            if (autoCaptureDue()) captureLocked() else publish()
+            if (autoCaptureDue()) {
+                captureLocked()
+                autoCapturedAt = timestampMillis
+            } else {
+                publish()
+            }
         }
     }
 
     /**
      * Captures the face in view for the current step (the shutter). Allowed whatever the face, so
-     * the user always stays in control; does nothing before the first frame or once complete.
+     * the user always stays in control; does nothing before the first frame or once complete, and
+     * for [ScanTuning.shutterGuardMillis] of frames after an auto-capture: a tap that lands just
+     * after the face was captured automatically was meant for that face, not for the next step.
      *
      * @return whether a face was captured.
      */
     fun capture(): Boolean = synchronized(lock) {
         if (mutableState.value.isComplete || latestSamples == null) return false
+        val guardedSince = autoCapturedAt
+        if (guardedSince != null && heldFor(guardedSince) < tuning.shutterGuardMillis) return false
         captureLocked()
+        autoCapturedAt = null
         true
     }
 
@@ -270,6 +325,8 @@ class ScanController(
             if (current.isComplete || current.currentStep == step) return
             mutableState.value = current.copy(currentStep = step)
             quietSubject = null
+            // Choosing a face is deliberate: the shutter is meant for it.
+            autoCapturedAt = null
             restartSteadiness()
             refreshSubject(restart = false)
             publish()
@@ -312,9 +369,9 @@ class ScanController(
     }
 
     /**
-     * The progress worth keeping (size, captured samples, current step, auto-capture choice) as a
-     * compact array; live tracking and the flashlight start afresh, and what was learned about the
-     * cube's colors is learned again from the samples. See [restore].
+     * The progress worth keeping (size, captured samples, current step, auto-capture choice, faces
+     * confirmed to be different) as a compact array; live tracking and the flashlight start afresh,
+     * and what was learned about the cube's colors is learned again from the samples. See [restore].
      */
     private fun save(): IntArray = synchronized(lock) {
         val current = mutableState.value
@@ -325,6 +382,7 @@ class ScanController(
         saved[3] = if (current.autoCapture) 1 else 0
         saved[4] = current.captureCount
         saved[5] = current.lastCaptured?.ordinal ?: NONE
+        saved[6] = distinctPairs.fold(0) { mask, pair -> mask or (1 shl PAIRS.indexOf(pair)) }
         capturedSamples.forEachIndexed { step, samples ->
             samples?.forEachIndexed { sticker, sample ->
                 val at = SAVED_HEADER + step * cells * 3 + sticker * 3
@@ -352,13 +410,15 @@ class ScanController(
                     }
                 }
             }
+            distinctPairs.clear()
+            PAIRS.filterIndexedTo(distinctPairs) { k, _ -> (saved[6] and (1 shl k)) != 0 }
             val learned = learn()
             mutableState.value = ScanUiState(
                 size = size,
                 currentStep = steps.getOrElse(saved[2]) { steps.first() },
                 captures = learned.captures,
                 autoCapture = saved[3] == 1,
-                lookAlikes = learned.lookAlikes,
+                lookAlikePairs = learned.lookAlikes,
                 isComplete = learned.captures.all { it != null },
                 captureCount = saved[4].coerceAtLeast(0),
                 lastCaptured = steps.getOrNull(saved[5]),
@@ -378,8 +438,14 @@ class ScanController(
     }
 
     /** What a heads-up about a face showing [colors] would be about. */
-    private fun subjectOf(colors: List<CubeColor>): HintSubject? =
-        if (hasFixedCenters) HintSubject.Center(colors[center]) else matchingCapture(colors)?.let(HintSubject::Captured)
+    private fun subjectOf(colors: List<CubeColor>): HintSubject? {
+        if (hasFixedCenters) return HintSubject.Center(colors[center])
+        // The face just captured, still in view, is that face, even if it also looks like another one.
+        val justCaptured = quietSubject as? HintSubject.Captured
+        val captures = mutableState.value.captures
+        if (justCaptured != null && captures[justCaptured.step.ordinal]?.let { looksAlike(it, colors) } == true) return justCaptured
+        return matchingCapture(colors)?.let(HintSubject::Captured)
+    }
 
     /** Recomputes [subject] for the smoothed colors; its clock restarts when it changes (or on [restart]). */
     private fun refreshSubject(restart: Boolean) {
@@ -399,11 +465,16 @@ class ScanController(
         }
     }
 
-    /** The step, other than the current one, whose captured face looks like [colors], if any. */
+    /**
+     * The step, other than the current one, whose captured face looks like [colors], if any. Faces
+     * the user confirmed are different from the current one don't count.
+     */
     private fun matchingCapture(colors: List<CubeColor>): ScanStep? {
         val current = mutableState.value
         return ScanStep.entries.firstOrNull { step ->
-            step != current.currentStep && current.captures[step.ordinal]?.let { looksAlike(it, colors) } == true
+            step != current.currentStep &&
+                LookAlike.of(step, current.currentStep) !in distinctPairs &&
+                current.captures[step.ordinal]?.let { looksAlike(it, colors) } == true
         }
     }
 
@@ -436,13 +507,15 @@ class ScanController(
         val samples = (if (latestIsSteady) averageOf(steadySamples, cells) else null) ?: checkNotNull(latestSamples)
         val current = mutableState.value
         val step = current.currentStep
+        // Look-alikes the user was warned about and is redoing one face of now.
+        val warned = current.lookAlikePairs.filter { step in it }
         capturedSamples[step.ordinal] = samples
-        val learned = learn()
+        val learned = learn(confirmed = warned)
         val next = nextMissing(after = step, captures = learned.captures)
         mutableState.value = current.copy(
             currentStep = next ?: step,
             captures = learned.captures,
-            lookAlikes = learned.lookAlikes,
+            lookAlikePairs = learned.lookAlikes,
             isComplete = next == null,
             captureCount = current.captureCount + 1,
             lastCaptured = step,
@@ -461,8 +534,11 @@ class ScanController(
      * Teaches the classifier the cube's colors from every captured face (in step order) and reads the
      * captured faces again with what it learned. On cubes with fixed centers the centers get the
      * names the classifier gave them, which may differ from what an earlier capture was read as.
+     *
+     * @param confirmed look-alikes that were reported and of which one face was just redone: if
+     *   they still look alike, they are two different faces that happen to look alike.
      */
-    private fun learn(): Learned {
+    private fun learn(confirmed: List<LookAlike> = emptyList()): Learned {
         val steps = ScanStep.entries.filter { capturedSamples[it.ordinal] != null }
         val faces = steps.map { checkNotNull(capturedSamples[it.ordinal]) }
         val centerNames = if (faces.isEmpty()) null else classifier.learnFaces(faces, size)
@@ -472,12 +548,16 @@ class ScanController(
             centerNames?.getOrNull(k)?.let { colors[center] = it }
             colors.also { captures[steps[k].ordinal] = it }
         }
-        val lookAlikes = if (hasFixedCenters) {
-            emptySet()
+        val alike = if (hasFixedCenters) {
+            emptyList()
         } else {
-            steps.filterIndexed { k, _ -> labels.indices.any { other -> other != k && looksAlike(labels[k], labels[other]) } }.toSet()
+            labels.indices.flatMap { k ->
+                (k + 1 until labels.size).filter { other -> looksAlike(labels[k], labels[other]) }.map { LookAlike(steps[k], steps[it]) }
+            }
         }
-        return Learned(captures, LearnedPalette.estimate(faces, labels), lookAlikes)
+        distinctPairs.retainAll(alike.toSet())
+        distinctPairs += confirmed.filter { it in alike }
+        return Learned(captures, LearnedPalette.estimate(faces, labels), alike.filter { it !in distinctPairs })
     }
 
     /** The first missing step after [after], wrapping around; null when all are captured. */
@@ -504,6 +584,7 @@ class ScanController(
         steadyReference = null
         latestSamples = null
         latestIsSteady = false
+        autoCapturedAt = null
     }
 
     /** Recomputes the live parts of the state from the tracking fields. */
@@ -542,7 +623,7 @@ class ScanController(
     private class Learned(
         val captures: List<List<CubeColor>?>,
         val stickerColors: Map<CubeColor, Int>,
-        val lookAlikes: Set<ScanStep>,
+        val lookAlikes: List<LookAlike>,
     )
 
     companion object {
@@ -557,8 +638,13 @@ class ScanController(
         )
 
         private val STEPS = ScanStep.entries.size
-        private const val SAVED_VERSION = 2
-        private const val SAVED_HEADER = 6
+        private const val SAVED_VERSION = 3
+        private const val SAVED_HEADER = 7
+
+        /** Every pair of faces, in a fixed order (bit positions of the saved [distinctPairs]). */
+        private val PAIRS: List<LookAlike> = ScanStep.entries.flatMap { a ->
+            ScanStep.entries.filter { it.ordinal > a.ordinal }.map { b -> LookAlike(a, b) }
+        }
         private const val NONE = -1
 
         private fun savedLength(size: Int): Int = SAVED_HEADER + STEPS * size * size * 3

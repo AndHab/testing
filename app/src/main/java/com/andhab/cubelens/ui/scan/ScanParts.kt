@@ -185,7 +185,7 @@ internal fun FaceProgressRow(
 ) {
     val res = LocalResources.current
     val pointedAt = state.hint.pointsAtThumbnail(state)
-    val lookAlikes = if (lookAlikeWarning(state, res) != null && state.hint == null) state.lookAlikes else emptySet()
+    val lookAlike = shownLookAlike(state)?.takeIf { state.hint == null }
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
@@ -200,7 +200,7 @@ internal fun FaceProgressRow(
                 label = if (capture == null && !state.hasFixedCenters) step.number.toString() else null,
                 captured = capture != null,
                 current = current,
-                attention = pointedAt == step || step in lookAlikes,
+                attention = pointedAt == step || lookAlike?.contains(step) == true,
                 enabled = !state.isComplete && !current,
                 onClick = { onSelect(step) },
                 description = res.getString(

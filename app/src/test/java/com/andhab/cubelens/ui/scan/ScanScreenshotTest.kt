@@ -291,10 +291,34 @@ class ScanScreenshotTest {
                 currentStep = ScanStep.Back,
                 captures = ScanStep.entries.map { if (it.ordinal < 2) front else null },
                 liveColors = frame.liveColors,
-                lookAlikes = setOf(ScanStep.Front, ScanStep.Right),
+                lookAlikePairs = listOf(LookAlike(ScanStep.Front, ScanStep.Right)),
                 captureCount = 2,
                 lastCaptured = ScanStep.Right,
                 captureProgress = 0.25f,
+            ),
+        )
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h640dp-xhdpi")
+    fun twoByTwoRedoingALookAlike() {
+        // Face 2 looked like face 1 and is being redone; it still does: maybe two faces that just
+        // look alike, so the heads-up offers the shutter (on a small phone, where it wraps).
+        val frame = Frame.load("2x2", n = 2, grid = MOSAIC)
+        val cube = scrambled(2)
+        val first = frame.liveColors
+        shotScan(
+            "scan_2x2_redo_look_alike",
+            frame,
+            ScanUiState(
+                size = 2,
+                currentStep = ScanStep.Right,
+                captures = ScanStep.entries.map { if (it.ordinal < 2) first else if (it.ordinal < 4) cube.face(it.face) else null },
+                liveColors = frame.liveColors,
+                hint = ScanHint.SameAsCaptured(ScanStep.Front),
+                lookAlikePairs = listOf(LookAlike(ScanStep.Front, ScanStep.Right)),
+                captureCount = 4,
+                lastCaptured = ScanStep.Left,
             ),
         )
     }

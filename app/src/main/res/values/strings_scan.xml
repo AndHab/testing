@@ -30,24 +30,30 @@
     <!-- The guide window. %1$s lists the colors seen. -->
     <string name="scan_guide">Scan frame</string>
     <string name="scan_guide_seeing">Scan frame. Seeing %1$s</string>
+    <!-- Bigger faces: %1$s is the center color, %2$s the colors counted, e.g. "12 green, 9 white". -->
+    <string name="scan_guide_center_seeing">Scan frame. %1$s center. Seeing %2$s</string>
+    <string name="scan_guide_count">%1$d %2$s</string>
     <string name="scan_guide_done">All faces scanned</string>
 
-    <!-- Status line under the guide. Color names come from scan_color_*_lower. -->
+    <!-- Status line under the guide. Color names come from scan_color_*_lower. A no-break space
+         before a dash keeps the dash at the end of the first line when the message wraps. -->
     <string name="scan_status_starting">Starting the camera…</string>
     <string name="scan_status_hold">Hold still…</string>
     <string name="scan_status_tap">Looks right. Tap the shutter.</string>
     <string name="scan_status_tap_any">Line it up, then tap the shutter.</string>
     <string name="scan_status_fit">Fit the face inside the frame</string>
     <string name="scan_status_done">All six faces scanned</string>
-    <string name="scan_status_wrong_face">Looks like the %1$s face — show %2$s, %3$s on top</string>
-    <string name="scan_status_done_next">%1$s\'s done — now show %2$s, %3$s on top</string>
+    <string name="scan_status_wrong_face">Looks like the %1$s face\u00A0— show %2$s, %3$s on top</string>
+    <string name="scan_status_done_next">%1$s\'s done\u00A0— now show %2$s, %3$s on top</string>
     <string name="scan_status_wrong_spot">%1$s went into %2$s\'s spot. Tap %2$s below to redo it.</string>
-    <string name="scan_status_same_face">Same as face %1$d — %2$s</string>
+    <string name="scan_status_same_face">Same as face %1$d\u00A0— %2$s</string>
     <string name="scan_status_same_face_any">You already scanned this side as face %1$d</string>
+    <!-- Redoing one of two look-alike faces, and it still looks like the other one. -->
+    <string name="scan_status_same_face_redo">Looks like face %1$d. Different\u00A0side? Tap the shutter.</string>
     <string name="scan_next_turn_left">turn the cube left</string>
     <string name="scan_next_tip">tip the top toward you</string>
     <string name="scan_next_flip">flip it over</string>
-    <string name="scan_look_alikes">Faces %1$d and %2$d look the same. Tap one to redo it.</string>
+    <string name="scan_look_alikes">Faces %1$d and %2$d look alike. Scanned one twice? Tap it to redo.</string>
     <string name="scan_reassurance">Slightly off? We\'ll double-check it on the next screen.</string>
 
     <!-- Lowercase color names, used inside sentences. -->

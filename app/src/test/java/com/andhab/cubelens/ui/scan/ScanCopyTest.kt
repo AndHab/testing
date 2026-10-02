@@ -53,10 +53,10 @@ class ScanCopyTest {
     @Test
     fun headsUpsForCubesWithFixedCenters() {
         val wrong = ScanUiState(liveColors = nine, hint = ScanHint.WrongFace(seen = CubeColor.RED, expected = CubeColor.GREEN))
-        assertEquals(StatusMessage("Looks like the red face — show green, white on top", StatusTone.Warning), statusMessage(wrong, res))
+        assertEquals(StatusMessage("Looks like the red face\u00A0— show green, white on top", StatusTone.Warning), statusMessage(wrong, res))
 
         val notTurnedYet = ScanUiState(currentStep = ScanStep.Right, liveColors = nine, hint = ScanHint.AlreadyScanned(CubeColor.GREEN, ScanStep.Front))
-        assertEquals("Green's done — now show red, white on top", statusMessage(notTurnedYet, res).text)
+        assertEquals("Green's done\u00A0— now show red, white on top", statusMessage(notTurnedYet, res).text)
 
         val wrongSpot = ScanUiState(currentStep = ScanStep.Right, liveColors = nine, hint = ScanHint.AlreadyScanned(CubeColor.RED, ScanStep.Front))
         assertEquals("Red went into green's spot. Tap green below to redo it.", statusMessage(wrongSpot, res).text)
@@ -77,13 +77,13 @@ class ScanCopyTest {
             liveColors = sixteen,
             hint = ScanHint.SameAsCaptured(ScanStep.Front),
         )
-        assertEquals(StatusMessage("Same as face 1 — turn the cube left", StatusTone.Warning), statusMessage(turnNext, res))
+        assertEquals(StatusMessage("Same as face 1\u00A0— turn the cube left", StatusTone.Warning), statusMessage(turnNext, res))
         assertEquals(
-            "Same as face 4 — tip the top toward you",
+            "Same as face 4\u00A0— tip the top toward you",
             statusMessage(turnNext.copy(currentStep = ScanStep.Top, lastCaptured = ScanStep.Left, hint = ScanHint.SameAsCaptured(ScanStep.Left)), res).text,
         )
         assertEquals(
-            "Same as face 3 — flip it over",
+            "Same as face 3\u00A0— flip it over",
             statusMessage(turnNext.copy(currentStep = ScanStep.Bottom, lastCaptured = ScanStep.Top, hint = ScanHint.SameAsCaptured(ScanStep.Back)), res).text,
         )
         assertEquals(
@@ -93,11 +93,59 @@ class ScanCopyTest {
     }
 
     @Test
-    fun lookAlikesAreReportedUntilOneIsRedone() {
-        val state = ScanUiState(size = 2, currentStep = ScanStep.Back, captures = captured(ScanStep.Front, ScanStep.Right, size = 2), lookAlikes = setOf(ScanStep.Right, ScanStep.Front))
-        assertEquals("Faces 1 and 2 look the same. Tap one to redo it.", lookAlikeWarning(state, res))
+    fun lookAlikesAreReportedGentlyUntilOneIsRedone() {
+        val pair = LookAlike(ScanStep.Front, ScanStep.Right)
+        val state = ScanUiState(size = 2, currentStep = ScanStep.Back, captures = captured(ScanStep.Front, ScanStep.Right, size = 2), lookAlikePairs = listOf(pair))
+        assertEquals("Faces 1 and 2 look alike. Scanned one twice? Tap it to redo.", lookAlikeWarning(state, res))
+        assertEquals(pair, shownLookAlike(state))
         assertNull(lookAlikeWarning(state.copy(currentStep = ScanStep.Right), res))
-        assertNull(lookAlikeWarning(state.copy(lookAlikes = emptySet()), res))
+        assertNull(lookAlikeWarning(state.copy(lookAlikePairs = emptyList()), res))
+    }
+
+    @Test
+    fun theWarningNamesTwoFacesThatReallyLookAlike() {
+        // Faces 1 and 3 look alike, and so do 2 and 4: never "Faces 1 and 2".
+        val state = ScanUiState(
+            size = 2,
+            currentStep = ScanStep.Top,
+            captures = captured(ScanStep.Front, ScanStep.Right, ScanStep.Back, ScanStep.Left, size = 2),
+            lookAlikePairs = listOf(LookAlike(ScanStep.Front, ScanStep.Back), LookAlike(ScanStep.Right, ScanStep.Left)),
+        )
+        assertEquals("Faces 1 and 3 look alike. Scanned one twice? Tap it to redo.", lookAlikeWarning(state, res))
+        assertEquals(setOf(ScanStep.Front, ScanStep.Right, ScanStep.Back, ScanStep.Left), state.lookAlikes)
+        // Redoing face 1: the other pair is still worth a word.
+        assertEquals("Faces 2 and 4 look alike. Scanned one twice? Tap it to redo.", lookAlikeWarning(state.copy(currentStep = ScanStep.Front), res))
+    }
+
+    @Test
+    fun redoingALookAlikeThatStillLooksAlikeOffersTheShutter() {
+        val state = ScanUiState(
+            size = 2,
+            currentStep = ScanStep.Right,
+            captures = captured(ScanStep.Front, ScanStep.Right, ScanStep.Back, size = 2),
+            captureCount = 3,
+            lastCaptured = ScanStep.Back,
+            liveColors = List(4) { CubeColor.RED },
+            hint = ScanHint.SameAsCaptured(ScanStep.Front),
+            lookAlikePairs = listOf(LookAlike(ScanStep.Front, ScanStep.Right)),
+        )
+        assertEquals(StatusMessage("Looks like face 1. Different\u00A0side? Tap the shutter.", StatusTone.Warning), statusMessage(state, res))
+        // Like a face that wasn't reported: a plain repeat.
+        assertEquals("You already scanned this side as face 3", statusMessage(state.copy(hint = ScanHint.SameAsCaptured(ScanStep.Back)), res).text)
+    }
+
+    @Test
+    fun theGuideReadsSmallFacesStickerByStickerAndSumsUpBigOnes() {
+        assertEquals("Scan frame", guideDescription(3, null, complete = false, res))
+        assertEquals("All faces scanned", guideDescription(7, List(49) { CubeColor.RED }, complete = true, res))
+        val small = listOf(CubeColor.GREEN, CubeColor.RED, CubeColor.WHITE, CubeColor.YELLOW)
+        assertEquals("Scan frame. Seeing green, red, white, yellow", guideDescription(2, small, complete = false, res))
+
+        val four = List(16) { if (it < 9) CubeColor.WHITE else if (it < 13) CubeColor.RED else CubeColor.BLUE }
+        assertEquals("Scan frame. Seeing 9 white, 4 red, 3 blue", guideDescription(4, four, complete = false, res))
+        // A 7×7 face: its center, then each color once, most common first (ties in a fixed order).
+        val seven = List(49) { if (it == 24) CubeColor.GREEN else listOf(CubeColor.ORANGE, CubeColor.YELLOW)[it % 2] }
+        assertEquals("Scan frame. Green center. Seeing 24 yellow, 24 orange, 1 green", guideDescription(7, seven, complete = false, res))
     }
 
     @Test

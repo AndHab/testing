@@ -106,6 +106,11 @@ internal fun statusMessage(state: ScanUiState, res: Resources): StatusMessage {
 
 /** "Same as face 1 — turn the cube left": the face in view was scanned already; what to do next. */
 private fun sameFaceText(hint: ScanHint.SameAsCaptured, state: ScanUiState, res: Resources): String {
+    // Redoing one of two faces reported as look-alikes, and it still looks like the other: they may
+    // well be two different faces that just look alike, and the shutter says so.
+    if (hint.step != state.currentStep && state.lookAlikePairs.any { state.currentStep in it && hint.step in it }) {
+        return res.getString(R.string.scan_status_same_face_redo, hint.step.number)
+    }
     @StringRes val next: Int? = if (!state.followsPreviousStep) {
         null
     } else {
@@ -124,14 +129,39 @@ private fun sameFaceText(hint: ScanHint.SameAsCaptured, state: ScanUiState, res:
 }
 
 /**
- * A persistent warning about captured faces that look identical (cubes without fixed centers), or
- * null. Not shown while one of them is being redone.
+ * The captured faces that look identical (cubes without fixed centers) to warn about, or null:
+ * the first such pair in step order that isn't being redone right now.
  */
-internal fun lookAlikeWarning(state: ScanUiState, res: Resources): String? {
-    if (state.isComplete || state.currentStep in state.lookAlikes) return null
-    val faces = state.lookAlikes.sortedBy { it.ordinal }
-    if (faces.size < 2) return null
-    return res.getString(R.string.scan_look_alikes, faces[0].number, faces[1].number)
+internal fun shownLookAlike(state: ScanUiState): LookAlike? =
+    if (state.isComplete) null else state.lookAlikePairs.firstOrNull { state.currentStep !in it }
+
+/**
+ * A persistent, gentle warning about two captured faces that look identical (cubes without fixed
+ * centers), or null. It doesn't claim a mistake: two different faces of a scrambled 2×2 can look
+ * the same, and redoing one of them by hand settles it (see [ScanController]).
+ */
+internal fun lookAlikeWarning(state: ScanUiState, res: Resources): String? =
+    shownLookAlike(state)?.let { res.getString(R.string.scan_look_alikes, it.first.number, it.second.number) }
+
+/**
+ * What the guide tells a screen reader: the colors seen, sticker by sticker up to 3×3. Bigger faces
+ * are summed up per color, most common first ("12 green, 9 white, …"), led by the center color on
+ * odd sizes, so a 7×7 face isn't 49 color names.
+ */
+internal fun guideDescription(n: Int, liveColors: List<CubeColor>?, complete: Boolean, res: Resources): String = when {
+    complete -> res.getString(R.string.scan_guide_done)
+    liveColors == null -> res.getString(R.string.scan_guide)
+    n <= 3 -> res.getString(R.string.scan_guide_seeing, liveColors.joinToString { res.lowerColorName(it) })
+    else -> {
+        val counts = liveColors.groupingBy { it }.eachCount().entries
+            .sortedWith(compareByDescending<Map.Entry<CubeColor, Int>> { it.value }.thenBy { it.key.ordinal })
+            .joinToString { (color, count) -> res.getString(R.string.scan_guide_count, count, res.lowerColorName(color)) }
+        if (n % 2 == 1) {
+            res.getString(R.string.scan_guide_center_seeing, res.colorName(liveColors[n * n / 2]), counts)
+        } else {
+            res.getString(R.string.scan_guide_seeing, counts)
+        }
+    }
 }
 
 /** What the instruction card says: the step, how to get there, and how to hold the cube. */

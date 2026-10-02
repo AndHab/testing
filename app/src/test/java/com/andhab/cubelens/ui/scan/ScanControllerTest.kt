@@ -187,11 +187,12 @@ class ScanControllerTest {
 
     @Test
     fun captureAveragesTheLatestSteadyFrames() {
-        // Two slightly different greens (same class), alternating: the capture is their mean.
+        // Two slightly different greens (same class), alternating: the capture is their mean. The
+        // frames go on a while after the capture, so the shutter is free again for the rest.
         val a = StickerSample.of(20, 200, 90)
         val b = StickerSample.of(30, 210, 100)
         var flip = false
-        repeat(30) {
+        repeat(40) {
             val s = if (flip) b else a
             flip = !flip
             controller.onFrame(List(9) { s }, now)
@@ -227,6 +228,32 @@ class ScanControllerTest {
         show(moved, millis = FRAME)
         assertTrue(controller.capture())
         assertEquals(moved, state.captures[ScanStep.Front.ordinal])
+    }
+
+    @Test
+    fun aTapJustAfterAnAutoCaptureIsIgnored() {
+        val green = face(GREEN, RED, WHITE, YELLOW, GREEN, RED, ORANGE, BLUE, WHITE)
+        show(green, millis = 800)
+        assertEquals(1, state.captureCount)
+        // The tap meant for green lands a moment after it was captured: it doesn't fill red's step with green.
+        assertFalse(controller.capture())
+        assertEquals(1, state.captureCount)
+        assertNull(state.captures[ScanStep.Right.ordinal])
+
+        // A moment later the shutter is the user's again.
+        show(green, millis = 400)
+        assertTrue(controller.capture())
+        assertEquals(2, state.captureCount)
+    }
+
+    @Test
+    fun choosingAFaceRightAfterAnAutoCaptureFreesTheShutter() {
+        val green = face(GREEN, RED, WHITE, YELLOW, GREEN, RED, ORANGE, BLUE, WHITE)
+        show(green, millis = 750)
+        assertEquals(1, state.captureCount)
+        controller.selectStep(ScanStep.Front)
+        assertTrue("a deliberate choice: the shutter is meant for it", controller.capture())
+        assertEquals(2, state.captureCount)
     }
 
     @Test
@@ -463,7 +490,7 @@ class ScanControllerTest {
         assertEquals(1, state.captureCount)
         // A sticker reads differently this time, still the same face as far as the tolerance goes.
         val firstAgain = first.toMutableList().also { it[0] = if (it[0] == BLUE) GREEN else BLUE }
-        showN(firstAgain, millis = 300)
+        showN(firstAgain, millis = 500)
         assertTrue(controller.capture())
         assertEquals(setOf(ScanStep.Front, ScanStep.Right), state.lookAlikes)
 
@@ -472,6 +499,79 @@ class ScanControllerTest {
         showN(second, millis = 800)
         assertEquals(3, state.captureCount)
         assertEquals(emptySet<ScanStep>(), state.lookAlikes)
+    }
+
+    @Test
+    fun redoingALookAlikeThatStillLooksAlikeSettlesIt() {
+        // Two different faces of a scrambled cube that happen to look the same.
+        controller = ScanController(size = 4)
+        val first = scrambledFace(4, ScanStep.Front)
+        val twin = first.toMutableList().also { it[0] = if (it[0] == BLUE) GREEN else BLUE }
+        showN(first, millis = 800)
+        showN(twin, millis = 500)
+        controller.capture()
+        assertEquals(listOf(LookAlike(ScanStep.Front, ScanStep.Right)), state.lookAlikePairs)
+
+        // Redone as asked, the second face still looks like the first: it is held back, as any repeat.
+        controller.selectStep(ScanStep.Right)
+        showN(twin, millis = 2_000)
+        assertEquals(ScanHint.SameAsCaptured(ScanStep.Front), state.hint)
+        assertEquals(2, state.captureCount)
+        // Taking it by hand again says they are two faces: no more warning.
+        assertTrue(controller.capture())
+        assertEquals(emptyList<LookAlike>(), state.lookAlikePairs)
+        assertEquals(ScanStep.Back, state.currentStep)
+
+        // Nor is one held back as a repeat of the other any more, and that survives a restart.
+        controller = saveAndRestore(controller)
+        assertEquals(emptyList<LookAlike>(), state.lookAlikePairs)
+        controller.selectStep(ScanStep.Right)
+        showN(twin, millis = 2_000)
+        assertNull(state.hint)
+        assertEquals(4, state.captureCount)
+    }
+
+    @Test
+    fun aSettledLookAlikeIsReportedAgainOnceItWasRedoneDifferently() {
+        controller = ScanController(size = 4)
+        controller.setAutoCapture(false)
+        val first = scrambledFace(4, ScanStep.Front)
+        val twin = first.toMutableList().also { it[0] = if (it[0] == BLUE) GREEN else BLUE }
+        for (face in listOf(first, twin)) {
+            showN(face, millis = 100)
+            controller.capture()
+        }
+        controller.selectStep(ScanStep.Right)
+        showN(twin, millis = 100)
+        controller.capture()
+        assertEquals(emptyList<LookAlike>(), state.lookAlikePairs)
+
+        // Face 2 redone with another face, then (by mistake) with the first face once more.
+        controller.selectStep(ScanStep.Right)
+        showN(scrambledFace(4, ScanStep.Right), millis = 100)
+        controller.capture()
+        controller.selectStep(ScanStep.Right)
+        showN(first, millis = 100)
+        controller.capture()
+        assertEquals(listOf(LookAlike(ScanStep.Front, ScanStep.Right)), state.lookAlikePairs)
+    }
+
+    @Test
+    fun redoingAFaceThatNowLooksLikeAnotherOneIsReported() {
+        // Redoing face 2 settles it with face 1 only, not with a face it newly looks like.
+        controller = ScanController(size = 4)
+        controller.setAutoCapture(false)
+        val first = scrambledFace(4, ScanStep.Front)
+        val third = scrambledFace(4, ScanStep.Back)
+        for (face in listOf(first, first, third)) {
+            showN(face, millis = 100)
+            controller.capture()
+        }
+        assertEquals(listOf(LookAlike(ScanStep.Front, ScanStep.Right)), state.lookAlikePairs)
+        controller.selectStep(ScanStep.Right)
+        showN(third, millis = 100)
+        controller.capture()
+        assertEquals(listOf(LookAlike(ScanStep.Right, ScanStep.Back)), state.lookAlikePairs)
     }
 
     @Test
@@ -532,7 +632,9 @@ class ScanControllerTest {
         val front = scrambledFace(5, ScanStep.Front)
         showN(front, millis = 800)
         assertEquals(1, state.captureCount)
-        controller.capture()
+        showN(front, millis = 500)
+        assertTrue(controller.capture())
+        assertEquals(2, state.captureCount)
         assertEquals(emptySet<ScanStep>(), state.lookAlikes)
         assertEquals(12, state.centerIndex)
     }

@@ -37,7 +37,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.components.drawSoftGlow
 import com.andhab.cubelens.ui.components.drawSticker
@@ -130,11 +129,7 @@ internal fun ScanGuide(
             label = "swatch$index",
         )
     }
-    val description = when {
-        complete -> res.getString(R.string.scan_guide_done)
-        liveColors == null -> res.getString(R.string.scan_guide)
-        else -> res.getString(R.string.scan_guide_seeing, liveColors.joinToString { res.lowerColorName(it) })
-    }
+    val description = guideDescription(n, liveColors, complete, res)
 
     Box(
         modifier = modifier

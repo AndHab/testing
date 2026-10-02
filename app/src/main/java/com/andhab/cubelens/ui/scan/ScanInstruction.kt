@@ -76,12 +76,14 @@ import kotlin.math.sin
  * instead.
  *
  * Cubes with fixed centers (odd sizes) are guided by color ("Green center facing you", "White on
- * top") and the cube shown is a solved one in the scan's colors. Cubes without (even sizes) are
- * guided by position ("Turn the cube left", "First face at the bottom"), and the cube shown is the
- * one being scanned: the faces captured so far in place, the rest blank.
+ * top") and the cube shown is a solved one in the scan's colors. Cubes without (even sizes), and
+ * those whose colors turn out to be arranged differently ([byColor] false), are guided by position
+ * ("Turn the cube left", "First face at the bottom"), and the cube shown is the one being scanned:
+ * the faces captured so far in place, the rest blank.
  *
  * @param size the cube's size N.
  * @param captures the captured faces, as in [ScanUiState.captures].
+ * @param byColor whether the steps go by color ([ScanUiState.guidedByColor]).
  * @param followsPreviousStep whether the cube is still held as the previous step left it, so the
  *   step's short relative cue and its arrow apply; otherwise the card says how to get there from
  *   any hold.
@@ -96,18 +98,20 @@ internal fun InstructionCard(
     followsPreviousStep: Boolean,
     complete: Boolean,
     modifier: Modifier = Modifier,
+    byColor: Boolean = size % 2 == 1,
     compact: Boolean = false,
 ) {
     val res = LocalResources.current
     val scanned = remember(captures, size) { scannedCubeColors(captures, size) }
-    val instruction = remember(step, size, followsPreviousStep, complete, res) {
-        if (complete) null else instructionFor(step, size, followsPreviousStep, res)
+    val instruction = remember(step, size, followsPreviousStep, complete, byColor, res) {
+        if (complete) null else instructionFor(step, size, followsPreviousStep, res, byColor)
     }
     GlassCard(modifier, contentPadding = PaddingValues(start = 4.dp, end = 16.dp, top = 10.dp, bottom = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             HeldCube(
                 step = step,
                 size = size,
+                byColor = byColor,
                 scanned = scanned,
                 complete = complete,
                 cue = if (followsPreviousStep && !complete) MoveCue.of(step) else MoveCue.None,
@@ -208,23 +212,24 @@ private fun HoldIcon(icon: ImageVector) {
  * left it: a quarter turn for the side faces, a tilt for the top and bottom faces. Once [complete]
  * it shows the [scanned] cube, slowly turning.
  *
- * @param scanned the scanned cube so far (see [scannedCubeColors]): cubes without fixed centers
- *   show it, held as asked; cubes with fixed centers show a solved cube instead.
+ * @param byColor whether the steps go by color: a solved cube in the standard colors is shown, held
+ *   as asked, instead of the [scanned] cube.
+ * @param scanned the scanned cube so far (see [scannedCubeColors]), held as asked.
  */
 @Composable
 private fun HeldCube(
     step: ScanStep,
     size: Int,
+    byColor: Boolean,
     scanned: List<CubeColor?>,
     complete: Boolean,
     cue: MoveCue,
     modifier: Modifier = Modifier,
 ) {
-    val fixedCenters = size % 2 == 1
-    val (yaw, pitch) = restView(step, fixedCenters)
+    val (yaw, pitch) = restView(step, byColor)
     val colors = when {
         complete -> scanned
-        fixedCenters -> remember(step, size) { step.heldSolvedCube(size) }
+        byColor -> remember(step, size) { step.heldSolvedCube(size) }
         else -> remember(step, size, scanned) { step.held(scanned, size) }
     }
     val state = rememberCubeViewState(colors, initialYaw = yaw, initialPitch = pitch)
@@ -256,7 +261,7 @@ private fun HeldCube(
             autoRotate = complete,
             // A blank cube without center colors to go by: a frame marks the face to show. Once
             // faces are scanned, they show where things are, so they stay at full strength.
-            focusFace = if (fixedCenters || complete || scanned.any { it != null }) null else Face.F,
+            focusFace = if (byColor || complete || scanned.any { it != null }) null else Face.F,
         )
         if (cue != MoveCue.None) {
             CueArrow(cue, progress = { arrow.value }, modifier = Modifier.fillMaxSize().clearAndSetSemantics {})
@@ -265,14 +270,14 @@ private fun HeldCube(
 }
 
 /**
- * The view of the held cube at rest, as (yaw, pitch). Cubes with fixed centers are seen from above
- * and to the right, so the front color and the top color both read. Cubes without are seen so that
+ * The view of the held cube at rest, as (yaw, pitch). Cubes guided by color are seen from above
+ * and to the right, so the front color and the top color both read. Cubes guided by position are seen so that
  * the face scanned before is in view: the side faces from the left (the face just scanned turned
  * away to the left), the top face from below (the first face at the bottom), the bottom face from
  * above (the first face on top).
  */
-private fun restView(step: ScanStep, fixedCenters: Boolean): Pair<Float, Float> = when {
-    fixedCenters -> CenterViewYaw to HeldCubePitch
+private fun restView(step: ScanStep, byColor: Boolean): Pair<Float, Float> = when {
+    byColor -> CenterViewYaw to HeldCubePitch
     step == ScanStep.Top -> SideViewYaw to -HeldCubePitch
     step == ScanStep.Bottom -> CenterViewYaw to HeldCubePitch
     else -> SideViewYaw to HeldCubePitch

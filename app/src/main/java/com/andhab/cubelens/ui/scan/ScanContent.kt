@@ -86,6 +86,9 @@ import kotlin.math.roundToInt
  * its thumbnail. Stickers are drawn in the cube's own colors once they are learned
  * ([ScanUiState.stickerColors]), in the stock colors until then.
  *
+ * @param captureProgress progress toward auto-capture ([ScanController.captureProgress]), read
+ *   only while drawing the guide and the shutter: it changes on every camera frame while a face is
+ *   held steady, and nothing else needs to recompose for it.
  * @param onCapture the shutter was pressed.
  * @param onAutoCaptureChange the auto-capture switch was flipped.
  * @param onTorchChange the flashlight button was pressed (shown only if [ScanUiState.torchAvailable]).
@@ -106,6 +109,7 @@ fun ScanContent(
     onManualEntry: () -> Unit,
     modifier: Modifier = Modifier,
     onGuideChange: (GuideGeometry) -> Unit = {},
+    captureProgress: () -> Float = { 0f },
 ) {
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
     var rootSize by remember { mutableStateOf(IntSize.Zero) }
@@ -165,6 +169,7 @@ fun ScanContent(
                     step = state.currentStep,
                     size = state.size,
                     captures = state.captures,
+                    byColor = state.guidedByColor,
                     followsPreviousStep = state.followsPreviousStep,
                     complete = state.isComplete,
                     compact = compact,
@@ -189,11 +194,12 @@ fun ScanContent(
                             .padding(top = BracketOverhang + free * 0.45f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
+                        val complete = state.isComplete
                         ScanGuide(
                             n = state.size,
                             liveColors = state.liveColors,
-                            lockProgress = if (state.isComplete) 1f else capture.lockBoost.coerceAtLeast(state.captureProgress),
-                            complete = state.isComplete,
+                            lockProgress = { if (complete) 1f else capture.lockBoost.coerceAtLeast(captureProgress()) },
+                            complete = complete,
                             flagCenter = state.hasFixedCenters && state.hint != null,
                             modifier = Modifier
                                 .size(guideSize)
@@ -201,7 +207,10 @@ fun ScanContent(
                         )
                         Spacer(Modifier.height(gap))
                         ScanStatus(
-                            state = state,
+                            message = statusMessage(state, res),
+                            lookAlikes = lookAlikeWarning(state, res),
+                            hinting = state.hint != null,
+                            complete = state.isComplete,
                             showReassurance = !compact,
                             modifier = Modifier
                                 .height(statusHeight)
@@ -223,8 +232,17 @@ fun ScanContent(
                             .clearAndSetSemantics {},
                     )
                 }
+                // Remembered, so a camera frame that changes none of them leaves the row alone.
+                val pointedAt = state.hint.pointsAtThumbnail(state)
+                val lookAlike = shownLookAlike(state)?.takeIf { state.hint == null }
+                val centers = remember(state.captures, state.size) { ScanStep.entries.map(state::centerColorOf) }
+                val attention = remember(pointedAt, lookAlike) { setOfNotNull(pointedAt, lookAlike?.first, lookAlike?.second) }
                 FaceProgressRow(
-                    state = state,
+                    size = state.size,
+                    captures = state.captures,
+                    centers = centers,
+                    current = state.currentStep.takeIf { !state.isComplete },
+                    attention = attention,
                     landing = capture.landing,
                     onSelect = onSelectStep,
                     onPlaced = { step, bounds -> thumbnailsInRoot[step] = bounds },
@@ -251,8 +269,9 @@ fun ScanContent(
                             enabled = !state.isComplete,
                         )
                     }
+                    val autoCapture = state.autoCapture
                     ShutterButton(
-                        progress = if (state.autoCapture) state.captureProgress else 0f,
+                        progress = { if (autoCapture) captureProgress() else 0f },
                         complete = state.isComplete,
                         enabled = state.liveColors != null && !state.isComplete,
                         onClick = onCapture,
@@ -275,14 +294,14 @@ fun ScanContent(
                 guide = guide,
                 thumbnail = capture.landing?.let { step -> thumbnailsInRoot[step]?.translate(-rootOrigin) },
             )
-            if (capture.flash.value > 0f) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { alpha = capture.flash.value }
-                        .background(Color.White),
-                )
-            }
+            // Always there, invisible at rest: the flash is read only by the layer, so its frames
+            // redraw the layer without recomposing the screen.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = capture.flash.value }
+                    .background(Color.White),
+            )
         }
     }
 }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup up to Android 11: keep the picked cube size, but not what this device's camera
+     permission was (restored on a new device it would skip the permission prompt). The solver's
+     cache lives in noBackupFilesDir and is rebuilt when missing. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="cubelens.scan.xml" />
+</full-backup-content>

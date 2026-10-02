@@ -1,5 +1,6 @@
 package com.andhab.cubelens.ui.components
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -230,14 +231,16 @@ private fun DrawScope.drawFlagBadge(cell: Rect) {
 
 /** Localized name of a sticker color, or "Not set" for an empty slot. */
 @Composable
-fun colorName(color: CubeColor?): String = stringResource(
-    when (color) {
-        null -> R.string.color_not_set
-        CubeColor.WHITE -> R.string.color_white
-        CubeColor.YELLOW -> R.string.color_yellow
-        CubeColor.GREEN -> R.string.color_green
-        CubeColor.BLUE -> R.string.color_blue
-        CubeColor.RED -> R.string.color_red
-        CubeColor.ORANGE -> R.string.color_orange
-    },
-)
+fun colorName(color: CubeColor?): String = stringResource(colorNameRes(color))
+
+/** The string resource of [colorName], for use outside composition. */
+@StringRes
+fun colorNameRes(color: CubeColor?): Int = when (color) {
+    null -> R.string.color_not_set
+    CubeColor.WHITE -> R.string.color_white
+    CubeColor.YELLOW -> R.string.color_yellow
+    CubeColor.GREEN -> R.string.color_green
+    CubeColor.BLUE -> R.string.color_blue
+    CubeColor.RED -> R.string.color_red
+    CubeColor.ORANGE -> R.string.color_orange
+}

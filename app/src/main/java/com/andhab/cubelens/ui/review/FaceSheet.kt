@@ -190,6 +190,7 @@ internal fun BoxScope.FaceSheet(
             ColorPalette(
                 counts = review.counts,
                 perColor = review.stickersPerColor,
+                filled = review.check !is ReviewCheck.Incomplete,
                 brush = review.brush,
                 onColorTap = onColorTap,
                 enabled = enabled,

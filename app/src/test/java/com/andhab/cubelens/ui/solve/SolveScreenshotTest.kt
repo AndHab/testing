@@ -16,6 +16,7 @@ import com.andhab.cubelens.core.cube.Move
 import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.core.nxn.NxNSolution
 import com.andhab.cubelens.ui.cube.CubeViewState
+import com.andhab.cubelens.ui.review.ReviewSource
 import com.andhab.cubelens.ui.theme.CubeLensTheme
 import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import com.andhab.cubelens.ui.theme.StickerPalette
@@ -116,6 +117,12 @@ class SolveScreenshotTest {
     fun twoByTwoStart() {
         val fixture = RealSolutions.of(2)
         shot("solve_2x2_start") { SolveScreen(fixture.startColors, fixture.solution, onBack = {}, onDone = {}) }
+    }
+
+    @Test
+    fun twoByTwoEnteredByHand() {
+        val fixture = RealSolutions.of(2)
+        shot("solve_2x2_entered") { SolveScreen(fixture.startColors, fixture.solution, onBack = {}, onDone = {}, source = ReviewSource.Manual) }
     }
 
     // A wide move a little under half way, with the stage header over it.

@@ -98,6 +98,8 @@ private val ScrimColor = Brand.Ink.copy(alpha = 0.6f)
  *
  * @param n the cube's size N.
  * @param liveColors the N² live colors, row-major, or null to hide the swatches.
+ * @param lockProgress 0..1, read in an effect and the brackets drawn from it (it changes on every
+ *   camera frame while a face is held steady), so they close without recomposing anything.
  * @param flagCenter rings the center swatch in amber (the face in view isn't the expected one);
  *   only meaningful for odd sizes, which have a center sticker.
  */
@@ -105,7 +107,7 @@ private val ScrimColor = Brand.Ink.copy(alpha = 0.6f)
 internal fun ScanGuide(
     n: Int,
     liveColors: List<CubeColor>?,
-    lockProgress: Float,
+    lockProgress: () -> Float,
     complete: Boolean,
     flagCenter: Boolean,
     modifier: Modifier = Modifier,
@@ -114,7 +116,7 @@ internal fun ScanGuide(
     val palette = LocalStickerPalette.current
     val cells = n * n
     val centerCell = if (n % 2 == 1) cells / 2 else -1
-    val lock by animateFloatAsState(lockProgress, spring(dampingRatio = 0.9f, stiffness = 400f), label = "guideLock")
+    val lock = rememberFollowing(lockProgress, spring(dampingRatio = 0.9f, stiffness = 400f))
     val done by animateFloatAsState(if (complete) 1f else 0f, tween(420), label = "guideDone")
     val swatchAlpha by animateFloatAsState(
         targetValue = if (liveColors != null && !complete) 1f else 0f,
@@ -147,7 +149,7 @@ internal fun ScanGuide(
                     drawDividers(n, alpha = 1f - done, stroke = divider)
                     drawGuideBrackets(
                         bounds = Rect(Offset.Zero, size),
-                        lock = lock,
+                        lock = lock.value,
                         brush = bracketBrush,
                         accent = Brand.Mint,
                         accentAmount = done,

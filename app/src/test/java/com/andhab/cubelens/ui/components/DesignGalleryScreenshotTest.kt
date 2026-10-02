@@ -279,7 +279,7 @@ class DesignGalleryScreenshotTest {
                             CubeMark(Modifier.size(168.dp))
                         }
                     }
-                    Overline("Rubik's cube solver")
+                    Overline("Any cube · 2×2 to 7×7")
                     Spacer(Modifier.height(12.dp))
                     Text("Snap. Solve.", style = MaterialTheme.typography.displayMedium)
                     GradientText("Twist.", style = MaterialTheme.typography.displayMedium)

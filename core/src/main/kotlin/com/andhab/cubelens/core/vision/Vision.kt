@@ -94,6 +94,15 @@ enum class Placement {
      * scheme, e.g. the Japanese scheme (white opposite blue); the center labels then define the scheme.
      */
     SCAN_ORDER,
+
+    /**
+     * The scans placed on the front and top faces by the scan flow's positions stay there, and the
+     * other four go on the right, back, left and bottom faces in whichever order makes a valid cube.
+     * For odd cubes whose colors are arranged differently, scanned by someone who showed the faces
+     * the steps named by their standard colors ("red center facing you") rather than following
+     * the turns: front and top are right, but the other faces come in another order.
+     */
+    REARRANGED,
 }
 
 /**

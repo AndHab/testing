@@ -59,6 +59,7 @@ import com.andhab.cubelens.ui.components.TopBar
 import com.andhab.cubelens.ui.cube.Cube3D
 import com.andhab.cubelens.ui.cube.CubeViewState
 import com.andhab.cubelens.ui.cube.rememberCubeViewState
+import com.andhab.cubelens.ui.review.ReviewSource
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import kotlinx.coroutines.launch
@@ -84,6 +85,9 @@ import kotlin.math.abs
  * @param solution the solution, stage by stage; applying its moves to [startColors] solves the cube.
  * @param onBack leave playback without finishing (also the system back gesture).
  * @param onDone leave playback (e.g. "Scan another cube").
+ * @param source where the cube came from (a scan, or colors entered by hand), or null for a random
+ *   scramble: it decides how the hint says to hold a cube without fixed centers (see
+ *   [HoldOrientation]).
  */
 @Composable
 fun SolveScreen(
@@ -92,6 +96,7 @@ fun SolveScreen(
     onBack: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    source: ReviewSource? = ReviewSource.Scan,
 ) {
     val cubeState = rememberCubeViewState(startColors, HomeYaw, HomePitch)
     val playback = rememberSolvePlayback(startColors, solution, cubeState)
@@ -102,6 +107,7 @@ fun SolveScreen(
         onBack = onBack,
         onDone = onDone,
         modifier = modifier,
+        source = source,
     )
 }
 
@@ -146,6 +152,7 @@ internal fun SolveContent(
     onBack: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    source: ReviewSource? = ReviewSource.Scan,
 ) {
     val finished = playback.isFinished
     val auroraIntensity by animateFloatAsState(
@@ -153,7 +160,7 @@ internal fun SolveContent(
         animationSpec = tween(durationMillis = 900),
         label = "solveAurora",
     )
-    val orientation = remember(playback) { CubeOrientation.of(playback.n, playback.colorsAt(0)) }
+    val orientation = remember(playback, source) { CubeOrientation.of(playback.n, playback.colorsAt(0), source) }
     val palette = LocalStickerPalette.current
     // The turn pictogram paints a side in its center color; a side of an even cube has none to
     // point to while scrambled, so its turning layers light up in a neutral pearl instead.
@@ -237,13 +244,21 @@ private fun rememberTimelineStages(playback: SolvePlayback): List<TimelineStage>
 /**
  * What the start colors say about holding the cube: the color of each side ([scheme], from the
  * fixed centers of an odd size; null for an even size, which has no fixed centers, so its sides
- * show no single color until solved) and the [hold] hint.
+ * show no single color until solved) and the [hold] hint. An even cube is held as it was scanned
+ * or entered; a random scramble has no cube in hand to hold, so it gets no hint.
  */
 @Immutable
-private class CubeOrientation(val scheme: Map<Face, CubeColor>?, val hold: HoldOrientation) {
+private class CubeOrientation(val scheme: Map<Face, CubeColor>?, val hold: HoldOrientation?) {
     companion object {
-        fun of(n: Int, colors: List<CubeColor>): CubeOrientation {
-            if (n % 2 == 0) return CubeOrientation(scheme = null, hold = HoldOrientation.AsScanned)
+        fun of(n: Int, colors: List<CubeColor>, source: ReviewSource?): CubeOrientation {
+            if (n % 2 == 0) {
+                val hold = when (source) {
+                    ReviewSource.Scan -> HoldOrientation.AsScanned
+                    ReviewSource.Manual -> HoldOrientation.AsEntered
+                    null -> null
+                }
+                return CubeOrientation(scheme = null, hold = hold)
+            }
             val geometry = NxNGeometry.of(n)
             val centers = Face.entries.associateWith { colors[geometry.index(it, n / 2, n / 2)] }
             return CubeOrientation(
@@ -259,15 +274,15 @@ private class CubeOrientation(val scheme: Map<Face, CubeColor>?, val hold: HoldO
 }
 
 /**
- * The hero: the interactive 3D cube, with the orientation hint floating above it until the cube is
- * solved. [spin] sets it slowly turning and floating.
+ * The hero: the interactive 3D cube, with the orientation hint (if any) floating above it until the
+ * cube is solved. [spin] sets it slowly turning and floating.
  */
 @Composable
 private fun CubeStage(
     cubeState: CubeViewState,
     showHint: Boolean,
     spin: Boolean,
-    hold: HoldOrientation,
+    hold: HoldOrientation?,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
@@ -279,14 +294,16 @@ private fun CubeStage(
             interactive = true,
             autoRotate = spin,
         )
-        AnimatedVisibility(
-            visible = showHint,
-            modifier = Modifier.align(Alignment.TopCenter),
-            enter = fadeIn(),
-            exit = fadeOut(),
-            label = "holdHint",
-        ) {
-            HoldHint(hold)
+        if (hold != null) {
+            AnimatedVisibility(
+                visible = showHint,
+                modifier = Modifier.align(Alignment.TopCenter),
+                enter = fadeIn(),
+                exit = fadeOut(),
+                label = "holdHint",
+            ) {
+                HoldHint(hold)
+            }
         }
     }
 }

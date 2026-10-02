@@ -1,5 +1,7 @@
 package com.andhab.cubelens.ui
 
+import androidx.lifecycle.SavedStateHandle
+import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.nxn.LayerMove
@@ -25,6 +27,39 @@ internal fun scansOf(cube: NxNCube, look: Map<CubeColor, Int> = CubePaletteEstim
     val samples = CubeColor.entries.associateWith { StickerSample.ofArgb(look.getValue(it)) }
     return AppViewModel.ScanOrder.map { face -> cube.face(face).map { samples.getValue(it) } }
 }
+
+/**
+ * The six faces of [cube] (odd size) as someone scans them who follows the color names of the
+ * guided steps rather than the turns: for each step, the cube held with the step's standard color
+ * in front and its standard top color on top (or any top, where the cube can't be held that way),
+ * the front face photographed. Clean samples in the stock colors.
+ */
+internal fun colorGuidedScansOf(cube: NxNCube): List<List<StickerSample>> {
+    val n = cube.n
+    fun center(of: NxNCube, face: Face) = of[of.geometry.index(face, n / 2, n / 2)]
+    val holds = (0 until 64).map { k ->
+        val moves = listOf(Face.R to k % 4, Face.U to k / 4 % 4, Face.F to k / 16).filter { it.second > 0 }.map { (face, turns) -> LayerMove(face, 1, n, turns) }
+        cube.apply(moves)
+    }
+    val samples = CubeColor.entries.associateWith { StickerSample.ofArgb(CubePaletteEstimate.STANDARD.colors.getValue(it)) }
+    val standard = ColorScheme.STANDARD
+    return AppViewModel.ScanOrder.map { face ->
+        val front = standard.colorOf(face)
+        val top = standard.colorOf(
+            when (face) {
+                Face.U -> Face.B
+                Face.D -> Face.F
+                else -> Face.U
+            },
+        )
+        val held = holds.firstOrNull { center(it, Face.F) == front && center(it, Face.U) == top } ?: holds.first { center(it, Face.F) == front }
+        held.face(Face.F).map { samples.getValue(it) }
+    }
+}
+
+/** A copy of [handle]'s values, as a new process gets them back after process death. */
+internal fun afterProcessDeath(handle: SavedStateHandle): SavedStateHandle =
+    SavedStateHandle(handle.keys().associateWith { handle.get<Any>(it) })
 
 /** A scrambled [n]×[n] cube, the same for the same [seed]. */
 internal fun scrambledCube(n: Int, seed: Int = 11): NxNCube =

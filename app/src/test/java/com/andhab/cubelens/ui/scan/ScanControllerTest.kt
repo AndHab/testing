@@ -25,6 +25,7 @@ class ScanControllerTest {
     private var now = 1_000L
 
     private val state: ScanUiState get() = controller.state.value
+    private val progress: Float get() = controller.captureProgress.value
 
     @Test
     fun referenceSamplesClassifyAsTheirColor() {
@@ -39,7 +40,7 @@ class ScanControllerTest {
         show(green, millis = 600)
         assertEquals(0, state.captureCount)
         assertEquals(green, state.liveColors)
-        assertTrue("progress ${state.captureProgress}", state.captureProgress in 0.75f..0.95f)
+        assertTrue("progress ${progress}", progress in 0.75f..0.95f)
         assertTrue(state.centerMatches)
 
         show(green, millis = 150)
@@ -47,7 +48,7 @@ class ScanControllerTest {
         assertEquals(ScanStep.Front, state.lastCaptured)
         assertEquals(green, state.captures[ScanStep.Front.ordinal])
         assertEquals(ScanStep.Right, state.currentStep)
-        assertEquals("steadiness restarts after a capture", 0f, state.captureProgress)
+        assertEquals("steadiness restarts after a capture", 0f, progress)
         assertNull("no warning about the face just captured", state.hint)
     }
 
@@ -55,12 +56,12 @@ class ScanControllerTest {
     fun progressGrowsWhileSteadyAndRestartsWhenTheFaceChanges() {
         val green = face(GREEN, GREEN, GREEN, GREEN, GREEN, GREEN, GREEN, GREEN, RED)
         show(green, millis = 200)
-        val early = state.captureProgress
+        val early = progress
         show(green, millis = 200)
-        assertTrue(state.captureProgress > early)
+        assertTrue(progress > early)
         // A different face (one sticker changed for good) starts over.
         show(face(GREEN, GREEN, GREEN, GREEN, GREEN, GREEN, GREEN, GREEN, ORANGE), millis = 200)
-        assertTrue("progress ${state.captureProgress}", state.captureProgress < early + 0.1f)
+        assertTrue("progress ${progress}", progress < early + 0.1f)
         assertEquals(0, state.captureCount)
     }
 
@@ -82,7 +83,7 @@ class ScanControllerTest {
         show(red, millis = 2_000)
         assertEquals(ScanHint.WrongFace(seen = RED, expected = GREEN), state.hint)
         assertEquals(0, state.captureCount)
-        assertEquals(0f, state.captureProgress)
+        assertEquals(0f, progress)
 
         // The shutter still works: the user stays in control.
         assertTrue(controller.capture())
@@ -98,15 +99,68 @@ class ScanControllerTest {
         controller.capture()
         assertEquals(ScanStep.Right, state.currentStep)
 
-        // Step 2 asks for red: showing it again (after showing something else) is a repeat.
+        // Showing red again (after showing something else) is a repeat.
         show(face(WHITE, WHITE, WHITE, WHITE, BLUE, WHITE, WHITE, WHITE, WHITE), millis = 600)
         val redAgain = face(RED, RED, BLUE, RED, RED, BLUE, RED, WHITE, YELLOW)
         show(redAgain, millis = 2_000)
         assertEquals(ScanHint.AlreadyScanned(RED, ScanStep.Front), state.hint)
         assertEquals(1, state.captureCount)
-        assertEquals(0f, state.captureProgress)
-        // The right face for this step sits in green's place: point at that thumbnail.
-        assertEquals(ScanStep.Front, state.hint.pointsAtThumbnail(state))
+        assertEquals(0f, progress)
+        // Red is the front now: the steps go by position, and there is nothing to redo.
+        assertFalse(state.guidedByColor)
+        assertNull(state.hint.pointsAtThumbnail(state))
+    }
+
+    @Test
+    fun aCubeWithAnotherColorArrangementIsScannedAsTurned() {
+        // Red and orange swapped: turning left after green brings orange round, not red.
+        val faces = listOf(GREEN, ORANGE, BLUE, RED, WHITE, YELLOW).map { center -> face(*Array(9) { if (it == 4) center else WHITE }) }
+        show(faces[0], millis = 800)
+        assertEquals(ScanStep.Right, state.currentStep)
+
+        // The top stays on top while turning: white in front is a mistake, pointed out.
+        val white = face(*Array(9) { if (it == 4) WHITE else RED })
+        show(white, millis = 1_500)
+        assertEquals(ScanHint.WrongFace(seen = WHITE, expected = RED), state.hint)
+        assertEquals(1, state.captureCount)
+
+        // Orange, where the standard scheme has red: taken, with no warning.
+        show(faces[1], millis = 300)
+        assertTrue(state.centerMatches)
+        show(faces[1], millis = 500)
+        assertNull(state.hint)
+        assertEquals(2, state.captureCount)
+        assertEquals(faces[1], state.captures[ScanStep.Right.ordinal])
+
+        // From now on the steps go by position, and take any face not scanned yet.
+        assertFalse(state.guidedByColor)
+        assertNull(state.expectedCenter)
+        assertEquals(ORANGE, state.centerColorOf(ScanStep.Right))
+        assertNull(state.centerColorOf(ScanStep.Back))
+        for (k in 2 until 6) {
+            assertEquals(ScanStep.entries[k], state.currentStep)
+            show(faces[k], millis = 800)
+        }
+        assertTrue(state.isComplete)
+    }
+
+    @Test
+    fun aRetakeOnACubeArrangedDifferentlyWantsTheColorItWasCapturedWith() {
+        show(face(*Array(9) { if (it == 4) GREEN else WHITE }), millis = 800)
+        val orange = face(*Array(9) { if (it == 4) ORANGE else BLUE })
+        show(orange, millis = 800)
+        assertEquals(2, state.captureCount)
+        controller.selectStep(ScanStep.Right)
+        assertEquals(ORANGE, state.expectedCenter)
+
+        val red = face(*Array(9) { if (it == 4) RED else BLUE })
+        show(red, millis = 1_500)
+        assertEquals(ScanHint.WrongFace(seen = RED, expected = ORANGE), state.hint)
+        assertEquals(2, state.captureCount)
+
+        show(orange, millis = 800)
+        assertEquals(3, state.captureCount)
+        assertEquals(ScanStep.Back, state.currentStep)
     }
 
     @Test
@@ -213,7 +267,7 @@ class ScanControllerTest {
         val green = face(GREEN, RED, WHITE, YELLOW, GREEN, RED, ORANGE, BLUE, WHITE)
         show(green, millis = 2_000)
         assertEquals(0, state.captureCount)
-        assertEquals(0f, state.captureProgress)
+        assertEquals(0f, progress)
         assertTrue(state.centerMatches)
         assertTrue(controller.capture())
         assertEquals(1, state.captureCount)
@@ -478,7 +532,7 @@ class ScanControllerTest {
         showN(first, millis = 2_000)
         assertEquals(ScanHint.SameAsCaptured(ScanStep.Front), state.hint)
         assertEquals(1, state.captureCount)
-        assertEquals(0f, state.captureProgress)
+        assertEquals(0f, progress)
     }
 
     @Test
@@ -588,7 +642,7 @@ class ScanControllerTest {
         showN(backUpsideDown, millis = 2_000)
         assertEquals(ScanHint.SameAsCaptured(ScanStep.Back), state.hint)
         assertEquals("not auto-captured", 5, state.captureCount)
-        assertEquals(0f, state.captureProgress)
+        assertEquals(0f, progress)
 
         // Flipped all the way: the bottom face is new and goes in.
         showN(faces.getValue(ScanStep.Bottom), millis = 800)

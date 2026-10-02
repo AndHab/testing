@@ -19,7 +19,9 @@ import com.andhab.cubelens.core.nxn.NxNGeometry
  *
  * Cubes with an odd size have fixed centers, so for them the steps also name colors: the standard
  * color scheme (white on top, green in front) tells which center belongs in front ([color]) and on
- * top ([topColor]), the reference orientation the scan resolver assumes for an odd cube.
+ * top ([topColor]), the reference orientation the scan resolver assumes for an odd cube. Cubes
+ * whose colors are arranged differently show other colors as they are turned; from then on the
+ * steps go by position (see [ScanUiState.guidedByColor]).
  *
  * @property face the face of the cube (relative to the first face shown) scanned in this step.
  */

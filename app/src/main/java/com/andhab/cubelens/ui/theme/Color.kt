@@ -5,6 +5,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import com.andhab.cubelens.core.cube.CubeColor
 import kotlin.math.abs
 import kotlin.math.max
@@ -108,6 +109,9 @@ class StickerPalette(colors: Map<CubeColor, Color>) {
 
     /** Display color of a sticker; `null` means "not set yet". */
     fun color(c: CubeColor?): Color = if (c == null) CubePalette.Unknown else table[c.ordinal]
+
+    /** Display color of label [c] as an ARGB int, e.g. to save the palette. */
+    fun argb(c: CubeColor): Int = table[c.ordinal].toArgb()
 
     /** How a sticker of label [c] is lit: gloss and shadow adapted to its lightness. */
     fun finish(c: CubeColor?): StickerFinish = if (c == null) UnknownFinish else finishes[c.ordinal]

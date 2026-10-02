@@ -66,6 +66,7 @@ import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.ui.components.AuroraBackground
+import com.andhab.cubelens.ui.components.BannerKind
 import com.andhab.cubelens.ui.components.ButtonHeight
 import com.andhab.cubelens.ui.components.CircleIconButton
 import com.andhab.cubelens.ui.components.Overline
@@ -90,16 +91,20 @@ import com.andhab.cubelens.ui.theme.StickerPalette
  * colors (a small chip says so).
  *
  * Scanned stickers the camera was unsure about carry a subtle amber dot; stickers involved in a
- * problem get a strong red ring, on the net and on the 3D cube. Fixed centers are locked. The 3D
+ * problem get a strong red ring, on the net (with a "!" badge) and on the 3D cube. Fixed centers carry
+ * a lock: the brush skips them, but one selected on purpose can take another color. The 3D
  * preview turns to show the face being edited.
  *
  * Up to 3×3, stickers are tapped right on the net. From 4×4 on they are too small for that: tapping
  * a face opens it big in a [FaceSheet] (see [ReviewState.focusedFace]), with the palette at hand.
  *
  * The palette, the status and the buttons stay pinned at the bottom, so a color is always one tap
- * away. Above them the preview and the net share the remaining height; on short screens that part
- * scrolls (the selected sticker's face is kept in view), the preview shrinks and the status drops
- * its second line. While [ReviewState.confirmingLeave] is set, a sheet asks whether to drop the cube.
+ * away. Above them the preview and the net share the remaining height; when that part doesn't fit
+ * it scrolls (the selected sticker's face is kept in view). On short screens the header shrinks to
+ * one row with a small preview, the net shrinks to fit the height left, so all six faces show at
+ * once, and of the editing tip and the status's explanation only the one that matters shows: the
+ * explanation of a problem, else the tip. While [ReviewState.confirmingLeave] is set, a sheet asks
+ * whether to drop the cube.
  *
  * @param onRescan shown as a camera action in the top bar for scanned cubes.
  * @param onFaceTap a face of a big cube's net was tapped: open it in the face editor.
@@ -135,7 +140,10 @@ fun ReviewScreen(
                 .then(if (covered) Modifier.clearAndSetSemantics {} else Modifier),
         ) {
             val compact = maxHeight < CompactHeight
-            val previewSize = (maxHeight * PreviewHeightFraction).coerceIn(MinPreviewSize, MaxPreviewSize)
+            val previewSize = if (compact) CompactPreviewSize else (maxHeight * PreviewHeightFraction).coerceIn(MinPreviewSize, MaxPreviewSize)
+            val status = reviewStatus(review)
+            // Short screens show either the tip or the explanation of a problem, whichever matters.
+            val explainProblem = compact && review.hint == null && (status.kind == BannerKind.Error || status.kind == BannerKind.Warning)
             Column(Modifier.fillMaxSize()) {
                 TopBar(
                     title = stringResource(R.string.review_title),
@@ -166,16 +174,19 @@ fun ReviewScreen(
                         ColorPalette(
                             counts = review.counts,
                             perColor = review.stickersPerColor,
+                            filled = review.check !is ReviewCheck.Incomplete,
                             brush = review.brush,
                             onColorTap = onColorTap,
                             enabled = editable,
                             modifier = Modifier.padding(horizontal = 4.dp),
                         )
                     }
-                    Spacer(Modifier.height(10.dp))
-                    Reveal(index = 3) { Tip(reviewTip(review)) }
+                    if (!explainProblem) {
+                        Spacer(Modifier.height(10.dp))
+                        Reveal(index = 3) { Tip(reviewTip(review)) }
+                    }
                     Spacer(Modifier.height(12.dp))
-                    Reveal(index = 4) { Status(reviewStatus(review), showMessage = !compact) }
+                    Reveal(index = 4) { Status(status, showMessage = !compact || explainProblem) }
                     Spacer(Modifier.height(14.dp))
                     Reveal(index = 5) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -227,6 +238,12 @@ private const val PreviewHeightFraction = 0.19f
 private val MinPreviewSize = 112.dp
 private val MaxPreviewSize = 160.dp
 
+/** The 3D preview in the compact layout's one-row header. */
+private val CompactPreviewSize = 60.dp
+
+/** Height the compact header and the spacing around the net take from the net's share. */
+private val CompactHeaderAllowance = CompactPreviewSize + 4.dp + 12.dp + 10.dp
+
 /**
  * The preview and the net, sharing the height above the pinned palette. When they don't fit, this
  * part scrolls, with soft fades at the edges that can scroll, and the preview stops taking drags
@@ -268,7 +285,10 @@ private fun ReviewBody(
                     selected = review.selected,
                     onStickerTap = onStickerTap,
                     onFaceTap = onFaceTap,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // Short screens: the whole net in view, sized to the height left.
+                        .then(if (compact) Modifier.heightIn(max = (viewport - CompactHeaderAllowance).coerceAtLeast(MinCompactNet)) else Modifier),
                 )
             }
             Spacer(Modifier.height(10.dp))
@@ -276,6 +296,9 @@ private fun ReviewBody(
         }
     }
 }
+
+/** The compact net never shrinks below this height; below it, the body scrolls instead. */
+private val MinCompactNet = 150.dp
 
 /** Fades content out over [length] at the top and bottom edges, wherever there is more to scroll to. */
 private fun Modifier.fadingEdges(scroll: ScrollState, length: Dp = 24.dp): Modifier = this
@@ -302,14 +325,38 @@ private fun Modifier.fadingEdges(scroll: ScrollState, length: Dp = 24.dp): Modif
     }
 
 /**
- * The 3D preview next to a short heading, the editing hint (left out when [compact]) and info
- * pills: how to hold the cube for manual entry, how many faces were straightened, or how many
- * stickers were hard to read; plus, for a cube drawn in its own colors, a chip saying so.
+ * The 3D preview next to a short heading, the editing hint and info pills: how to hold the cube
+ * for manual entry, how many faces were straightened, or how many stickers were hard to read;
+ * plus, for a cube drawn in its own colors, a chip saying so. When [compact], just a small preview
+ * next to the overline and a one-line heading.
  */
 @Composable
 private fun ReviewHeader(review: ReviewState, previewSize: Dp, compact: Boolean, previewInteractive: Boolean) {
     val scanned = review.source == ReviewSource.Scan
     val palette = LocalStickerPalette.current
+    if (compact) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            PreviewCube(review, interactive = previewInteractive, modifier = Modifier.size(previewSize))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Overline(
+                    stringResource(
+                        if (scanned) R.string.review_overline_scan else R.string.review_overline_manual,
+                        stringResource(R.string.cube_size_label, review.n),
+                    ),
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(if (scanned) R.string.review_heading_scan else R.string.review_heading_manual),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Brand.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        return
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         PreviewCube(review, interactive = previewInteractive, modifier = Modifier.size(previewSize))
         Spacer(Modifier.width(14.dp))
@@ -326,20 +373,18 @@ private fun ReviewHeader(review: ReviewState, previewSize: Dp, compact: Boolean,
                 style = MaterialTheme.typography.titleLarge,
                 color = Brand.TextPrimary,
             )
-            if (!compact) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = if (scanned) {
-                        stringResource(R.string.review_body_scan, review.colors.size)
-                    } else {
-                        stringResource(
-                            if (review.usesFaceEditor) R.string.review_body_manual_faces else R.string.review_body_manual,
-                        )
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Brand.TextSecondary,
-                )
-            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = if (scanned) {
+                    stringResource(R.string.review_body_scan, review.colors.size)
+                } else {
+                    stringResource(
+                        if (review.usesFaceEditor) R.string.review_body_manual_faces else R.string.review_body_manual,
+                    )
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Brand.TextSecondary,
+            )
             val pill = when {
                 !scanned -> InfoPill(
                     stringResource(if (review.locked.isEmpty()) R.string.review_hold_manual_even else R.string.review_hold_manual),

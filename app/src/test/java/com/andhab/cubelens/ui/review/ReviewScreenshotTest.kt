@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.andhab.cubelens.core.cube.CubeColor
@@ -67,6 +68,17 @@ class ReviewScreenshotTest {
     @Config(qualifiers = "w360dp-h640dp-xxhdpi")
     fun manualOnASmallPhone() {
         compose.screenshot("review_compact_manual", advanceMillis = 1600) { Review(manualEntry(3, UserCubeColors, stickers = 30)) }
+        // The whole net fits: the bottom face too.
+        compose.onNodeWithContentDescription("Bottom face, row 3, column 3: Not set").assertIsDisplayed()
+    }
+
+    /** A small phone with a problem: the explanation shows (the tip makes room for it). */
+    @Test
+    @Config(qualifiers = "w360dp-h640dp-xxhdpi")
+    fun problemOnASmallPhone() {
+        val review = ReviewState(colors = impossibleEdgeSwap().first, source = ReviewSource.Scan)
+        compose.screenshot("review_compact_error", advanceMillis = 300) { Review(review) }
+        compose.onNodeWithText("Those colors never meet on a real cube. Check the marked stickers.").assertIsDisplayed()
     }
 
     @Test
@@ -145,6 +157,8 @@ class ReviewScreenshotTest {
         val review = ReviewState(colors, ReviewSource.Scan)
         assertTrue(review.check is ReviewCheck.InvalidNxN)
         compose.screenshot("review_4x4_error", advanceMillis = 300) { Review(review) }
+        // Worded as on a 3×3: a short title, and the count in the message.
+        compose.onNodeWithText("Found 15. A 4×4 cube has 16 of each color.").assertIsDisplayed()
     }
 
     /** Manual entry on a 7×7: the second face open in the face editor, partly copied. */

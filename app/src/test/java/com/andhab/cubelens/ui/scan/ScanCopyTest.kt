@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.andhab.cubelens.core.cube.CubeColor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,8 +20,11 @@ class ScanCopyTest {
 
     private val nine = List(9) { CubeColor.GREEN }
 
+    /** Faces captured at [steps]: red, around the step's standard center color on odd sizes. */
     private fun captured(vararg steps: ScanStep, size: Int = 3): List<List<CubeColor>?> =
-        ScanStep.entries.map { if (it in steps) List(size * size) { CubeColor.RED } else null }
+        ScanStep.entries.map { step ->
+            if (step in steps) List(size * size) { if (size % 2 == 1 && it == size * size / 2) step.color else CubeColor.RED } else null
+        }
 
     @Test
     fun titleCountsFacesAndNamesRedos() {
@@ -60,6 +64,43 @@ class ScanCopyTest {
 
         val wrongSpot = ScanUiState(currentStep = ScanStep.Right, liveColors = nine, hint = ScanHint.AlreadyScanned(CubeColor.RED, ScanStep.Front))
         assertEquals("Red went into green's spot. Tap green below to redo it.", statusMessage(wrongSpot, res).text)
+    }
+
+    @Test
+    fun aCubeArrangedDifferentlyIsTalkedAboutByPosition() {
+        // Turned left after green, orange comes round where the standard scheme has red: taken.
+        val orange = List(9) { if (it == 4) CubeColor.ORANGE else CubeColor.BLUE }
+        val turned = ScanUiState(
+            currentStep = ScanStep.Right,
+            captures = captured(ScanStep.Front),
+            captureCount = 1,
+            lastCaptured = ScanStep.Front,
+            liveColors = orange,
+        )
+        assertTrue(turned.centerMatches)
+        assertEquals(StatusMessage("Orange center works too. Hold still…", StatusTone.Good), statusMessage(turned, res))
+        assertEquals("Orange center works too. Tap the shutter.", statusMessage(turned.copy(autoCapture = false), res).text)
+        // White stays on top while turning: not a face this step takes.
+        val white = turned.copy(liveColors = List(9) { if (it == 4) CubeColor.WHITE else CubeColor.BLUE })
+        assertFalse(white.centerMatches)
+        assertEquals("Red center facing you", instructionFor(ScanStep.Right, 3, true, res, turned.guidedByColor).title)
+
+        // Once orange is captured for the right face, the steps go by position.
+        val next = ScanUiState(
+            currentStep = ScanStep.Back,
+            captures = ScanStep.entries.map { if (it == ScanStep.Front || it == ScanStep.Right) (if (it == ScanStep.Front) captured(it)[0] else orange) else null },
+            captureCount = 2,
+            lastCaptured = ScanStep.Right,
+            liveColors = List(9) { if (it == 4) CubeColor.ORANGE else CubeColor.RED },
+            hint = ScanHint.AlreadyScanned(CubeColor.ORANGE, ScanStep.Right),
+        )
+        assertFalse(next.guidedByColor)
+        assertEquals("Turn it left again", instructionFor(ScanStep.Back, 3, true, res, next.guidedByColor).title)
+        assertEquals("Face 3 of 6", scanTitle(next, res))
+        assertEquals("Orange face", faceName(ScanStep.Right, next, res))
+        assertEquals("Face 3", faceName(ScanStep.Back, next, res))
+        assertEquals("Orange's done\u00A0— turn the cube left", statusMessage(next, res).text)
+        assertEquals("Redo orange", scanTitle(next.copy(currentStep = ScanStep.Right, hint = null), res))
     }
 
     @Test

@@ -1,7 +1,9 @@
 package com.andhab.cubelens.ui
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -29,6 +31,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
@@ -47,18 +51,30 @@ import kotlin.random.Random
  * A scanned cube that doesn't look standard (e.g. pastel stickers) keeps its own colors as the
  * [StickerPalette] of its review and solution screens; everything else uses the stock colors.
  *
+ * The screen on show is kept in [savedState] ([SavedScreen]), so that a scan, a review with its
+ * edits, or a solution being played back comes back after Android ended the process in the
+ * background; work under way at that moment (resolving scans, solving) is not, and is simply
+ * asked for again.
+ *
  * @param sizeStore where the picked cube size is remembered across launches.
  * @param workDispatcher where CPU-heavy work runs.
  * @param random source of random scrambles.
+ * @param savedState where the screen on show is kept across process death.
  */
 class AppViewModel(
     private val solver: CubeSolver,
     private val sizeStore: CubeSizeStore = InMemoryCubeSizeStore(),
     private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val random: Random = Random.Default,
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(AppUiState(size = sizeStore.load() ?: DEFAULT_CUBE_SIZE))
+    private val _state = MutableStateFlow(
+        AppUiState(
+            screen = savedState.get<IntArray>(SAVED_SCREEN)?.let(SavedScreen::decode) ?: Screen.Home,
+            size = sizeStore.load() ?: DEFAULT_CUBE_SIZE,
+        ),
+    )
 
     /** The current UI state. */
     val state: StateFlow<AppUiState> = _state.asStateFlow()
@@ -87,6 +103,9 @@ class AppViewModel(
 
     init {
         warmUpSize(_state.value.size)
+        viewModelScope.launch {
+            state.map { it.screen }.distinctUntilChanged().collect { savedState[SAVED_SCREEN] = SavedScreen.encode(it) }
+        }
     }
 
     /**
@@ -346,15 +365,22 @@ class AppViewModel(
         fun paletteOf(estimate: CubePaletteEstimate): StickerPalette =
             if (estimate.isStandardLike) StickerPalette.Standard else StickerPalette.fromArgb(estimate.colors)
 
-        /** Creates the view model with the real solver (caching its tables in the app's files) and size memory. */
+        /** Key of the [SavedScreen] in the saved state. */
+        private const val SAVED_SCREEN = "screen"
+
+        /**
+         * Creates the view model with the real solver (caching its tables with the app's files that
+         * are not backed up: they are rebuilt whenever missing), size memory and saved state.
+         */
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 val application = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]) {
                     "AppViewModel needs the Application in its creation extras"
                 }
                 AppViewModel(
-                    solver = NxNCubeSolver(application.filesDir),
+                    solver = NxNCubeSolver(application.noBackupFilesDir),
                     sizeStore = PreferencesCubeSizeStore(application),
+                    savedState = createSavedStateHandle(),
                 )
             }
         }

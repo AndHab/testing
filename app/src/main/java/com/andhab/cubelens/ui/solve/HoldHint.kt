@@ -25,6 +25,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -32,17 +36,13 @@ import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.drawText
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
-import androidx.compose.ui.unit.sp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
@@ -50,7 +50,6 @@ import com.andhab.cubelens.ui.components.colorName
 import com.andhab.cubelens.ui.components.drawSticker
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubePalette
-import com.andhab.cubelens.ui.theme.DisplayFont
 import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import kotlin.math.ceil
 
@@ -64,8 +63,17 @@ internal sealed interface HoldOrientation {
      */
     data class Centers(val front: CubeColor, val top: CubeColor, val right: CubeColor) : HoldOrientation
 
-    /** A cube without fixed centers (even sizes): held as it was scanned. */
+    /**
+     * A cube without fixed centers (even sizes), scanned: held as for the first face scanned,
+     * the same side toward the person and the same side on top.
+     */
     data object AsScanned : HoldOrientation
+
+    /**
+     * A cube without fixed centers (even sizes), entered by hand: held with the face entered as the
+     * front toward the person and the one entered as the top up.
+     */
+    data object AsEntered : HoldOrientation
 }
 
 /**
@@ -74,8 +82,9 @@ internal sealed interface HoldOrientation {
  *  - fixed centers: "Hold ■ green toward you, ■ white on top", each color name after a swatch of
  *    the cube's own sticker color (from [LocalStickerPalette], so a pastel cube's mint shows as
  *    mint), the tiny cube painted in the front, top and right colors;
- *  - no centers: "Hold it as scanned: first face toward you, fifth on top", the tiny cube marked
- *    1 on the front and 5 on top.
+ *  - no centers: "Hold it like your first scan, same side on top" (or, entered by hand, "Hold your
+ *    front face toward you, top face up"), the tiny cube marked with a target on the front and an
+ *    arrow up on top.
  *
  * One line when it fits inside the screen gutter; on narrow screens with large text, balanced
  * lines in a capsule that hugs the longest line, since every word of it matters.
@@ -91,14 +100,16 @@ internal fun HoldHint(orientation: HoldOrientation, modifier: Modifier = Modifie
             val template = stringResource(R.string.solve_hold_hint, FrontMark.toString(), TopMark.toString())
             remember(template, front, top) { HintText.withSwatches(template, front, top) }
         }
-        HoldOrientation.AsScanned -> {
-            val text = stringResource(R.string.solve_hold_hint_scanned)
+        HoldOrientation.AsScanned, HoldOrientation.AsEntered -> {
+            val text = stringResource(
+                if (orientation == HoldOrientation.AsScanned) R.string.solve_hold_hint_scanned else R.string.solve_hold_hint_entered,
+            )
             remember(text) { HintText(AnnotatedString(text), text) }
         }
     }
     val swatchColors = when (orientation) {
         is HoldOrientation.Centers -> mapOf(FrontSwatch to palette.color(orientation.front), TopSwatch to palette.color(orientation.top))
-        HoldOrientation.AsScanned -> emptyMap()
+        HoldOrientation.AsScanned, HoldOrientation.AsEntered -> emptyMap()
     }
     val inlineContent = remember(swatchColors) {
         swatchColors.mapValues { (_, color) -> InlineTextContent(SwatchPlaceholder) { Swatch(color) } }
@@ -225,13 +236,13 @@ private fun Swatch(color: Color) {
 }
 
 /**
- * A tiny cube showing how to hold it: painted in the front, top and right center colors, or (held
- * as scanned) glass with the front face marked 1 and the top marked 5, in sunset tones.
+ * A tiny cube showing how to hold it: painted in the front, top and right center colors, or (no
+ * fixed centers) in sunset tones with a target on the front face (toward you) and an arrow up on
+ * the top.
  */
 @Composable
 private fun HoldIcon(orientation: HoldOrientation, modifier: Modifier) {
     val palette = LocalStickerPalette.current
-    val measurer = rememberTextMeasurer()
     Canvas(modifier) {
         val side = size.minDimension
         val center = Offset(size.width / 2f, size.height / 2f)
@@ -246,26 +257,32 @@ private fun HoldIcon(orientation: HoldOrientation, modifier: Modifier) {
                     }
                 }
             }
-            HoldOrientation.AsScanned -> {
-                // Solid faces (no stickers to cross the numbers): 1 in front, 5 on top.
+            HoldOrientation.AsScanned, HoldOrientation.AsEntered -> {
+                // Solid faces (no stickers to cross the marks): a target in front, an arrow up on top.
                 val pictogram = CubePictogram.of(2)
                 drawPath(roundedPolygon(pictogram.outline.map { center + it * side }, side * 0.06f), CubePalette.Body)
                 for ((face, fill) in listOf(Face.U to Brand.Gold, Face.F to Brand.Coral, Face.R to Color.White.copy(alpha = 0.16f))) {
                     val panel = pictogram.facePanel(face, inset = 0.14f).map { center + it * side }
                     drawPath(roundedPolygon(panel, side * 0.08f), fill)
                 }
-                for ((face, label) in listOf(Face.F to "1", Face.U to "5")) {
-                    val faceCenter = pictogram.facePanel(face, inset = 0f).let { it.reduce { a, b -> a + b } / it.size.toFloat() }
-                    val layout = measurer.measure(label, NumberStyle)
-                    drawText(
-                        layout,
-                        color = Brand.OnAccent,
-                        topLeft = center + faceCenter * side - Offset(layout.size.width / 2f, layout.size.height / 2f),
-                    )
-                }
+                fun faceCenter(face: Face): Offset =
+                    center + pictogram.facePanel(face, inset = 0f).let { it.reduce { a, b -> a + b } / it.size.toFloat() } * side
+                val stroke = side * 0.07f
+                val front = faceCenter(Face.F)
+                drawCircle(Brand.OnAccent, radius = side * 0.12f, center = front, style = Stroke(stroke))
+                drawCircle(Brand.OnAccent, radius = side * 0.045f, center = front)
+                val top = faceCenter(Face.U)
+                val arm = side * 0.1f
+                drawPath(
+                    Path().apply {
+                        moveTo(top.x - arm, top.y + arm * 0.45f)
+                        lineTo(top.x, top.y - arm * 0.55f)
+                        lineTo(top.x + arm, top.y + arm * 0.45f)
+                    },
+                    Brand.OnAccent,
+                    style = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                )
             }
         }
     }
 }
-
-private val NumberStyle = TextStyle(fontFamily = DisplayFont, fontWeight = FontWeight.Bold, fontSize = 9.sp, lineHeight = 9.sp)

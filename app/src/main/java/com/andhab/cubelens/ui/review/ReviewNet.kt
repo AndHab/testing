@@ -121,7 +121,9 @@ internal fun ReviewNet(
     ) { (netSlot, flagSlot, dotSlot, lockSlot), constraints ->
         // The same metrics CubeNet computes from the same constraints, so the marks line up exactly.
         val metrics = NetMetrics.fit(constraints, n)
-        val net = netSlot.single().measure(constraints)
+        // Loose, so the net takes its own size and is centered here, where the marks follow it
+        // (a net held to the height is narrower than the width).
+        val net = netSlot.single().measure(constraints.copy(minWidth = 0, minHeight = 0))
         val width = if (constraints.hasBoundedWidth) constraints.maxWidth else net.width
         val offsetX = (width - net.width) / 2
         placement.metrics = metrics

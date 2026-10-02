@@ -127,6 +127,8 @@ private fun CameraScan(
     // controller is one scan session, with its own classifier learning this cube's colors.
     val controller = rememberSaveable(size, saver = ScanController.saver(size)) { ScanController(size) }
     val state by controller.state.collectAsStateWithLifecycle()
+    // Read only while drawing the guide and the shutter (see ScanContent).
+    val progress = controller.captureProgress.collectAsStateWithLifecycle()
     val analyzer = remember(controller) { CubeFrameAnalyzer(controller.size, controller::onFrame) }
     var guide by remember { mutableStateOf<GuideGeometry?>(null) }
     var cameraFailed by remember { mutableStateOf(false) }
@@ -173,6 +175,7 @@ private fun CameraScan(
             guide = it
             analyzer.updateGuide(it)
         },
+        captureProgress = { progress.value },
         modifier = modifier,
     )
 

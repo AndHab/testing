@@ -6,6 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -28,6 +29,7 @@ import com.andhab.cubelens.core.vision.*
 import com.andhab.cubelens.ui.theme.CubeLensTheme
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -95,31 +97,63 @@ class ScanScreenshotTest {
                 currentStep = ScanStep.Left,
                 captures = captured(ScanStep.Front, ScanStep.Right, ScanStep.Back),
                 liveColors = frame.liveColors,
-                captureProgress = 0.5f,
                 captureCount = 3,
                 lastCaptured = ScanStep.Back,
                 torchAvailable = true,
                 torchOn = true,
             ),
+            progress = 0.5f,
         )
     }
 
     @Test
     fun wrongFace() {
+        // Tapped the orange thumbnail after two faces, then showed blue.
         val frame = Frame.load("blue")
         assertEquals(CubeColor.BLUE, frame.liveColors[4])
         shotScan(
             "scan_mismatch",
             frame,
             ScanUiState(
-                currentStep = ScanStep.Right,
-                captures = captured(ScanStep.Front),
+                currentStep = ScanStep.Left,
+                captures = captured(ScanStep.Front, ScanStep.Right),
                 liveColors = frame.liveColors,
-                hint = ScanHint.WrongFace(seen = CubeColor.BLUE, expected = CubeColor.RED),
-                captureCount = 1,
-                lastCaptured = ScanStep.Front,
+                hint = ScanHint.WrongFace(seen = CubeColor.BLUE, expected = CubeColor.ORANGE),
+                captureCount = 2,
+                lastCaptured = ScanStep.Right,
             ),
         )
+    }
+
+    @Test
+    fun otherArrangementTurnedAsAsked() {
+        // A cube with red and orange swapped, turned left after the first face: orange comes round
+        // where red would be, and the step takes it.
+        val frame = Frame.load("orange")
+        val state = ScanUiState(
+            currentStep = ScanStep.Right,
+            captures = captured(ScanStep.Front),
+            liveColors = frame.liveColors,
+            captureCount = 1,
+            lastCaptured = ScanStep.Front,
+        )
+        assertTrue(state.centerMatches)
+        shotScan("scan_other_arrangement", frame, state, progress = 0.4f)
+    }
+
+    @Test
+    fun otherArrangementGoesByPosition() {
+        // Once a face came in with another center, the steps go by position.
+        val frame = Frame.load("blue")
+        val state = ScanUiState(
+            currentStep = ScanStep.Back,
+            captures = ScanStep.entries.map { if (it == ScanStep.Front) realFace(it) else if (it == ScanStep.Right) realFace(ScanStep.Left) else null },
+            liveColors = frame.liveColors,
+            captureCount = 2,
+            lastCaptured = ScanStep.Right,
+        )
+        assertFalse(state.guidedByColor)
+        shotScan("scan_other_arrangement_next", frame, state, progress = 0.2f)
     }
 
     @Test
@@ -151,11 +185,11 @@ class ScanScreenshotTest {
                 currentStep = ScanStep.Front,
                 captures = captured(ScanStep.Front, ScanStep.Right, ScanStep.Back, ScanStep.Left),
                 liveColors = frame.liveColors,
-                captureProgress = 0.3f,
                 captureCount = 4,
                 lastCaptured = ScanStep.Left,
                 torchAvailable = true,
             ),
+            progress = 0.3f,
         )
     }
 
@@ -180,7 +214,8 @@ class ScanScreenshotTest {
     fun captureFeedback() {
         // The moment after an auto-capture: white flash fading, the face flying into its thumbnail.
         val frame = Frame.load("green")
-        var state by mutableStateOf(ScanUiState(currentStep = ScanStep.Front, liveColors = frame.liveColors, captureProgress = 0.97f))
+        var state by mutableStateOf(ScanUiState(currentStep = ScanStep.Front, liveColors = frame.liveColors))
+        var progress by mutableFloatStateOf(0.97f)
         compose.mainClock.autoAdvance = false
         compose.setContent {
             CubeLensTheme {
@@ -195,14 +230,15 @@ class ScanScreenshotTest {
                     onSelectStep = {},
                     onManualEntry = {},
                     onGuideChange = { guide = it },
+                    captureProgress = { progress },
                 )
             }
         }
         repeat(3) { compose.mainClock.advanceTimeByFrame() }
+        progress = 0f
         state = state.copy(
             currentStep = ScanStep.Right,
             captures = ScanStep.entries.map { if (it == ScanStep.Front) frame.liveColors else null },
-            captureProgress = 0f,
             captureCount = 1,
             lastCaptured = ScanStep.Front,
         )
@@ -235,7 +271,7 @@ class ScanScreenshotTest {
         // No fixed centers: "pick any side", a blank cube with the front framed, numbered slots.
         val frame = Frame.load("2x2", n = 2, grid = MOSAIC)
         assertEquals(listOf(CubeColor.GREEN, CubeColor.ORANGE, CubeColor.WHITE, CubeColor.RED), frame.liveColors)
-        shotScan("scan_2x2_step1", frame, ScanUiState(size = 2, liveColors = frame.liveColors, captureProgress = 0.2f, torchAvailable = true))
+        shotScan("scan_2x2_step1", frame, ScanUiState(size = 2, liveColors = frame.liveColors, torchAvailable = true), progress = 0.2f)
     }
 
     @Test
@@ -251,10 +287,10 @@ class ScanScreenshotTest {
                 currentStep = ScanStep.Top,
                 captures = ScanStep.entries.map { if (it.ordinal < 4) cube.face(it.face) else null },
                 liveColors = frame.liveColors,
-                captureProgress = 0.4f,
                 captureCount = 4,
                 lastCaptured = ScanStep.Left,
             ),
+            progress = 0.4f,
         )
     }
 
@@ -294,8 +330,8 @@ class ScanScreenshotTest {
                 lookAlikePairs = listOf(LookAlike(ScanStep.Front, ScanStep.Right)),
                 captureCount = 2,
                 lastCaptured = ScanStep.Right,
-                captureProgress = 0.25f,
             ),
+            progress = 0.25f,
         )
     }
 
@@ -327,7 +363,7 @@ class ScanScreenshotTest {
     fun fiveByFiveLive() {
         val frame = Frame.load("5x5", n = 5, grid = MOSAIC)
         assertEquals(CubeColor.GREEN, frame.liveColors[12])
-        shotScan("scan_5x5_live", frame, ScanUiState(size = 5, liveColors = frame.liveColors, captureProgress = 0.6f, torchAvailable = true))
+        shotScan("scan_5x5_live", frame, ScanUiState(size = 5, liveColors = frame.liveColors, torchAvailable = true), progress = 0.6f)
     }
 
     @Test
@@ -394,7 +430,7 @@ class ScanScreenshotTest {
 
         val frame = Frame.load("pastel", classify = classifier::classify, grid = MOSAIC)
         assertEquals("BBGBOYYGB".map(CubeColor::fromLetter), frame.liveColors)
-        shotScan("scan_pastel_live", frame, learned.copy(liveColors = frame.liveColors, autoCapture = true, captureProgress = 0.45f))
+        shotScan("scan_pastel_live", frame, learned.copy(liveColors = frame.liveColors, autoCapture = true), progress = 0.45f)
     }
 
     private fun scrambled(n: Int): NxNCube = NxNCube.solved(n).apply(NxNScrambler.randomMoves(n, Random(n * 11)))
@@ -407,7 +443,7 @@ class ScanScreenshotTest {
         return StickerSample.of(channel(16), channel(8), channel(0))
     }
 
-    private fun shotScan(name: String, frame: Frame, state: ScanUiState) = shot(name) {
+    private fun shotScan(name: String, frame: Frame, state: ScanUiState, progress: Float = 0f) = shot(name) {
         var guide by remember { mutableStateOf<GuideGeometry?>(null) }
         ScanContent(
             state = state,
@@ -419,6 +455,7 @@ class ScanScreenshotTest {
             onSelectStep = {},
             onManualEntry = {},
             onGuideChange = { guide = it },
+            captureProgress = { progress },
         )
     }
 

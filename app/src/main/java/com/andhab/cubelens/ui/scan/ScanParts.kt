@@ -1,6 +1,9 @@
 package com.andhab.cubelens.ui.scan
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -30,8 +33,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -71,19 +79,30 @@ import com.andhab.cubelens.ui.cube.FaceGrid
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubeLensMotion
 import com.andhab.cubelens.ui.theme.DisplayFont
+import kotlinx.coroutines.flow.collectLatest
 
 /**
- * Status line under the guide: what's happening or a gentle heads-up, and under it either a
- * warning about two captured faces that look the same or a reassurance that small slips get
- * checked on the next screen.
+ * Status line under the guide: what's happening or a gentle heads-up ([message], see
+ * [statusMessage]), and under it either a warning about two captured faces that look the same
+ * ([lookAlikes], see [lookAlikeWarning]) or a reassurance that small slips get checked on the next
+ * screen. Takes only what it shows, so a camera frame that changes none of it doesn't recompose it.
  *
+ * @param hinting a live heads-up about the face in view is showing: the warning and the
+ *   reassurance give way to it.
+ * @param complete every face is scanned.
  * @param showReassurance whether there is room for the reassurance (the warning is always shown).
  */
 @Composable
-internal fun ScanStatus(state: ScanUiState, modifier: Modifier = Modifier, showReassurance: Boolean = true) {
+internal fun ScanStatus(
+    message: StatusMessage,
+    lookAlikes: String?,
+    hinting: Boolean,
+    complete: Boolean,
+    modifier: Modifier = Modifier,
+    showReassurance: Boolean = true,
+) {
     val res = LocalResources.current
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val message = statusMessage(state, res)
         AnimatedContent(
             targetState = message,
             transitionSpec = { (fadeIn(tween(180)) + scaleIn(initialScale = 0.94f)) togetherWith fadeOut(tween(120)) },
@@ -91,12 +110,11 @@ internal fun ScanStatus(state: ScanUiState, modifier: Modifier = Modifier, showR
             label = "scanStatus",
         ) { shown ->
             // Only heads-ups and the finish are announced; "Hold still…" comes and goes with every wobble.
-            StatusChip(shown, announce = shown.tone == StatusTone.Warning || state.isComplete)
+            StatusChip(shown, announce = shown.tone == StatusTone.Warning || complete)
         }
-        val lookAlikes = lookAlikeWarning(state, res)
         when {
             // The live heads-up comes first; the look-alike warning waits for it to clear.
-            lookAlikes != null && state.hint == null -> Text(
+            lookAlikes != null && !hinting -> Text(
                 text = lookAlikes,
                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium, lineBreak = LineBreak.Heading),
                 color = Brand.Amber,
@@ -104,7 +122,7 @@ internal fun ScanStatus(state: ScanUiState, modifier: Modifier = Modifier, showR
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             )
             // The reassurance gives way to a heads-up, which may need two lines on narrow screens.
-            showReassurance && !state.isComplete && state.hint == null -> Text(
+            showReassurance && !complete && !hinting -> Text(
                 text = res.getString(R.string.scan_reassurance),
                 style = MaterialTheme.typography.bodySmall,
                 color = Brand.TextTertiary,
@@ -168,44 +186,53 @@ private fun lerpOver(accent: Color): Color = Color(
 
 /**
  * The six faces as thumbnails: captured faces in their colors with a mint check, the current one
- * glowing, the rest empty slots (with only their center color on cubes with fixed centers, with
- * their number on cubes without). Tapping a face makes it the current one, to retake it. A face
- * the user is pointed to (to redo it) gets an amber ring.
+ * glowing, the rest empty slots (with only their center color where that is known, with their
+ * number otherwise). Tapping a face makes it the current one, to retake it. A face the user is
+ * pointed to (to redo it) gets an amber ring. Takes only what it shows, so a camera frame that
+ * changes none of it doesn't recompose it.
  *
+ * @param size the cube's size N.
+ * @param captures the captured faces, as in [ScanUiState.captures].
+ * @param centers each step's known center color ([ScanUiState.centerColorOf]), in step order.
+ * @param current the face being scanned now, or null once every face is scanned.
+ * @param attention the faces to ring in amber: one the user is pointed to, or two that look alike.
  * @param landing a step whose capture is still flying in; shown as not captured until it lands.
  * @param onPlaced reports each thumbnail's bounds in root coordinates (for the capture animation).
  */
 @Composable
 internal fun FaceProgressRow(
-    state: ScanUiState,
+    size: Int,
+    captures: List<List<CubeColor>?>,
+    centers: List<CubeColor?>,
+    current: ScanStep?,
+    attention: Set<ScanStep>,
     landing: ScanStep?,
     onSelect: (ScanStep) -> Unit,
     onPlaced: (ScanStep, Rect) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val res = LocalResources.current
-    val pointedAt = state.hint.pointsAtThumbnail(state)
-    val lookAlike = shownLookAlike(state)?.takeIf { state.hint == null }
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         for (step in ScanStep.entries) {
-            val capture = state.captures[step.ordinal].takeIf { step != landing }
-            val current = step == state.currentStep && !state.isComplete
-            val name = faceName(step, state, res)
+            val capture = captures[step.ordinal].takeIf { step != landing }
+            val isCurrent = step == current
+            val center = centers[step.ordinal]
+            val name = faceName(step, center, res)
             FaceThumbnail(
-                colors = capture ?: placeholderColors(step, state.size),
-                label = if (capture == null && !state.hasFixedCenters) step.number.toString() else null,
+                colors = capture ?: placeholderColors(size, center),
+                label = if (capture == null && center == null) step.number.toString() else null,
                 captured = capture != null,
-                current = current,
-                attention = pointedAt == step || lookAlike?.contains(step) == true,
-                enabled = !state.isComplete && !current,
+                current = isCurrent,
+                attention = step in attention,
+                enabled = current != null && !isCurrent,
                 onClick = { onSelect(step) },
                 description = res.getString(
                     when {
-                        current -> R.string.scan_thumb_now
+                        isCurrent -> R.string.scan_thumb_now
                         capture != null -> R.string.scan_thumb_done
                         else -> R.string.scan_thumb_missing
                     },
@@ -219,12 +246,12 @@ internal fun FaceProgressRow(
 }
 
 /**
- * What a face not scanned yet shows: its center color on a cube with fixed centers (that much is
- * known), nothing on a cube without.
+ * What a face of a [size]×[size] cube not scanned yet shows: its [center] color where that is
+ * known (cubes with fixed centers), nothing else.
  */
-internal fun placeholderColors(step: ScanStep, size: Int): List<CubeColor?> {
-    val center = if (size % 2 == 1) size * size / 2 else -1
-    return List(size * size) { if (it == center) step.color else null }
+internal fun placeholderColors(size: Int, center: CubeColor?): List<CubeColor?> {
+    val middle = if (size % 2 == 1 && center != null) size * size / 2 else -1
+    return List(size * size) { if (it == middle) center else null }
 }
 
 @Composable
@@ -327,10 +354,13 @@ private val ThumbnailSize: Dp = 48.dp
  * The shutter: a light glossy disc inside a sunset ring. While a correct face is held steady,
  * a brighter glowing arc sweeps around the ring ([progress], 0..1) until auto-capture fires. When
  * [complete], it turns mint with a check.
+ *
+ * @param progress read when drawing (it changes on every camera frame while a face is held
+ *   steady), so the arc moves without recomposing anything.
  */
 @Composable
 internal fun ShutterButton(
-    progress: Float,
+    progress: () -> Float,
     complete: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -341,7 +371,8 @@ internal fun ShutterButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed && enabled) 0.9f else 1f, CubeLensMotion.press(), label = "shutterScale")
-    val sweep by animateFloatAsState(progress, tween(90), label = "shutterSweep")
+    val sweep = rememberFollowing(progress, tween(90))
+    val holding by remember { derivedStateOf { sweep.targetValue > 0f } }
     val done by animateFloatAsState(if (complete) 1f else 0f, tween(360), label = "shutterDone")
     Box(
         modifier = modifier
@@ -360,7 +391,7 @@ internal fun ShutterButton(
             )
             .semantics {
                 contentDescription = res.getString(R.string.scan_cd_shutter)
-                if (progress > 0f) stateDescription = res.getString(R.string.scan_shutter_auto)
+                if (holding) stateDescription = res.getString(R.string.scan_shutter_auto)
             }
             .drawWithCache {
                 val center = Offset(size.width / 2f, size.height / 2f)
@@ -384,6 +415,7 @@ internal fun ShutterButton(
                     endY = center.y,
                 )
                 onDrawBehind {
+                    val sweep = sweep.value
                     drawSoftGlow(Brand.Magenta, alpha = 0.22f + 0.25f * sweep, center = center + Offset(0f, 6.dp.toPx()), radiusX = size.width * 0.62f)
                     // Base ring: the sunset, quiet until the steadiness arc lights it up.
                     drawCircle(Color.White, radius = ringRadius, style = Stroke(ringWidth), alpha = 0.16f * (1f - done))
@@ -431,6 +463,22 @@ internal fun ShutterButton(
 
 /** Glow passes under the steadiness arc: (stroke width multiple, opacity). */
 private val ShutterGlow = listOf(3f to 0.1f, 1.9f to 0.2f, 1f to 1f)
+
+/**
+ * A value that follows [target] with [animationSpec], like `animateFloatAsState`, but reads
+ * [target] in an effect rather than in composition: a target that changes on every frame then
+ * only redraws whatever reads the returned value while drawing. Starts at the first target.
+ */
+@Composable
+internal fun rememberFollowing(target: () -> Float, animationSpec: AnimationSpec<Float>): Animatable<Float, AnimationVector1D> {
+    val value = remember { Animatable(Snapshot.withoutReadObservation(target)) }
+    val currentTarget by rememberUpdatedState(target)
+    val currentSpec by rememberUpdatedState(animationSpec)
+    LaunchedEffect(value) {
+        snapshotFlow { currentTarget() }.collectLatest { value.animateTo(it, currentSpec) }
+    }
+    return value
+}
 
 /**
  * Round control with a small label underneath, flanking the shutter.

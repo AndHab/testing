@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -32,6 +33,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.LocalStickerPalette
@@ -67,6 +69,8 @@ internal fun StickerCell(
     val palette = LocalStickerPalette.current
     val fill = palette.color(color)
     val finish = palette.finish(color)
+    val flaggedState = stringResource(R.string.sticker_flagged)
+    val clickLabel = stringResource(R.string.sticker_action_change_color)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val stickerScale by animateFloatAsState(
@@ -94,7 +98,7 @@ internal fun StickerCell(
             .semantics {
                 contentDescription = description
                 this.selected = selected
-                if (flagged) stateDescription = "Needs checking"
+                if (flagged) stateDescription = flaggedState
             }
             .then(
                 if (onClick != null) {
@@ -102,7 +106,7 @@ internal fun StickerCell(
                         interactionSource = interaction,
                         indication = null,
                         role = Role.Button,
-                        onClickLabel = "Change color",
+                        onClickLabel = clickLabel,
                     ) { onClick(index) }
                 } else {
                     Modifier
@@ -177,8 +181,11 @@ private class StickerLook(private val side: Float, finish: StickerFinish, roomy:
     // badge; compact: hairlines that scale down with tiny stickers, like the rim above).
     private val flagScale = if (roomy) 1f else fineness.coerceAtLeast(0.6f)
     private val flagRingWidth = with(density) { (if (roomy) 2.5.dp else 2.dp).toPx() } * flagScale
-    private val flagInset = flagRingWidth + with(density) { (if (roomy) 2.dp else 1.dp).toPx() } * flagScale
+    // A white hairline inside the ring keeps it apart from red and orange stickers.
+    private val flagLineWidth = with(density) { 0.75.dp.toPx() } * flagScale
+    private val flagInset = flagRingWidth + flagLineWidth + with(density) { (if (roomy) 2.dp else 1.dp).toPx() } * flagScale
     private val flagRing = Stroke(flagRingWidth)
+    private val flagLine = Stroke(flagLineWidth)
     private val innerScale = (1f - 2 * flagInset / side).coerceAtLeast(0.4f)
     private val badgeDiameter = (side * 0.42f).coerceIn(with(density) { 12.dp.toPx() }, with(density) { 18.dp.toPx() })
     private val badgeHalo = with(density) { 1.5.dp.toPx() }
@@ -202,8 +209,9 @@ private class StickerLook(private val side: Float, finish: StickerFinish, roomy:
     }
 
     /**
-     * A flagged sticker that never relies on color alone: shrunk inside an ink gap and a
-     * [Brand.Danger] ring, so the ring reads on any sticker color, red and orange included.
+     * A flagged sticker that never relies on color alone: shrunk inside an ink gap, a white
+     * hairline and a [Brand.Danger] ring, so the ring reads on any sticker color, red and orange
+     * included.
      */
     fun DrawScope.drawFlagged(fill: Color, known: Boolean) {
         drawRoundRect(Brand.Ink, size = stickerSize, cornerRadius = radius)
@@ -214,25 +222,43 @@ private class StickerLook(private val side: Float, finish: StickerFinish, roomy:
             cornerRadius = CornerRadius(radius.x - flagRingWidth / 2),
             style = flagRing,
         )
+        val line = flagRingWidth + flagLineWidth / 2
+        drawRoundRect(
+            color = FLAG_LINE,
+            topLeft = Offset(line, line),
+            size = Size(side - 2 * line, side - 2 * line),
+            cornerRadius = CornerRadius((radius.x - line).coerceAtLeast(0f)),
+            style = flagLine,
+        )
         scale(innerScale, pivot = Offset(side / 2, side / 2)) { drawBody(fill, known) }
     }
 
     /** A round "!" badge centered near the sticker's top-right [corner]. */
     fun DrawScope.drawFlagBadge(corner: Offset) {
         val r = badgeDiameter / 2
-        val center = corner + Offset(-r * 0.45f, r * 0.45f)
-        drawCircle(Brand.Ink, radius = r + badgeHalo, center = center)
-        drawCircle(Brand.Danger, radius = r, center = center)
-        val stroke = badgeDiameter * 0.15f
-        drawLine(
-            color = Brand.OnAccent,
-            start = center + Offset(0f, -badgeDiameter * 0.24f),
-            end = center + Offset(0f, badgeDiameter * 0.05f),
-            strokeWidth = stroke,
-            cap = StrokeCap.Round,
-        )
-        drawCircle(Brand.OnAccent, radius = stroke * 0.58f, center = center + Offset(0f, badgeDiameter * 0.24f))
+        drawFlagBadge(corner + Offset(-r * 0.45f, r * 0.45f), badgeDiameter, badgeHalo)
     }
+}
+
+/** The hairline between a flagged sticker's danger ring and its dark gap. */
+private val FLAG_LINE = Color.White.copy(alpha = 0.85f)
+
+/**
+ * A round [Brand.Danger] "!" badge of [diameter] centered on [center], in an ink [halo] that sets
+ * it off from whatever is underneath: the mark of a sticker that needs a look (DESIGN.md).
+ */
+internal fun DrawScope.drawFlagBadge(center: Offset, diameter: Float, halo: Float) {
+    drawCircle(Brand.Ink, radius = diameter / 2 + halo, center = center)
+    drawCircle(Brand.Danger, radius = diameter / 2, center = center)
+    val stroke = diameter * 0.15f
+    drawLine(
+        color = Brand.OnAccent,
+        start = center + Offset(0f, -diameter * 0.24f),
+        end = center + Offset(0f, diameter * 0.05f),
+        strokeWidth = stroke,
+        cap = StrokeCap.Round,
+    )
+    drawCircle(Brand.OnAccent, radius = stroke * 0.58f, center = center + Offset(0f, diameter * 0.24f))
 }
 
 /** Corner radius of a 2D sticker, as a fraction of its side. */

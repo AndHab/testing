@@ -18,6 +18,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.nxn.NxNCube
 import com.andhab.cubelens.ui.cube.CubeViewState
+import com.andhab.cubelens.ui.review.ReviewSource
 import com.andhab.cubelens.ui.theme.CubeLensTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -46,7 +47,20 @@ class SolveScreenStagesTest {
     @Test
     fun aCubeWithoutCentersIsHeldAsScanned() {
         show { SolveScreen(fixture.startColors, fixture.solution, onBack = {}, onDone = {}) }
-        compose.onNodeWithText("Hold it as scanned: first face toward you, fifth on top").assertExists()
+        compose.onNodeWithText("Hold it like your first scan, same side on top").assertExists()
+        compose.onNodeWithText("Move 1 of ${fixture.moves.size}").assertExists()
+    }
+
+    @Test
+    fun aCubeWithoutCentersEnteredByHandIsHeldAsEntered() {
+        show { SolveScreen(fixture.startColors, fixture.solution, onBack = {}, onDone = {}, source = ReviewSource.Manual) }
+        compose.onNodeWithText("Hold your front face toward you, top face up").assertExists()
+    }
+
+    @Test
+    fun aRandomScrambleWithoutCentersHasNoHoldHint() {
+        show { SolveScreen(fixture.startColors, fixture.solution, onBack = {}, onDone = {}, source = null) }
+        compose.onNodeWithText("Hold", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Move 1 of ${fixture.moves.size}").assertExists()
     }
 

@@ -74,11 +74,14 @@ fun CubeLensApp(
         AnimatedContent(
             targetState = state.screen,
             // Same kind of screen (e.g. an edit on the review) updates in place without a transition.
-            contentKey = { it::class },
+            // The key must be the same in every process: the saved state of the screen's content
+            // (a scan in progress, the playback position) is keyed by it, and comes back after
+            // process death only if it matches. A class's hash code is not, its depth is.
+            contentKey = { it.depth },
             transitionSpec = { screenTransition() },
             label = "screen",
         ) { screen ->
-            val leaving = screen::class != state.screen::class
+            val leaving = screen.depth != state.screen.depth
             Box(
                 Modifier
                     .fillMaxSize()
@@ -136,6 +139,8 @@ private fun ScreenContent(screen: Screen, state: AppUiState, viewModel: AppViewM
                 solution = screen.solution,
                 onBack = { viewModel.back() },
                 onDone = viewModel::onSolveDone,
+                // Null for a random scramble, which has no cube in hand.
+                source = screen.returnTo?.review?.source,
             )
         }
     }

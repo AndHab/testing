@@ -63,12 +63,15 @@ import com.andhab.cubelens.ui.theme.LocalStickerPalette
 /**
  * The six sticker colors as big glossy swatches in the cube's own colors ([LocalStickerPalette]),
  * each with a live counter underneath ("12/16") that turns mint with a check at exactly
- * [perColor] and red above it. The [brush] color is lifted inside a sunset ring.
+ * [perColor] and red above it, and once every sticker is [filled], red below it too. The [brush]
+ * color is lifted inside a sunset ring.
  *
  * @param counts how many stickers have each color.
  * @param perColor how many stickers of each color a finished cube has (N²: 9 for a 3×3).
  * @param brush the color currently picked up for painting, if any.
  * @param enabled false while solving: swatches ignore taps.
+ * @param filled every sticker has a color, so the counts are final: a color short of [perColor]
+ *   is as wrong as one over it (while entry is under way it is just not done yet).
  */
 @Composable
 internal fun ColorPalette(
@@ -78,6 +81,7 @@ internal fun ColorPalette(
     onColorTap: (CubeColor) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    filled: Boolean = false,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -90,6 +94,7 @@ internal fun ColorPalette(
                 perColor = perColor,
                 active = brush == color,
                 enabled = enabled,
+                filled = filled,
                 onClick = { onColorTap(color) },
             )
         }
@@ -106,6 +111,7 @@ private fun Swatch(
     perColor: Int,
     active: Boolean,
     enabled: Boolean,
+    filled: Boolean,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -203,22 +209,23 @@ private fun Swatch(
             }
         }
         Spacer(Modifier.height(8.dp))
-        CountChip(count, perColor)
+        CountChip(count, perColor, filled)
     }
 }
 
 /**
- * "7/9" in a small capsule: neutral below [perColor], mint with a check at exactly [perColor], red
- * above. A complete count shows short, as "✓ 9" (or "✓ 49"), on every size: six chips still fit
+ * "7/9" in a small capsule: neutral below [perColor] while the cube is still being [filled] in,
+ * mint with a check at exactly [perColor], red above (and below too, once every sticker is
+ * filled). A complete count shows short, as "✓ 9" (or "✓ 49"), on every size: six chips still fit
  * side by side on a small phone, and the check says "all there".
  */
 @Composable
-private fun CountChip(count: Int, perColor: Int) {
+private fun CountChip(count: Int, perColor: Int, filled: Boolean) {
     val complete = count == perColor
     val tone by animateColorAsState(
         targetValue = when {
             complete -> Brand.Mint
-            count > perColor -> Brand.Danger
+            count > perColor || filled -> Brand.Danger
             else -> Brand.TextTertiary
         },
         animationSpec = CubeLensMotion.select(),

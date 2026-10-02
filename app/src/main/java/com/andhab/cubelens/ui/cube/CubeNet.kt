@@ -32,15 +32,20 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.nxn.NxNGeometry
+import com.andhab.cubelens.ui.components.colorName
+import com.andhab.cubelens.ui.components.colorNameRes
 import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import com.andhab.cubelens.ui.theme.StickerPalette
@@ -55,10 +60,12 @@ import kotlin.math.roundToInt
  * The net fills the available width (or the available height, if that is the tighter fit), and
  * keeps the same overall proportions for every size. Each face sits on a dark glass plate;
  * stickers are rounded and glossy in the colors of [LocalStickerPalette], unknown (`null`) stickers
- * are hollow with a dashed rim, flagged stickers pulse with a soft [Brand.Danger] glow and sit
- * inside a danger ring set off by a dark gap (so red and orange stickers read as flagged too), and
- * the selected sticker lifts slightly inside a white ring. When [onStickerClick] is set, stickers
- * are buttons with a springy press.
+ * are hollow with a dashed rim, flagged stickers pulse with a soft [Brand.Danger] glow, sit inside
+ * a danger ring set off by a dark gap and carry a "!" badge (so the flag never relies on color: red
+ * and orange stickers read as flagged too; on a 5×5 and larger, whose stickers are tiny, one badge
+ * on the corner of each face with flags stands in for them), and the selected sticker lifts
+ * slightly inside a white ring. When [onStickerClick] is set, stickers are buttons with a springy
+ * press.
  *
  * On a big cube the stickers of a net get small; pass [onFaceClick] to make each face's plate a
  * button (e.g. to open that face in a [FaceEditor]). Taps on a sticker go to [onStickerClick] when
@@ -101,8 +108,13 @@ fun CubeNet(
                 StickerCell(
                     index = i,
                     color = color,
-                    description = "${face.friendlyName} face, row ${geometry.rowOf(i) + 1}, " +
-                        "column ${geometry.colOf(i) + 1}: ${color?.displayName ?: "empty"}",
+                    description = stringResource(
+                        R.string.sticker_net_description,
+                        netFaceName(face),
+                        geometry.rowOf(i) + 1,
+                        geometry.colOf(i) + 1,
+                        colorName(color),
+                    ),
                     flagged = i in highlightFacelets,
                     selected = i == selectedFacelet,
                     onClick = onStickerClick,
@@ -124,7 +136,10 @@ fun CubeNet(
                     colors = listOf(Brand.Danger),
                 )
             }
-            onDrawBehind {
+            val badges = flagBadges(metrics, flagged, this)
+            val badgeDiameter = FLAG_BADGE_DIAMETER.dp.toPx()
+            val badgeHalo = FLAG_BADGE_HALO.dp.toPx()
+            onDrawWithContent {
                 with(plates) { drawPlates() }
                 // Glows sit behind every sticker so they only bleed into the gaps, never over a neighbor.
                 if (glow != null && pulse != null) {
@@ -138,6 +153,8 @@ fun CubeNet(
                         )
                     }
                 }
+                drawContent()
+                for (badge in badges) drawFlagBadge(badge, badgeDiameter, badgeHalo)
             }
         },
     ) { measurables, constraints ->
@@ -165,6 +182,45 @@ fun CubeNet(
 }
 
 /**
+ * Where the "!" badges of the [flagged] stickers of a net with [metrics] go: on each sticker's
+ * top-right corner, kept inside its face's plate; from [FLAG_BADGE_PER_FACE_SIZE] on, where
+ * stickers are too small for a badge each, one on the top-right corner of each face with flags,
+ * like a notification badge.
+ */
+private fun flagBadges(metrics: NetMetrics, flagged: IntArray, density: Density): List<Offset> {
+    if (flagged.isEmpty()) return emptyList()
+    val geometry = NxNGeometry.of(metrics.n)
+    val r = with(density) { (FLAG_BADGE_DIAMETER / 2).dp.toPx() }
+    if (metrics.n >= FLAG_BADGE_PER_FACE_SIZE) {
+        return flagged.map { geometry.faceOf(it) }.distinct().map { face ->
+            Offset(metrics.plateX(face) + metrics.plate - r * 0.45f, metrics.plateY(face) + r * 0.45f)
+        }
+    }
+    val reach = r + with(density) { FLAG_BADGE_HALO.dp.toPx() }
+    return flagged.map { i ->
+        val face = geometry.faceOf(i)
+        val badge = Offset(metrics.stickerX(i) + metrics.sticker - r * 0.45f, metrics.stickerY(i) + r * 0.45f)
+        Offset(
+            badge.x.coerceIn(metrics.plateX(face) + reach, metrics.plateX(face) + metrics.plate - reach),
+            badge.y.coerceIn(metrics.plateY(face) + reach, metrics.plateY(face) + metrics.plate - reach),
+        )
+    }
+}
+
+/** The face's plain name ("Front face"), for screen readers. */
+@Composable
+private fun netFaceName(face: Face): String = stringResource(
+    when (face) {
+        Face.U -> R.string.review_face_top
+        Face.D -> R.string.review_face_bottom
+        Face.F -> R.string.review_face_front
+        Face.B -> R.string.review_face_back
+        Face.L -> R.string.review_face_left
+        Face.R -> R.string.review_face_right
+    },
+)
+
+/**
  * The tappable plate of one face of a [CubeNet]: invisible at rest (the net draws the plates), it
  * lights up with a sunset rim while pressed.
  */
@@ -177,14 +233,16 @@ private fun FacePlateTarget(face: Face, onClick: (Face) -> Unit) {
         animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
         label = "platePressed",
     )
+    val name = netFaceName(face)
+    val editLabel = stringResource(R.string.face_action_edit)
     Box(
         Modifier
-            .semantics { contentDescription = "${face.friendlyName} face" }
+            .semantics { contentDescription = name }
             .clickable(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
-                onClickLabel = "Edit face",
+                onClickLabel = editLabel,
             ) { onClick(face) }
             .drawBehind {
                 if (glow > 0.01f) {
@@ -229,9 +287,14 @@ fun FaceGrid(colors: List<CubeColor?>, modifier: Modifier = Modifier, active: Bo
     } else {
         null
     }
-    val description = remember(colors) {
+    val res = LocalResources.current
+    val description = remember(colors, res) {
         val known = colors.count { it != null }
-        if (known == 0) "Face not scanned yet" else "Face with ${colors.joinToString { it?.displayName ?: "unknown" }}"
+        if (known == 0) {
+            res.getString(R.string.face_thumb_empty)
+        } else {
+            res.getString(R.string.face_thumb_colors, colors.joinToString { res.getString(colorNameRes(it)) })
+        }
     }
     // Outlives the draw cache, which is rebuilt whenever active or colors change, so the brushes
     // and the glow sprite are only rebuilt when the size does.
@@ -467,16 +530,6 @@ private class MeasuredNet {
     var metrics: NetMetrics? = null
 }
 
-/** Plain-language face names for accessibility (no notation jargon). */
-internal val Face.friendlyName: String
-    get() = when (this) {
-        Face.U -> "Top"
-        Face.D -> "Bottom"
-        Face.F -> "Front"
-        Face.B -> "Back"
-        Face.L -> "Left"
-        Face.R -> "Right"
-    }
 
 private const val NET_GAP = 0.1f
 private const val NET_PADDING = 0.16f
@@ -495,6 +548,13 @@ private const val THUMBNAIL_GLOW_ALPHA = 0.85f
 
 /** Reach of a flagged sticker's glow, in dp (less for tiny stickers). */
 private const val FLAG_GLOW_SPREAD = 9f
+
+/** Diameter of a flag's "!" badge on a net, and its ink halo, in dp. */
+private const val FLAG_BADGE_DIAMETER = 12f
+private const val FLAG_BADGE_HALO = 1.5f
+
+/** From this size on, a net carries one flag badge per face instead of one per sticker. */
+private const val FLAG_BADGE_PER_FACE_SIZE = 5
 
 /** Glow hues stay in magenta/coral: low-alpha orange over ink reads as brown. */
 private val WARM_GLOW_COLORS = listOf(Brand.Magenta, Brand.Coral, Brand.Magenta)

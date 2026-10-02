@@ -27,8 +27,17 @@ enum class ReviewSource {
 
 /** A short-lived tip shown in response to something the user just tried. */
 enum class ReviewHint {
-    /** The user tapped a fixed center sticker, which cannot change (it decides its face's color). */
+    /**
+     * The user tapped a fixed center sticker while painting with a brush: the brush never paints
+     * a center (it decides its face's color), so a stray tap can't change one.
+     */
     CenterLocked,
+
+    /**
+     * The user selected a fixed center sticker: it decides its face's color, so it is only worth
+     * changing when it is wrong (a misread, or a cube whose colors are arranged differently).
+     */
+    CenterSelected,
 }
 
 /**
@@ -103,8 +112,10 @@ data class ReviewEdit(val index: Int, val previous: CubeColor?, val wasUncertain
  * opens it big in a face editor ([focusedFace]), which follows the selection as manual entry hops
  * from face to face.
  *
- * The fixed centers of odd sizes never change ([isLocked]): they decide which color each face has.
- * Even sizes have no fixed centers, so every sticker can be edited.
+ * The fixed centers of odd sizes are locked ([isLocked]) against accidental edits, since they decide
+ * which color each face has: the brush never paints them, but a center can still be selected and
+ * given another color (e.g. one the camera misread, or on a cube whose colors are arranged
+ * differently from the standard scheme). Even sizes have no fixed centers.
  *
  * @property colors 6·N² sticker colors in [NxNGeometry] order; `null` means not entered yet.
  * @property uncertain stickers the scanner was unsure about; each leaves the set once edited.
@@ -171,10 +182,10 @@ data class ReviewState(
             else -> emptySet()
         }
 
-    /** The fixed centers of an odd cube, which never change; empty for even sizes. */
+    /** The fixed centers of an odd cube, locked against accidental edits; empty for even sizes. */
     val locked: Set<Int> get() = lockedStickers(n)
 
-    /** Whether sticker [index] is a fixed center, which cannot change. */
+    /** Whether sticker [index] is a fixed center, locked against accidental edits. */
     fun isLocked(index: Int): Boolean = index in locked
 
     /** The order manual entry walks the stickers of this cube in; see [entryOrder]. */
@@ -204,9 +215,10 @@ data class ReviewState(
 
         /**
          * A blank [n]×[n] cube for manual entry, with the first sticker to fill selected. Odd sizes
-         * start with their fixed centers set to the standard scheme (white on top, green in front);
-         * even sizes have no fixed centers and start empty. On a cube with a face editor
-         * ([FACE_EDITOR_MIN_SIZE]), the top face opens in it right away.
+         * start with their fixed centers set to the standard scheme (white on top, green in front),
+         * which a cube arranged otherwise changes like any other sticker; even sizes have no fixed
+         * centers and start empty. On a cube with a face editor ([FACE_EDITOR_MIN_SIZE]), the top
+         * face opens in it right away.
          */
         fun manual(n: Int = DEFAULT_CUBE_SIZE): ReviewState {
             val geometry = NxNGeometry.of(n)
@@ -223,7 +235,7 @@ data class ReviewState(
             )
         }
 
-        /** The resolved colors of a scan, with its unsure stickers marked for a second look. */
+        /** The resolved colors of a scan, with its unsure stickers (other than centers) marked for a second look. */
         fun fromScan(analysis: NxNScanAnalysis): ReviewState {
             val locked = lockedStickers(analysis.n)
             return ReviewState(
@@ -270,17 +282,20 @@ data class ReviewState(
 
 /**
  * Handles a tap on sticker [index]: paints it while a brush is up, and otherwise selects it (or
- * deselects it when it already was). Fixed centers cannot change; tapping one only shows a hint.
+ * deselects it when it already was). A fixed center is never painted by the brush (a tap then only
+ * shows a hint), so it changes only on purpose: selected, with a word on what it decides, and then
+ * given a color.
  */
 fun ReviewState.tapSticker(index: Int): ReviewState {
     require(index in colors.indices) { "No sticker $index" }
     if (solving) return this
-    if (isLocked(index)) return copy(hint = ReviewHint.CenterLocked)
     val brush = brush
+    val selectedHint = if (isLocked(index)) ReviewHint.CenterSelected else null
     return when {
+        brush != null && isLocked(index) -> copy(hint = ReviewHint.CenterLocked)
         brush != null -> paint(index, brush).copy(hint = null)
         selected == index -> copy(selected = null, hint = null)
-        else -> copy(selected = index, hint = null)
+        else -> copy(selected = index, hint = selectedHint)
     }
 }
 

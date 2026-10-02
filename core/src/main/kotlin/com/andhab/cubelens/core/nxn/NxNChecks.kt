@@ -64,12 +64,15 @@ internal object NxNChecks {
         for (c in colors) counts[c]++
         val present = (0 until 6).count { counts[it] > 0 }
         if (present < 6) {
-            errors += NxNError("A cube has six different colors, but only $present were found.")
+            errors += NxNError("A cube has six different colors, but only $present were found.", problem = NxNProblem.MissingColors(present))
             return NxNValidation(errors, null)
         }
         for (c in 0 until 6) {
             if (counts[c] != n * n) {
-                errors += NxNError("Found ${counts[c]} ${name(c)} stickers; a ${n}×$n cube has ${n * n} of each color.")
+                errors += NxNError(
+                    "Found ${counts[c]} ${name(c)} stickers; a ${n}×$n cube has ${n * n} of each color.",
+                    problem = NxNProblem.WrongCount(CubeColor.entries[c], counts[c], n * n),
+                )
             }
         }
 
@@ -81,7 +84,7 @@ internal object NxNChecks {
         if (corners != null && midges != null &&
             CubieCube.permutationParity(corners) != CubieCube.permutationParity(midges)
         ) {
-            errors += NxNError("Two pieces appear swapped. Check the sticker colors.")
+            errors += NxNError("Two pieces appear swapped. Check the sticker colors.", problem = NxNProblem.Swapped)
         }
         for (orbit in model.wingOrbits) checkWings(model, orbit, colors, faceOfColor, colorOfFace, errors)
         for (orbit in model.centerOrbits) checkCenters(orbit, colors, errors)
@@ -114,14 +117,14 @@ internal object NxNChecks {
         val closest = bestAssignments.maxBy { a -> (0 until 6).count { f -> a[centerColors[f]] == f } }
         if (centerColors.toSet().size < 6) {
             val repeated = (0 until 6).filter { f -> (0 until 6).count { centerColors[it] == centerColors[f] } > 1 }
-            errors += NxNError("Each face needs a different center color.", repeated.map { fixed[it] }.toSet())
+            errors += NxNError("Each face needs a different center color.", repeated.map { fixed[it] }.toSet(), NxNProblem.CentersNotDistinct)
             return closest to false
         }
         val fromCenters = IntArray(6).also { for (f in 0 until 6) it[centerColors[f]] = f }
         val centerScore = cornerScore(cornerColors, fromCenters)
         if (centerScore < best && centerScore < MIN_REAL_CORNERS_TO_TRUST_CENTERS) {
             val wrong = (0 until 6).filter { f -> closest[centerColors[f]] != f }
-            errors += NxNError("The center colors don't match the corner pieces.", wrong.map { fixed[it] }.toSet())
+            errors += NxNError("The center colors don't match the corner pieces.", wrong.map { fixed[it] }.toSet(), NxNProblem.CentersMismatch)
             return closest to false
         }
         return fromCenters to true
@@ -168,16 +171,16 @@ internal object NxNChecks {
             when {
                 c[0] == c[1] || c[1] == c[2] || c[0] == c[2] -> {
                     val twice = if (c[0] == c[1] || c[0] == c[2]) c[0] else c[1]
-                    errors += NxNError("This corner shows ${name(twice)} twice.", flagged)
+                    errors += NxNError("This corner shows ${name(twice)} twice.", flagged, ImpossibleCorner)
                 }
                 oppositePair(c, faceOfColor) != null -> {
                     val (x, y) = oppositePair(c, faceOfColor)!!
-                    errors += NxNError("This corner has ${name(x)} and ${name(y)}, which belong on opposite sides.", flagged)
+                    errors += NxNError("This corner has ${name(x)} and ${name(y)}, which belong on opposite sides.", flagged, ImpossibleCorner)
                 }
                 else -> {
                     val id = identifyCorner(c, faceOfColor)
                     if (id < 0) {
-                        errors += NxNError("This corner's colors are in an impossible order (a mirror image).", flagged)
+                        errors += NxNError("This corner's colors are in an impossible order (a mirror image).", flagged, ImpossibleCorner)
                     } else {
                         ids[i] = id
                     }
@@ -189,12 +192,12 @@ internal object NxNChecks {
             if (at.size > 1) {
                 val label = CubieCube.CORNER_COLOR[cubie].joinToString("-") { name(colorOfFace[it.ordinal]) }
                 val stickers = at.flatMap { model.corners[it].toList() }.toSet()
-                errors += NxNError("The $label corner appears ${at.size} times.", stickers)
+                errors += NxNError("The $label corner appears ${at.size} times.", stickers, NxNProblem.DuplicatePiece(NxNProblem.Piece.CORNER, at.size))
             }
         }
         if (errors.size != before) return null
         if (ids.sumOf { it % 3 } % 3 != 0) {
-            errors += NxNError("One corner looks twisted. Check the corner sticker colors.")
+            errors += NxNError("One corner looks twisted. Check the corner sticker colors.", problem = NxNProblem.TwistedCorner)
             return null
         }
         return IntArray(8) { ids[it] / 3 }
@@ -212,18 +215,22 @@ internal object NxNChecks {
         val ids = IntArray(12) { -1 }
         for (i in 0 until 12) {
             val (a, b) = midges[i]
-            ids[i] = checkEdgePiece(colors[a], colors[b], setOf(a, b), "edge", faceOfColor, errors)
+            ids[i] = checkEdgePiece(colors[a], colors[b], setOf(a, b), NxNProblem.Piece.EDGE, faceOfColor, errors)
         }
         for (cubie in 0 until 12) {
             val at = (0 until 12).filter { ids[it] >= 0 && ids[it] / 2 == cubie }
             if (at.size > 1) {
                 val label = CubieCube.EDGE_COLOR[cubie].joinToString("-") { name(colorOfFace[it.ordinal]) }
-                errors += NxNError("The $label edge appears ${at.size} times.", at.flatMap { midges[it].toList() }.toSet())
+                errors += NxNError(
+                    "The $label edge appears ${at.size} times.",
+                    at.flatMap { midges[it].toList() }.toSet(),
+                    NxNProblem.DuplicatePiece(NxNProblem.Piece.EDGE, at.size),
+                )
             }
         }
         if (errors.size != before) return null
         if (ids.sumOf { it % 2 } % 2 != 0) {
-            errors += NxNError("One edge looks flipped. Check the edge sticker colors.")
+            errors += NxNError("One edge looks flipped. Check the edge sticker colors.", problem = NxNProblem.FlippedEdge)
             return null
         }
         return IntArray(12) { ids[it] / 2 }
@@ -237,16 +244,17 @@ internal object NxNChecks {
         x: Int,
         y: Int,
         stickers: Set<Int>,
-        what: String,
+        piece: NxNProblem.Piece,
         faceOfColor: IntArray,
         errors: MutableList<NxNError>,
     ): Int {
+        val what = if (piece == NxNProblem.Piece.EDGE) "edge" else "edge piece"
         if (x == y) {
-            errors += NxNError("This $what shows ${name(x)} twice.", stickers)
+            errors += NxNError("This $what shows ${name(x)} twice.", stickers, NxNProblem.ImpossiblePiece(piece))
             return -1
         }
         if (OPPOSITE[faceOfColor[x]] == faceOfColor[y]) {
-            errors += NxNError("This $what has ${name(x)} and ${name(y)}, which belong on opposite sides.", stickers)
+            errors += NxNError("This $what has ${name(x)} and ${name(y)}, which belong on opposite sides.", stickers, NxNProblem.ImpossiblePiece(piece))
             return -1
         }
         return EDGE_BY_FACES[faceOfColor[x] * 6 + faceOfColor[y]]
@@ -264,7 +272,7 @@ internal object NxNChecks {
         val at = Array(orbit.size) { ArrayList<Int>() }
         for (s in 0 until orbit.size) {
             val (a, b) = orbit.slots[s]
-            if (checkEdgePiece(colors[a], colors[b], setOf(a, b), "edge piece", faceOfColor, errors) >= 0) {
+            if (checkEdgePiece(colors[a], colors[b], setOf(a, b), NxNProblem.Piece.WING, faceOfColor, errors) >= 0) {
                 at[home[colors[a] * 6 + colors[b]]] += s
             }
         }
@@ -277,6 +285,7 @@ internal object NxNChecks {
                 errors += NxNError(
                     "This $label edge piece appears ${at[piece].size} times; one of them is probably mirrored or misread.",
                     at[piece].flatMap { orbit.slots[it].toList() }.toSet(),
+                    NxNProblem.DuplicatePiece(NxNProblem.Piece.WING, at[piece].size),
                 )
             }
         }
@@ -302,6 +311,7 @@ internal object NxNChecks {
         errors += NxNError(
             "These center pieces don't add up: there are $summary where there should be $perColor of each.",
             flagged,
+            NxNProblem.CentersDontAddUp,
         )
     }
 
@@ -314,6 +324,8 @@ internal object NxNChecks {
     }
 
     private fun name(color: Int): String = CubeColor.entries[color].displayName.lowercase()
+
+    private val ImpossibleCorner = NxNProblem.ImpossiblePiece(NxNProblem.Piece.CORNER)
 
     private fun permutations(k: Int): List<IntArray> {
         val out = ArrayList<IntArray>()

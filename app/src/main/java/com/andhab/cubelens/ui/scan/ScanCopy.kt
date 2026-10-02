@@ -35,11 +35,14 @@ internal fun Resources.lowerColorName(color: CubeColor): String = getString(
 )
 
 /** The bar's title: which face this is, or that a face is being redone. */
-internal fun scanTitle(state: ScanUiState, res: Resources): String = when {
-    state.isComplete -> res.getString(R.string.scan_title_done)
-    state.isRetake && state.hasFixedCenters -> res.getString(R.string.scan_title_redo_color, res.lowerColorName(state.currentStep.color))
-    state.isRetake -> res.getString(R.string.scan_title_redo_face, state.currentStep.number)
-    else -> res.getString(R.string.scan_title_face, (state.capturedCount + 1).coerceAtMost(FACES), FACES)
+internal fun scanTitle(state: ScanUiState, res: Resources): String {
+    val center = state.expectedCenter
+    return when {
+        state.isComplete -> res.getString(R.string.scan_title_done)
+        state.isRetake && center != null -> res.getString(R.string.scan_title_redo_color, res.lowerColorName(center))
+        state.isRetake -> res.getString(R.string.scan_title_redo_face, state.currentStep.number)
+        else -> res.getString(R.string.scan_title_face, (state.capturedCount + 1).coerceAtMost(FACES), FACES)
+    }
 }
 
 /** The line above the face thumbnails: progress, and how to retake a face. */
@@ -49,10 +52,17 @@ internal fun progressCaption(state: ScanUiState, res: Resources): String = when 
     else -> res.getString(R.string.scan_caption_progress, state.capturedCount, FACES)
 }
 
-/** How a face thumbnail is named: by its center color on cubes with fixed centers, else by number. */
+/**
+ * How a face thumbnail is named: by its center color where that is known
+ * ([ScanUiState.centerColorOf]), else by number.
+ */
 internal fun faceName(step: ScanStep, state: ScanUiState, res: Resources): String =
-    if (state.hasFixedCenters) {
-        res.getString(R.string.scan_thumb_color, res.colorName(step.color))
+    faceName(step, state.centerColorOf(step), res)
+
+/** A face thumbnail's name: by its [center] color if known, else by number. */
+internal fun faceName(step: ScanStep, center: CubeColor?, res: Resources): String =
+    if (center != null) {
+        res.getString(R.string.scan_thumb_color, res.colorName(center))
     } else {
         res.getString(R.string.scan_thumb_number, step.number)
     }
@@ -67,51 +77,73 @@ internal enum class StatusTone { Neutral, Good, Warning }
  * view is the right one but was already captured for another step.
  */
 internal fun ScanHint?.pointsAtThumbnail(state: ScanUiState): ScanStep? =
-    (this as? ScanHint.AlreadyScanned)?.takeIf { it.color == state.currentStep.color }?.step
+    (this as? ScanHint.AlreadyScanned)?.takeIf { it.color == state.expectedCenter }?.step
 
 /** The status line under the guide: what's happening, or a gentle heads-up about the face in view. */
 internal fun statusMessage(state: ScanUiState, res: Resources): StatusMessage {
     val hint = state.hint
     val step = state.currentStep
+    val expected = state.expectedCenter
+    val top = state.topColorOf(step)
+    val center = state.liveColors?.getOrNull(state.centerIndex)
     return when {
         state.isComplete -> StatusMessage(res.getString(R.string.scan_status_done), StatusTone.Good)
         hint is ScanHint.WrongFace -> StatusMessage(
-            res.getString(
-                R.string.scan_status_wrong_face,
-                res.lowerColorName(hint.seen),
-                res.lowerColorName(hint.expected),
-                res.lowerColorName(ScanStep.forColor(hint.expected).topColor),
-            ),
+            if (top != null) {
+                res.getString(R.string.scan_status_wrong_face, res.lowerColorName(hint.seen), res.lowerColorName(hint.expected), res.lowerColorName(top))
+            } else {
+                res.getString(R.string.scan_status_wrong_face_short, res.lowerColorName(hint.seen), res.lowerColorName(hint.expected))
+            },
             StatusTone.Warning,
         )
         // Usually the cube just hasn't been turned yet: say what to show next.
-        hint is ScanHint.AlreadyScanned && hint.color != step.color -> StatusMessage(
-            res.getString(R.string.scan_status_done_next, res.colorName(hint.color), res.lowerColorName(step.color), res.lowerColorName(step.topColor)),
-            StatusTone.Warning,
-        )
+        hint is ScanHint.AlreadyScanned && hint.color != expected -> StatusMessage(doneNextText(hint, state, res), StatusTone.Warning)
         // The right face, but it was already captured for another step (by hand, at the wrong step).
-        hint is ScanHint.AlreadyScanned -> StatusMessage(
+        hint is ScanHint.AlreadyScanned && state.guidedByColor -> StatusMessage(
             res.getString(R.string.scan_status_wrong_spot, res.colorName(hint.color), res.lowerColorName(hint.step.color)),
             StatusTone.Warning,
         )
+        hint is ScanHint.AlreadyScanned -> StatusMessage(res.getString(R.string.scan_status_same_face_any, hint.step.number), StatusTone.Warning)
         hint is ScanHint.SameAsCaptured -> StatusMessage(sameFaceText(hint, state, res), StatusTone.Warning)
         state.liveColors == null -> StatusMessage(res.getString(R.string.scan_status_starting), StatusTone.Neutral)
         !state.hasFixedCenters && state.autoCapture -> StatusMessage(res.getString(R.string.scan_status_hold), StatusTone.Good)
         !state.hasFixedCenters -> StatusMessage(res.getString(R.string.scan_status_tap_any), StatusTone.Good)
+        // Another center than the one named, which this step takes all the same (the cube's colors
+        // may be arranged differently): say so, so the title's color doesn't seem to be ignored.
+        state.centerMatches && center != null && expected != null && center != expected -> StatusMessage(
+            res.getString(
+                if (state.autoCapture) R.string.scan_status_other_center_hold else R.string.scan_status_other_center_tap,
+                res.colorName(center),
+            ),
+            StatusTone.Good,
+        )
         state.centerMatches && state.autoCapture -> StatusMessage(res.getString(R.string.scan_status_hold), StatusTone.Good)
         state.centerMatches -> StatusMessage(res.getString(R.string.scan_status_tap), StatusTone.Good)
         else -> StatusMessage(res.getString(R.string.scan_status_fit), StatusTone.Neutral)
     }
 }
 
-/** "Same as face 1 — turn the cube left": the face in view was scanned already; what to do next. */
-private fun sameFaceText(hint: ScanHint.SameAsCaptured, state: ScanUiState, res: Resources): String {
-    // Redoing one of two faces reported as look-alikes, and it still looks like the other: they may
-    // well be two different faces that just look alike, and the shutter says so.
-    if (hint.step != state.currentStep && state.lookAlikePairs.any { state.currentStep in it && hint.step in it }) {
-        return res.getString(R.string.scan_status_same_face_redo, hint.step.number)
+/**
+ * "Green's done — now show red, white on top": the face in view was captured already (at another
+ * step); what to show instead, by color while that is known, else by the turn to make.
+ */
+private fun doneNextText(hint: ScanHint.AlreadyScanned, state: ScanUiState, res: Resources): String {
+    val expected = state.expectedCenter
+    val top = state.topColorOf(state.currentStep)
+    val done = res.colorName(hint.color)
+    return when {
+        expected != null && top != null ->
+            res.getString(R.string.scan_status_done_next, done, res.lowerColorName(expected), res.lowerColorName(top))
+        expected != null -> res.getString(R.string.scan_status_done_next_short, done, res.lowerColorName(expected))
+        else -> nextMove(state)?.let { res.getString(R.string.scan_status_done_turn, done, res.getString(it)) }
+            ?: res.getString(R.string.scan_status_done_any, done)
     }
-    @StringRes val next: Int? = if (!state.followsPreviousStep) {
+}
+
+/** How to get from the previous step's face to this one ("turn the cube left"), while that applies. */
+@StringRes
+private fun nextMove(state: ScanUiState): Int? =
+    if (!state.followsPreviousStep) {
         null
     } else {
         when (state.currentStep) {
@@ -121,6 +153,15 @@ private fun sameFaceText(hint: ScanHint.SameAsCaptured, state: ScanUiState, res:
             ScanStep.Front -> null
         }
     }
+
+/** "Same as face 1 — turn the cube left": the face in view was scanned already; what to do next. */
+private fun sameFaceText(hint: ScanHint.SameAsCaptured, state: ScanUiState, res: Resources): String {
+    // Redoing one of two faces reported as look-alikes, and it still looks like the other: they may
+    // well be two different faces that just look alike, and the shutter says so.
+    if (hint.step != state.currentStep && state.lookAlikePairs.any { state.currentStep in it && hint.step in it }) {
+        return res.getString(R.string.scan_status_same_face_redo, hint.step.number)
+    }
+    val next = nextMove(state)
     return if (next == null) {
         res.getString(R.string.scan_status_same_face_any, hint.step.number)
     } else {
@@ -174,10 +215,10 @@ internal sealed interface Hold {
     /** Cubes with fixed centers: this center color goes on top. */
     data class TopColor(val color: CubeColor, override val text: String) : Hold
 
-    /** Cubes without fixed centers: keep the side that is on top now on top. */
+    /** Steps that go by position: keep the side that is on top now on top. */
     data class SameTop(override val text: String) : Hold
 
-    /** Cubes without fixed centers: the first face scanned goes on top ([onTop]) or at the bottom. */
+    /** Steps that go by position: the first face scanned goes on top ([onTop]) or at the bottom. */
     data class FirstFace(val onTop: Boolean, override val text: String) : Hold
 }
 
@@ -187,9 +228,17 @@ internal sealed interface Hold {
  * @param followsPreviousStep whether the cube is still held as the previous step left it, so the
  *   short relative cue applies ("Turn it left again"); otherwise it says how to get there from any
  *   hold.
+ * @param byColor whether the steps go by the standard colors ([ScanUiState.guidedByColor]), which
+ *   only cubes with fixed centers (odd sizes) can; otherwise they go by position.
  */
-internal fun instructionFor(step: ScanStep, size: Int, followsPreviousStep: Boolean, res: Resources): Instruction =
-    if (size % 2 == 1) centerInstruction(step, followsPreviousStep, res) else sideInstruction(step, followsPreviousStep, res)
+internal fun instructionFor(
+    step: ScanStep,
+    size: Int,
+    followsPreviousStep: Boolean,
+    res: Resources,
+    byColor: Boolean = size % 2 == 1,
+): Instruction =
+    if (byColor && size % 2 == 1) centerInstruction(step, followsPreviousStep, res) else sideInstruction(step, followsPreviousStep, res)
 
 private fun centerInstruction(step: ScanStep, followsPreviousStep: Boolean, res: Resources): Instruction {
     val color = res.lowerColorName(step.color)

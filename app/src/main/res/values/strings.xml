@@ -7,6 +7,13 @@
     <string name="step_progress">Step %1$d of %2$d</string>
     <string name="sticker_description">Row %1$d, column %2$d: %3$s</string>
     <string name="sticker_flagged">Needs checking</string>
+    <!-- A sticker of a cube net: %1$s = the face (review_face_*), %4$s = its color. -->
+    <string name="sticker_net_description">%1$s, row %2$d, column %3$d: %4$s</string>
+    <string name="sticker_action_change_color">Change color</string>
+    <string name="face_action_edit">Edit face</string>
+    <!-- A face thumbnail: nothing on it yet, or its colors (%1$s lists them). -->
+    <string name="face_thumb_empty">Face not scanned yet</string>
+    <string name="face_thumb_colors">Face with %1$s</string>
 
     <!-- Move chips: playback state and spoken cube notation ("R prime", "U two"). -->
     <string name="move_state_done">Done</string>
@@ -29,7 +36,8 @@
     <string name="cube_size_description">%1$d by %1$d cube</string>
 
     <!-- Home. -->
-    <string name="home_overline">Rubik\'s cube solver</string>
+    <!-- No trademarked names: the app solves any brand of cube. -->
+    <string name="home_overline">Any cube · 2×2 to 7×7</string>
     <string name="home_headline">Snap. Solve.</string>
     <string name="home_headline_accent">Twist.</string>
     <string name="home_subtitle">Point your camera at a scrambled cube and get a quick path back to solved.</string>
@@ -61,7 +69,8 @@
         <item quantity="one">We straightened %d face</item>
         <item quantity="other">We straightened %d faces</item>
     </plurals>
-    <string name="review_hold_manual">White top, green front</string>
+    <!-- Odd cubes start with the standard centers (white top, green front); a cube arranged otherwise changes them. -->
+    <string name="review_hold_manual">Tap a center to change it</string>
     <!-- Even cubes have no fixed centers, so any way of holding them works. -->
     <string name="review_hold_manual_even">Any side can be the front</string>
     <plurals name="review_hard_to_read">
@@ -99,7 +108,8 @@
     <string name="review_tip_selected_row">%1$s, row %2$d. Now pick a color.</string>
     <string name="review_tip_brush">Painting with %1$s. Tap stickers, or tap %1$s again to stop.</string>
     <string name="review_tip_brush_net">Painting with %1$s. Tap a face to paint its stickers.</string>
-    <string name="review_tip_center">Centers set each face\'s color, so they stay put.</string>
+    <string name="review_tip_center">Centers set each face\'s color, so the brush skips them. Put it down to change one.</string>
+    <string name="review_tip_center_selected">This center sets its face\'s color. Pick a new one only if it\'s wrong.</string>
     <string name="review_undo">Undo</string>
     <string name="review_solve">Solve it</string>
 
@@ -118,6 +128,16 @@
     <string name="review_error_too_few">Not enough %1$s stickers</string>
     <string name="review_error_count_message">Found %1$d. A cube has 9 of each color.</string>
     <string name="review_error_count_uncertain">Found %1$d, not 9. The marked stickers were hard to read.</string>
+    <!-- Other sizes: %1$d = how many were found, %2$s = the cube size ("4×4"), %3$d = how many it has. -->
+    <string name="review_error_count_message_n">Found %1$d. A %2$s cube has %3$d of each color.</string>
+    <string name="review_error_count_uncertain_n">Found %1$d, not %2$d. The marked stickers were hard to read.</string>
+    <string name="review_error_missing_colors">Only %1$d colors found</string>
+    <string name="review_error_missing_colors_message">A cube has six different colors.</string>
+    <string name="review_error_centers_mismatch">The centers don\'t fit the corners</string>
+    <string name="review_error_centers_mismatch_message">Check the marked centers, then the corner stickers.</string>
+    <!-- 4×4 and larger: the movable center pieces don't hold each color equally often. -->
+    <string name="review_error_center_pieces">Some center pieces are off</string>
+    <string name="review_error_other">Some colors don\'t fit together</string>
     <plurals name="review_error_corner">
         <item quantity="one">One corner can\'t exist</item>
         <item quantity="other">%d corners can\'t exist</item>

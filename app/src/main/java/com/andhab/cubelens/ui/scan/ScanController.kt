@@ -98,8 +98,6 @@ data class LookAlike(val first: ScanStep, val second: ScanStep) {
  *   nothing was captured yet. N² colors, row-major as seen on screen. Read with what the session has
  *   learned about the cube's colors, so they may change as more faces are captured.
  * @property liveColors the N² colors currently inside the guide, or null before the first frame.
- * @property captureProgress 0..1 progress toward auto-capture: how long the current face has been
- *   held steady. Zero when auto-capture is off or would not fire for the face in view.
  * @property autoCapture whether a steady face that fits this step is captured automatically.
  * @property hint a heads-up about the face in view, if any.
  * @property lookAlikePairs cubes without fixed centers: pairs of captured faces that look identical
@@ -120,7 +118,6 @@ data class ScanUiState(
     val currentStep: ScanStep = ScanStep.Front,
     val captures: List<List<CubeColor>?> = List(ScanStep.entries.size) { null },
     val liveColors: List<CubeColor>? = null,
-    val captureProgress: Float = 0f,
     val autoCapture: Boolean = true,
     val hint: ScanHint? = null,
     val lookAlikePairs: List<LookAlike> = emptyList(),
@@ -146,8 +143,57 @@ data class ScanUiState(
     /** How many faces are captured. */
     val capturedCount: Int get() = captures.count { it != null }
 
-    /** Whether the live center is the color this step asks for (always false without fixed centers). */
-    val centerMatches: Boolean get() = hasFixedCenters && liveColors?.get(centerIndex) == currentStep.color
+    /**
+     * Whether the steps still go by the standard color scheme's colors ([ScanStep.color]): a cube
+     * with fixed centers whose every captured face has its step's standard center color. Once a
+     * face comes in with another center, the cube's colors are arranged differently (or it was
+     * turned another way than asked), and the steps go by position, as for cubes without fixed
+     * centers.
+     */
+    val guidedByColor: Boolean
+        get() = hasFixedCenters && ScanStep.entries.all { step -> captures[step.ordinal]?.let { it[centerIndex] == step.color } ?: true }
+
+    /**
+     * The center color [step]'s face is known by, on a cube with fixed centers: the standard one
+     * while [guidedByColor], else the one it was captured with; null for a face not captured yet
+     * once the steps go by position, and always without fixed centers.
+     */
+    fun centerColorOf(step: ScanStep): CubeColor? = when {
+        !hasFixedCenters -> null
+        guidedByColor -> step.color
+        else -> captures[step.ordinal]?.get(centerIndex)
+    }
+
+    /** The center color the current step expects in front, if known (see [centerColorOf]). */
+    val expectedCenter: CubeColor? get() = centerColorOf(currentStep)
+
+    /** The center color on top while [step] is scanned, while the steps go by color ([guidedByColor]). */
+    fun topColorOf(step: ScanStep): CubeColor? = if (guidedByColor) step.topColor else null
+
+    /**
+     * Whether the cube was turned on from the previous step's face, as the step's cue asks ("Turn
+     * the cube to the left"), rather than placed anew: the step right after its predecessor was
+     * captured.
+     */
+    val turnedFromPrevious: Boolean get() = followsPreviousStep && currentStep.previous != null
+
+    /**
+     * Whether this step would take a face with [center] in the middle (cubes with fixed centers):
+     * not a face captured at another step, and the one this step expects ([expectedCenter]); or
+     * any other, when the steps go by position or the cube was just turned on as asked
+     * ([turnedFromPrevious]): on a cube whose colors are arranged differently, the turn brings
+     * round another color than the standard one, and that face is the one to scan. Except the
+     * color asked to stay on top, which no turn brings to the front.
+     */
+    fun takesCenter(center: CubeColor): Boolean {
+        if (!hasFixedCenters) return false
+        if (ScanStep.entries.any { it != currentStep && captures[it.ordinal]?.get(centerIndex) == center }) return false
+        val expected = expectedCenter ?: return true
+        return center == expected || (turnedFromPrevious && center != topColorOf(currentStep))
+    }
+
+    /** Whether the live center is one this step takes ([takesCenter]; always false without fixed centers). */
+    val centerMatches: Boolean get() = liveColors?.get(centerIndex)?.let(::takesCenter) == true
 
     /** Whether the current step scans a face again that was captured before. */
     val isRetake: Boolean get() = isCaptured(currentStep)
@@ -172,8 +218,10 @@ data class ScanUiState(
  * with the session's [AdaptiveLiveClassifier], smooths out flicker, tracks how long the face has
  * been held steady and captures automatically when the face in view is steady and fits the step:
  *
- *  - Odd sizes have fixed centers: the face must have the center color this step asks for and not
- *    be a face captured already ([ScanHint.WrongFace], [ScanHint.AlreadyScanned] otherwise).
+ *  - Odd sizes have fixed centers: the face must not be one captured already
+ *    ([ScanHint.AlreadyScanned]), and must have the center color this step expects, unless the
+ *    cube was just turned on as asked or its colors turned out to be arranged differently
+ *    ([ScanUiState.takesCenter]; [ScanHint.WrongFace] otherwise).
  *  - Even sizes have no fixed centers, so any face goes, as long as it doesn't look exactly like a
  *    face captured already, however it is turned in the frame ([ScanHint.SameAsCaptured]); faces
  *    captured by hand that look alike are reported in [ScanUiState.lookAlikePairs]. Redoing one of
@@ -214,8 +262,20 @@ class ScanController(
     private val lock = Any()
     private val mutableState = MutableStateFlow(ScanUiState(size = size))
 
-    /** The current UI state; updated on every frame and every action. */
+    /**
+     * The current UI state; updated on every action, and on a frame that changes what is shown (a
+     * face held steady changes nothing, so it doesn't update the state).
+     */
     val state: StateFlow<ScanUiState> = mutableState.asStateFlow()
+
+    private val mutableProgress = MutableStateFlow(0f)
+
+    /**
+     * 0..1 progress toward auto-capture: how long the current face has been held steady. Zero when
+     * auto-capture is off or would not fire for the face in view. Kept apart from [state] because
+     * it changes on every frame while a face is held steady.
+     */
+    val captureProgress: StateFlow<Float> = mutableProgress.asStateFlow()
 
     private val recentSamples = ArrayDeque<List<StickerSample>>()
     private val recentColors = ArrayDeque<List<CubeColor>>()
@@ -492,7 +552,7 @@ class ScanController(
         val live = smoothed ?: return false
         if (!current.autoCapture || current.isComplete || steadySamples.isEmpty()) return false
         return if (hasFixedCenters) {
-            live[center] == current.currentStep.color && capturedElsewhere(live[center]) == null
+            current.takesCenter(live[center])
         } else {
             matchingCapture(live) == null
         }
@@ -601,15 +661,16 @@ class ScanController(
         } else {
             0f
         }
-        mutableState.value = current.copy(liveColors = live, hint = hint, captureProgress = progress)
+        mutableState.value = current.copy(liveColors = live, hint = hint)
+        mutableProgress.value = progress
     }
 
     private fun hintFor(live: List<CubeColor>, current: ScanUiState): ScanHint? {
         if (!hasFixedCenters) return matchingCapture(live)?.let(ScanHint::SameAsCaptured)
         val seen = live[center]
-        val expected = current.currentStep.color
-        return capturedElsewhere(seen)?.let { ScanHint.AlreadyScanned(seen, it) }
-            ?: if (seen != expected) ScanHint.WrongFace(seen, expected) else null
+        capturedElsewhere(seen)?.let { return ScanHint.AlreadyScanned(seen, it) }
+        val expected = current.expectedCenter
+        return if (expected != null && !current.takesCenter(seen)) ScanHint.WrongFace(seen, expected) else null
     }
 
     /** What a heads-up is about: the center color in view, or the captured face the view looks like. */

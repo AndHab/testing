@@ -9,7 +9,7 @@
     <string name="scan_caption_done">Nice scanning!</string>
     <string name="scan_auto_on">Auto on</string>
     <string name="scan_auto_off">Auto off</string>
-    <string name="scan_type_colors">Type colors</string>
+    <string name="scan_type_colors">Enter by hand</string>
     <string name="scan_cd_auto_capture">Auto-capture</string>
     <string name="scan_cd_torch_on">Turn flashlight on</string>
     <string name="scan_cd_torch_off">Turn flashlight off</string>
@@ -44,7 +44,15 @@
     <string name="scan_status_fit">Fit the face inside the frame</string>
     <string name="scan_status_done">All six faces scanned</string>
     <string name="scan_status_wrong_face">Looks like the %1$s face\u00A0— show %2$s, %3$s on top</string>
+    <string name="scan_status_wrong_face_short">Looks like the %1$s face\u00A0— show %2$s</string>
     <string name="scan_status_done_next">%1$s\'s done\u00A0— now show %2$s, %3$s on top</string>
+    <string name="scan_status_done_next_short">%1$s\'s done\u00A0— now show %2$s</string>
+    <!-- Steps that go by position (a cube whose colors are arranged differently). %2$s is one of scan_next_*. -->
+    <string name="scan_status_done_turn">%1$s\'s done\u00A0— %2$s</string>
+    <string name="scan_status_done_any">%1$s\'s done\u00A0— show a face you haven\'t scanned</string>
+    <!-- The cube was turned as asked but shows another center than the step names (its colors may be arranged differently): that face is taken. -->
+    <string name="scan_status_other_center_hold">%1$s center works too. Hold still…</string>
+    <string name="scan_status_other_center_tap">%1$s center works too. Tap the shutter.</string>
     <string name="scan_status_wrong_spot">%1$s went into %2$s\'s spot. Tap %2$s below to redo it.</string>
     <string name="scan_status_same_face">Same as face %1$d\u00A0— %2$s</string>
     <string name="scan_status_same_face_any">You already scanned this side as face %1$d</string>
@@ -121,7 +129,7 @@
     <string name="scan_gate_unavailable_overline">Camera</string>
     <string name="scan_gate_unavailable_headline">The camera</string>
     <string name="scan_gate_unavailable_accent">didn\'t start.</string>
-    <string name="scan_gate_unavailable_body">Another app may be using it. Try again, or type your cube\'s colors in.</string>
+    <string name="scan_gate_unavailable_body">Another app may be using it. Try again, or enter your cube\'s colors by hand.</string>
     <string name="scan_gate_unavailable_action">Try again</string>
     <string name="scan_gate_private">Stays on your phone</string>
     <string name="scan_gate_quick">About a minute</string>

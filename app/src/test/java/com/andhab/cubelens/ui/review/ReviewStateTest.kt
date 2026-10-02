@@ -4,7 +4,9 @@ import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.CubeError
 import com.andhab.cubelens.core.cube.Face
+import com.andhab.cubelens.core.cube.FaceletCube
 import com.andhab.cubelens.core.cube.Facelets
+import com.andhab.cubelens.core.cube.Move
 import com.andhab.cubelens.ui.UserCubeColors
 import com.andhab.cubelens.ui.impossibleEdgeSwap
 import com.andhab.cubelens.ui.twistedCorner
@@ -74,13 +76,49 @@ class ReviewStateTest {
     }
 
     @Test
-    fun centersAreLocked() {
-        val review = ReviewState.manual().tapSticker(Facelets.center(Face.F))
-        assertEquals(ReviewHint.CenterLocked, review.hint)
-        assertEquals(0, review.selected)
-        assertEquals(ReviewState.manual().colors, review.colors)
+    fun centersChangeOnlyOnPurpose() {
+        val front = Facelets.center(Face.F)
+        // The brush never paints a center: a stray tap only explains why.
+        val painting = ReviewState.manual().copy(selected = null).tapColor(CubeColor.RED)
+        assertEquals(CubeColor.RED, painting.brush)
+        val skipped = painting.tapSticker(front)
+        assertEquals(ReviewHint.CenterLocked, skipped.hint)
+        assertEquals(painting.colors, skipped.colors)
+        assertEquals(CubeColor.RED, skipped.brush)
+
+        // Selected on purpose, a center takes another color (a cube arranged differently), undoably.
+        val selected = ReviewState.manual().tapSticker(front)
+        assertEquals(front, selected.selected)
+        assertEquals(ReviewHint.CenterSelected, selected.hint)
+        assertEquals(ReviewState.manual().colors, selected.colors)
+        val changed = selected.tapColor(CubeColor.BLUE)
+        assertEquals(CubeColor.BLUE, changed.colors[front])
+        assertNull(changed.hint)
+        assertTrue(changed.canUndo)
+        assertEquals(CubeColor.GREEN, changed.undo().colors[front])
         // Any other action clears the hint.
-        assertNull(review.tapSticker(10).hint)
+        assertNull(selected.tapSticker(10).hint)
+    }
+
+    @Test
+    fun aCubeWithAnotherColorArrangementCanBeEnteredByHand() {
+        // Red and orange swapped: the standard centers of the right and left faces are changed.
+        val mirrored = ColorScheme(
+            mapOf(
+                Face.U to CubeColor.WHITE, Face.D to CubeColor.YELLOW, Face.F to CubeColor.GREEN,
+                Face.B to CubeColor.BLUE, Face.R to CubeColor.ORANGE, Face.L to CubeColor.RED,
+            ),
+        )
+        val cube = FaceletCube.scrambled(listOf(Move.R1, Move.U1, Move.F2, Move.L3, Move.D1)).toColors(mirrored)
+        var review = ReviewState.manual()
+        for (face in listOf(Face.R, Face.L)) {
+            val center = Facelets.center(face)
+            review = review.tapSticker(center).tapColor(cube[center])
+        }
+        review = review.copy(selected = review.entryOrder.first { review.colors[it] == null })
+        for (i in review.entryOrder) if (review.colors[i] == null) review = review.tapColor(cube[i])
+        assertEquals(cube, review.colors)
+        assertEquals(ReviewCheck.Valid, review.check)
     }
 
     @Test
@@ -273,7 +311,7 @@ class ReviewStateTest {
         assertEquals(6, five.locked.size)
         val center = five.geometry.index(Face.F, 2, 2)
         assertTrue(five.isLocked(center))
-        assertEquals(ReviewHint.CenterLocked, five.tapSticker(center).hint)
+        assertEquals(ReviewHint.CenterSelected, five.tapSticker(center).hint)
         assertEquals(CubeColor.GREEN, five.colors[center])
 
         val four = ReviewState.manual(4)

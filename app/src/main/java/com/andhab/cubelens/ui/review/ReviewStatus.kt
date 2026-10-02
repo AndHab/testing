@@ -7,6 +7,7 @@ import androidx.compose.ui.res.stringResource
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeError
 import com.andhab.cubelens.core.cube.Face
+import com.andhab.cubelens.core.nxn.NxNProblem
 import com.andhab.cubelens.ui.components.BannerKind
 import com.andhab.cubelens.ui.components.colorName
 
@@ -103,27 +104,101 @@ private fun errorStatus(check: ReviewCheck.Invalid, review: ReviewState): Review
 }
 
 /**
- * The first problem found on a 2×2 or a 4×4 and larger, in the validator's own friendly words, with
- * advice on where to look: the marked stickers when any problem points at some, else the
- * hard-to-read ones, else similar colors. Problems that point nowhere at all (a twisted corner, two
- * swapped pieces) are a softer warning, as on a 3×3.
+ * The first problem found on a 2×2 or a 4×4 and larger, worded as on a 3×3: a short title for its
+ * kind (counting others of the same kind) and advice on where to look. Problems that can't be
+ * pinned to particular stickers point at the hard-to-read ones instead, and those that point
+ * nowhere at all (a twisted corner, two swapped pieces) are a softer warning, as on a 3×3.
  */
 @Composable
 private fun errorStatus(check: ReviewCheck.InvalidNxN, review: ReviewState): ReviewStatus {
-    val pinned = check.flagged.isNotEmpty()
-    val counts = review.counts.values.any { it != review.stickersPerColor }
-    return ReviewStatus(
-        kind = if (pinned || counts) BannerKind.Error else BannerKind.Warning,
-        title = check.error.message,
-        message = stringResource(
-            when {
-                pinned -> R.string.review_error_check_marked
-                review.uncertain.isNotEmpty() -> R.string.review_error_marked
-                else -> R.string.review_error_swapped_message
+    val problem = check.error.problem
+    val count = check.errors.count { it.problem.group == problem.group }
+    val startWithUncertain = check.flagged.isEmpty() && review.uncertain.isNotEmpty()
+    val marked = stringResource(R.string.review_error_marked)
+    val lookAt = stringResource(if (startWithUncertain) R.string.review_error_marked else R.string.review_error_check_marked)
+    val error = BannerKind.Error
+    return when (problem) {
+        is NxNProblem.MissingColors -> ReviewStatus(
+            error,
+            stringResource(R.string.review_error_missing_colors, problem.present),
+            stringResource(R.string.review_error_missing_colors_message),
+        )
+        is NxNProblem.WrongCount -> ReviewStatus(
+            error,
+            stringResource(
+                if (problem.found > problem.expected) R.string.review_error_too_many else R.string.review_error_too_few,
+                colorName(problem.color).lowercase(),
+            ),
+            if (startWithUncertain) {
+                stringResource(R.string.review_error_count_uncertain_n, problem.found, problem.expected)
+            } else {
+                stringResource(
+                    R.string.review_error_count_message_n,
+                    problem.found,
+                    stringResource(R.string.cube_size_label, review.n),
+                    problem.expected,
+                )
             },
-        ),
-    )
+        )
+        NxNProblem.CentersNotDistinct -> ReviewStatus(
+            error,
+            stringResource(R.string.review_error_centers),
+            stringResource(R.string.review_error_centers_message),
+        )
+        NxNProblem.CentersMismatch -> ReviewStatus(
+            error,
+            stringResource(R.string.review_error_centers_mismatch),
+            stringResource(R.string.review_error_centers_mismatch_message),
+        )
+        is NxNProblem.ImpossiblePiece -> ReviewStatus(
+            error,
+            if (problem.piece == NxNProblem.Piece.CORNER) {
+                pluralStringResource(R.plurals.review_error_corner, count, count)
+            } else {
+                pluralStringResource(R.plurals.review_error_edge, count, count)
+            },
+            stringResource(R.string.review_error_impossible_message),
+        )
+        is NxNProblem.DuplicatePiece -> ReviewStatus(
+            error,
+            if (problem.piece == NxNProblem.Piece.CORNER) {
+                pluralStringResource(R.plurals.review_error_duplicate_corner, count, count)
+            } else {
+                pluralStringResource(R.plurals.review_error_duplicate_edge, count, count)
+            },
+            stringResource(R.string.review_error_duplicate_message),
+        )
+        NxNProblem.TwistedCorner -> ReviewStatus(
+            BannerKind.Warning,
+            stringResource(R.string.review_error_twisted),
+            if (startWithUncertain) marked else stringResource(R.string.review_error_twisted_message),
+        )
+        NxNProblem.FlippedEdge -> ReviewStatus(
+            BannerKind.Warning,
+            stringResource(R.string.review_error_flipped),
+            if (startWithUncertain) marked else stringResource(R.string.review_error_flipped_message),
+        )
+        NxNProblem.Swapped -> ReviewStatus(
+            BannerKind.Warning,
+            stringResource(R.string.review_error_swapped),
+            if (startWithUncertain) marked else stringResource(R.string.review_error_swapped_message),
+        )
+        NxNProblem.CentersDontAddUp -> ReviewStatus(error, stringResource(R.string.review_error_center_pieces), lookAt)
+        NxNProblem.Other -> ReviewStatus(
+            if (check.flagged.isNotEmpty()) error else BannerKind.Warning,
+            stringResource(R.string.review_error_other),
+            if (check.flagged.isNotEmpty() || startWithUncertain) lookAt else stringResource(R.string.review_error_swapped_message),
+        )
+    }
 }
+
+/** Problems of one group are counted together in a title ("2 edges can't exist"). */
+private val NxNProblem.group: Any
+    get() = when (this) {
+        is NxNProblem.ImpossiblePiece -> "impossible" to (piece == NxNProblem.Piece.CORNER)
+        is NxNProblem.DuplicatePiece -> "duplicate" to (piece == NxNProblem.Piece.CORNER)
+        else -> this::class
+    }
 
 /**
  * The one-line editing tip under the palette, following what the user is doing. On a cube edited
@@ -136,6 +211,7 @@ internal fun reviewTip(review: ReviewState): String {
     val onNet = review.usesFaceEditor && review.focusedFace == null
     return when {
         review.hint == ReviewHint.CenterLocked -> stringResource(R.string.review_tip_center)
+        review.hint == ReviewHint.CenterSelected -> stringResource(R.string.review_tip_center_selected)
         brush != null && onNet -> stringResource(R.string.review_tip_brush_net, colorName(brush).lowercase())
         brush != null -> stringResource(R.string.review_tip_brush, colorName(brush).lowercase())
         selected != null -> selectedTip(review, selected)

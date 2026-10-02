@@ -11,10 +11,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
+import com.andhab.cubelens.ui.components.colorName
 import com.andhab.cubelens.ui.theme.Brand
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -60,7 +63,7 @@ fun FaceEditor(
                 StickerCell(
                     index = i,
                     color = color,
-                    description = "Row ${i / n + 1}, column ${i % n + 1}: ${color?.displayName ?: "empty"}",
+                    description = stringResource(R.string.sticker_description, i / n + 1, i % n + 1, colorName(color)),
                     flagged = i in highlightStickers,
                     selected = i == selectedSticker,
                     onClick = onStickerClick,

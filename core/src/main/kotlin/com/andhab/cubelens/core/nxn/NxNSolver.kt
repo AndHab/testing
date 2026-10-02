@@ -8,11 +8,60 @@ import kotlin.random.Random
 
 /** A problem that makes a scanned/entered N×N cube impossible. */
 data class NxNError(
-    /** Short, friendly, jargon-free explanation for the user. */
+    /** Short, friendly, jargon-free explanation in English, e.g. for logs. */
     val message: String,
     /** Stickers to highlight (may be empty for global problems). */
     val stickers: Set<Int> = emptySet(),
+    /** What kind of problem it is, with what a UI needs to word it in its own language. */
+    val problem: NxNProblem = NxNProblem.Other,
 )
+
+/** The kinds of [NxNError], with their details. */
+sealed interface NxNProblem {
+    /** The kind of piece a problem is about. */
+    enum class Piece {
+        CORNER,
+
+        /** The middle edge of an odd cube (a 3×3's edge). */
+        EDGE,
+
+        /** One of the paired edge pieces of a 4×4 and larger. */
+        WING,
+    }
+
+    /** Fewer than six different colors on the whole cube. */
+    data class MissingColors(val present: Int) : NxNProblem
+
+    /** [color] appears [found] times instead of [expected] (N²). */
+    data class WrongCount(val color: CubeColor, val found: Int, val expected: Int) : NxNProblem
+
+    /** Two fixed centers have the same color. */
+    data object CentersNotDistinct : NxNProblem
+
+    /** The fixed centers' colors contradict the corner pieces. */
+    data object CentersMismatch : NxNProblem
+
+    /** A piece that can't exist: a color twice, colors of opposite faces, or a mirror-image corner. */
+    data class ImpossiblePiece(val piece: Piece) : NxNProblem
+
+    /** The same piece appears [times] times. */
+    data class DuplicatePiece(val piece: Piece, val times: Int) : NxNProblem
+
+    /** One corner twisted in place. */
+    data object TwistedCorner : NxNProblem
+
+    /** One middle edge flipped in place. */
+    data object FlippedEdge : NxNProblem
+
+    /** Two pieces swapped (corners and middle edges of different parity). */
+    data object Swapped : NxNProblem
+
+    /** The movable center pieces don't hold each color equally often. */
+    data object CentersDontAddUp : NxNProblem
+
+    /** Anything else. */
+    data object Other : NxNProblem
+}
 
 data class NxNValidation(
     val errors: List<NxNError>,
@@ -102,31 +151,31 @@ object NxNSolver {
     const val THREE_BY_THREE_SEARCH_MILLIS = 1_000L
 
     /**
-     * Prepares lookup tables (2×2 and 3×3), loading/saving the 3×3 tables in [cacheDir] (file
-     * [CACHE_FILE_NAME]) when given; the 2×2 table (3.7 MB) is built in memory. Thread-safe,
-     * idempotent. Blocks for up to about a second on a desktop JVM (a few times longer on a phone),
-     * so call it early and off the main thread.
+     * Prepares the 3×3 lookup tables, which every odd size uses, loading/saving them in [cacheDir]
+     * (file [CACHE_FILE_NAME]) when given. Thread-safe, idempotent. Blocks for up to about a second
+     * on a desktop JVM (a few times longer on a phone) without the cache file, so call it early
+     * and off the main thread. What a particular size needs on top is [prepareSize]'s.
      *
-     * @throws InterruptedException if the thread is interrupted while the 2×2 table is built
-     *   (call again to finish; the 3×3 tables are kept).
+     * @throws InterruptedException if the thread is interrupted while the tables are built.
      */
     @Throws(InterruptedException::class)
     fun prepare(cacheDir: File? = null) {
         TwoPhaseSolver.prepare(cacheDir?.let { File(it, CACHE_FILE_NAME) })
-        CornerSolver.prepare()
     }
 
     /**
-     * Builds the algorithm library for [n]×[n] cubes now instead of during the first [solve] of
-     * that size (n >= 4; smaller sizes need nothing beyond [prepare]). Thread-safe, idempotent.
-     * Takes from about 50 ms (4×4) to about 1.5 s (10×10) on a desktop JVM.
+     * Builds what [n]×[n] cubes need beyond [prepare] now instead of during the first [solve] of
+     * that size: the corner table of even sizes (3.7 MB, built in memory, a few tenths of a second
+     * on a desktop JVM; odd sizes never need it), and from 4×4 on the algorithm library (from about
+     * 50 ms for a 4×4 to about 1.5 s for a 10×10). Thread-safe, idempotent.
      *
-     * @throws InterruptedException if the thread is interrupted during the build (nothing is
-     *   cached; the next call or solve of that size starts over).
+     * @throws InterruptedException if the thread is interrupted during a build (nothing half-built
+     *   is kept; the next call or solve of that size starts over).
      */
     @Throws(InterruptedException::class)
     fun prepareSize(n: Int) {
         NxNGeometry.of(n)
+        if (n % 2 == 0) CornerSolver.prepare()
         if (n >= 4) CycleLibrary.of(n)
     }
 

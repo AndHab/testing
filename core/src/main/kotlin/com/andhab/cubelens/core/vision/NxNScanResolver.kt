@@ -18,8 +18,9 @@ import com.andhab.cubelens.core.nxn.NxNValidator
  *     undo swapped center pairs as the 3x3 resolver does. Even sizes start from several seeds
  *     ([JointClustering.clusterFromScratch]) and try the best few clusterings in turn.
  *  2. Naming by [PaletteLabeler.labelAll] and the palette by [PaletteEstimator], as for 3x3.
- *  3. Placement: odd sizes by center color in [ColorScheme.STANDARD], else by scan positions; even
- *     sizes by scan positions (default: the guided order F, R, B, L, U, D).
+ *  3. Placement: odd sizes by center color in [ColorScheme.STANDARD], else by scan positions, else
+ *     with the side and bottom scans rearranged ([rearranged]); even sizes by scan positions
+ *     (default: the guided order F, R, B, L, U, D).
  *  4. Orientation by [NxNOrientationFixer]; if no face rotations give a valid cube, the exchange of
  *     two close calls ([JointClustering.repairBySwap]) and, from 4x4 on, the correction of one
  *     confidently misread sticker ([repairMisread]) are tried.
@@ -122,7 +123,10 @@ internal object NxNScanResolver {
         return clusters.classification(Named(clusters).labels, faces, -1)
     }
 
-    /** Odd sizes: clusters seeded from the fixed centers, placed by center color or else by scan position. */
+    /**
+     * Odd sizes: clusters seeded from the fixed centers, placed by center color, else by scan
+     * position, else with the side and bottom scans rearranged ([rearranged]).
+     */
     private fun resolveOdd(layout: Layout, linear: Array<DoubleArray>, positions: List<Face>?, lookAlikes: Lazy<List<LookAlike>>): NxNScanAnalysis {
         val clusters = clusterWithCenters(layout, linear)
         val named = Named(clusters)
@@ -130,9 +134,46 @@ internal object NxNScanResolver {
         val centerPlaced = Placed(clusters.classification(named.labels, byCenters, layout.center), byCenters, lookAlikes)
         if (!named.plausible) return implausible(layout, centerPlaced, named.palette, Placement.CENTER_COLORS)
         val first = analyze(layout, centerPlaced, Placement.CENTER_COLORS, named.palette)
-        if (first.isValid || positions == null || positions == byCenters) return first
-        val second = analyze(layout, Placed(clusters.classification(named.labels, positions, layout.center), positions, lookAlikes), Placement.SCAN_ORDER, named.palette)
-        return if (second.isValid) second else first
+        if (first.isValid || positions == null) return first
+        if (positions != byCenters) {
+            val second = analyze(layout, Placed(clusters.classification(named.labels, positions, layout.center), positions, lookAlikes), Placement.SCAN_ORDER, named.palette)
+            if (second.isValid) return second
+        }
+        return rearranged(layout, clusters, named, positions, setOf(byCenters, positions), lookAlikes) ?: first
+    }
+
+    /**
+     * Odd sizes, when neither placement gives a valid cube: the scans placed on the front and top
+     * faces by [positions] stay there, and the other four are tried on the right, back, left and
+     * bottom faces in every other order ([sideRearrangements], those in [tried] left out). Each
+     * placement is checked as classified, with faces turned as needed, but without repairs (that
+     * would cost far more, 23 times over). The one that needs the fewest turned faces is analyzed
+     * in full; when several placements give a valid cube, every sticker on which they disagree is
+     * uncertain. Null when none does.
+     *
+     * Someone who follows the color names of the guided steps ("Red center facing you") on a cube
+     * whose colors are arranged differently shows the faces in another order than the turns would:
+     * the first hold fixes front and top, and the side and bottom faces come in the order of their
+     * standard colors, each held the right way up for where it really is.
+     */
+    private fun rearranged(
+        layout: Layout,
+        clusters: Clusters,
+        named: Named,
+        positions: List<Face>,
+        tried: Set<List<Face>>,
+        lookAlikes: Lazy<List<LookAlike>>,
+    ): NxNScanAnalysis? {
+        val valid = sideRearrangements(positions).filter { it !in tried }.mapNotNull { faces ->
+            NxNOrientationFixer.orient(layout.n, clusters.classification(named.labels, faces, layout.center).colors)?.let { faces to it }
+        }
+        val (faces, _) = valid.minByOrNull { (_, oriented) -> turnedFaces(oriented.rotations) } ?: return null
+        val placed = Placed(clusters.classification(named.labels, faces, layout.center), faces, lookAlikes)
+        val analysis = analyze(layout, placed, Placement.REARRANGED, named.palette)
+        if (!analysis.isValid) return null
+        val disputed = sortedSetOf<Int>()
+        for ((_, other) in valid) for (k in other.colors.indices) if (other.colors[k] != analysis.colors[k]) disputed += k
+        return if (disputed.isEmpty()) analysis else analysis.copy(uncertain = (analysis.uncertain + disputed).toSortedSet())
     }
 
     /**
@@ -589,4 +630,31 @@ internal object NxNScanResolver {
     }
 
     private val NO_ROTATIONS: Map<Face, Int> = Face.entries.associateWith { 0 }
+
+    /** The faces in which the order of the side and bottom scans is searched by [sideRearrangements]. */
+    private val REARRANGED_FACES = listOf(Face.R, Face.B, Face.L, Face.D)
+
+    /**
+     * Every placement of six scans that keeps the scans [positions] puts on the front and top faces
+     * there and puts the other four on the right, back, left and bottom faces in any order: 24
+     * placements, [positions] itself included. Empty unless [positions] names six different faces.
+     */
+    fun sideRearrangements(positions: List<Face>): List<List<Face>> {
+        if (positions.size != 6 || positions.toSet().size != 6) return emptyList()
+        val others = positions.indices.filter { positions[it] != Face.F && positions[it] != Face.U }
+        return permutationsOf(REARRANGED_FACES).map { order ->
+            positions.toMutableList().also { placement -> others.forEachIndexed { k, scan -> placement[scan] = order[k] } }
+        }
+    }
+
+    /** How strongly a reading turns faces: turned faces first, then quarter turns (three count as one). */
+    fun turnedFaces(rotations: Map<Face, Int>): Int =
+        rotations.values.sumOf { turns -> if (turns.mod(4) == 0) 0 else 8 + if (turns.mod(4) == 2) 2 else 1 }
+
+    private fun <T> permutationsOf(items: List<T>): List<List<T>> =
+        if (items.size <= 1) {
+            listOf(items)
+        } else {
+            items.indices.flatMap { i -> permutationsOf(items.filterIndexed { k, _ -> k != i }).map { listOf(items[i]) + it } }
+        }
 }

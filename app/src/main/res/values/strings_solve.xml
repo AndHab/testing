@@ -3,8 +3,10 @@
 <resources>
     <!-- Orientation hint for cubes with fixed centers; %1$s = color of the front center, %2$s = color of the top center (lowercase). -->
     <string name="solve_hold_hint">Hold %1$s toward you, %2$s on top</string>
-    <!-- Orientation hint for 2×2, 4×4 and 6×6 cubes, which have no fixed centers: hold it as during the scan (the 1st scanned face in front, the 5th on top). -->
-    <string name="solve_hold_hint_scanned">Hold it as scanned: first face toward you, fifth on top</string>
+    <!-- Orientation hint for scanned 2×2, 4×4 and 6×6 cubes, which have no fixed centers: hold it as for the first face scanned. -->
+    <string name="solve_hold_hint_scanned">Hold it like your first scan, same side on top</string>
+    <!-- As above, for a cube whose colors were entered by hand, face by face (Front, Top…). -->
+    <string name="solve_hold_hint_entered">Hold your front face toward you, top face up</string>
 
     <!-- Outer layers, as named in move descriptions. -->
     <string name="solve_face_u">Top face</string>

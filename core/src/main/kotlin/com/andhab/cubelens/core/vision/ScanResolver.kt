@@ -32,7 +32,9 @@ import com.andhab.cubelens.core.nxn.NxNValidator
  *     (any scan order works). If that doesn't give a valid cube and the scan flow said which face
  *     each scan was meant to be (`scanPositions`), each scan goes there instead and the centers'
  *     colors define the scheme: that resolves cubes with other color arrangements, such as the
- *     Japanese scheme ([ScanAnalysis.placement] tells which placement was used).
+ *     Japanese scheme ([ScanAnalysis.placement] tells which placement was used). Failing that, the
+ *     front and top scans stay put and the other four are tried in every order
+ *     ([Placement.REARRANGED]).
  *  4. If the colors don't form a valid cube, [OrientationFixer] searches for face rotations; if that
  *     fails too, swapping the colors of two low-confidence stickers is tried (cheapest swap first).
  *  5. Stickers whose best and second-best color are close are reported as [ScanAnalysis.uncertain],
@@ -76,7 +78,11 @@ object ScanResolver {
      * red right). When that doesn't give a valid cube and [scanPositions] is given, scan `i` is placed
      * on face `scanPositions[i]` instead (the face the scan flow asked for at that step), which
      * resolves cubes whose colors are arranged differently; [ScanAnalysis.placement] says which
-     * placement the result uses. [scanPositions] must name six different faces; otherwise it is ignored.
+     * placement the result uses. If neither does, the scans [scanPositions] places on the front and
+     * top faces stay there and the other four are tried in every order ([Placement.REARRANGED]): on
+     * a cube with another color arrangement, someone who shows the faces the steps name by their
+     * standard colors holds them in another order than the turns would. [scanPositions] must name
+     * six different faces; otherwise it is ignored.
      *
      * Face rotations are fixed automatically when the scan doesn't form a valid cube. Faces scanned in
      * the reference orientation (see the class documentation) are never re-rotated when the reading is
@@ -101,9 +107,36 @@ object ScanResolver {
         val first = analyze(clusters.classification(labels, byCenters, CENTER), Placement.CENTER_COLORS, palette)
         if (first.isValid) return first
         val positions = scanPositions?.takeIf { it.size == 6 && it.toSet().size == 6 } ?: return first
-        if (positions == byCenters) return first
-        val second = analyze(clusters.classification(labels, positions, CENTER), Placement.SCAN_ORDER, palette)
-        return if (second.isValid) second else first
+        if (positions != byCenters) {
+            val second = analyze(clusters.classification(labels, positions, CENTER), Placement.SCAN_ORDER, palette)
+            if (second.isValid) return second
+        }
+        return rearranged(clusters, labels, positions, setOf(byCenters, positions), palette) ?: first
+    }
+
+    /**
+     * When neither placement gives a valid cube: the scans [positions] puts on the front and top
+     * faces stay there and the other four are tried on the right, back, left and bottom faces in
+     * every other order, as the N×N resolver does (see [NxNScanResolver.sideRearrangements]); the
+     * valid placement with the fewest turned faces, with the stickers that another valid placement
+     * reads differently marked uncertain, or null.
+     */
+    private fun rearranged(
+        clusters: Clusters,
+        labels: List<CubeColor>,
+        positions: List<Face>,
+        tried: Set<List<Face>>,
+        palette: CubePaletteEstimate,
+    ): ScanAnalysis? {
+        val valid = NxNScanResolver.sideRearrangements(positions).filter { it !in tried }.mapNotNull { faces ->
+            OrientationFixer.orient(clusters.classification(labels, faces, CENTER).colors)?.let { faces to it }
+        }
+        val (faces, _) = valid.minByOrNull { (_, oriented) -> NxNScanResolver.turnedFaces(oriented.rotations) } ?: return null
+        val analysis = analyze(clusters.classification(labels, faces, CENTER), Placement.REARRANGED, palette)
+        if (!analysis.isValid) return null
+        val disputed = sortedSetOf<Int>()
+        for ((_, other) in valid) for (k in other.colors.indices) if (other.colors[k] != analysis.colors[k]) disputed += k
+        return if (disputed.isEmpty()) analysis else analysis.copy(uncertain = (analysis.uncertain + disputed).toSortedSet())
     }
 
     /**

@@ -1,8 +1,6 @@
 package com.andhab.cubelens.ui.review
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
@@ -86,21 +84,21 @@ internal fun ReviewNet(
         bringIntoView.bringIntoView(Rect(topLeft, Size(metrics.plate, metrics.plate)))
     }
     Layout(
-        content = {
-            CubeNet(
-                colors = colors,
-                highlightFacelets = flagged,
-                selectedFacelet = selected,
-                onStickerClick = onStickerTap,
-                onFaceClick = onFaceTap,
-            )
-            NetLegend(
-                lock = lock,
-                showDots = dots.isNotEmpty(),
-                showFlags = flagged.isNotEmpty(),
-                showLocks = locked.isNotEmpty(),
-            )
-        },
+        contents = listOf(
+            {
+                CubeNet(
+                    colors = colors,
+                    highlightFacelets = flagged,
+                    selectedFacelet = selected,
+                    onStickerClick = onStickerTap,
+                    onFaceClick = onFaceTap,
+                )
+            },
+            { if (flagged.isNotEmpty()) FlaggedLegend() },
+            { if (dots.isNotEmpty()) UncertainLegend() },
+            // Laid out only when the net's stickers are big enough to carry the locks.
+            { if (locked.isNotEmpty()) LockedLegend(lock) },
+        ),
         modifier = modifier
             .bringIntoViewRequester(bringIntoView)
             .drawWithContent {
@@ -120,23 +118,30 @@ internal fun ReviewNet(
                     }
                 }
             },
-    ) { measurables, constraints ->
+    ) { (netSlot, flagSlot, dotSlot, lockSlot), constraints ->
         // The same metrics CubeNet computes from the same constraints, so the marks line up exactly.
         val metrics = NetMetrics.fit(constraints, n)
-        val net = measurables[0].measure(constraints)
+        val net = netSlot.single().measure(constraints)
         val width = if (constraints.hasBoundedWidth) constraints.maxWidth else net.width
         val offsetX = (width - net.width) / 2
         placement.metrics = metrics
         placement.offsetX = offsetX.toFloat()
 
-        // The legend fills the corner right of the bottom face: two plates wide, one plate tall.
+        // The legend fills the corner right of the bottom face: two plates wide, one plate tall. It
+        // explains the locks only where the draw pass below draws them.
         val legendLeft = (metrics.plateX(Face.R) + metrics.faceGap).roundToInt()
-        val legendWidth = (2 * metrics.plate).roundToInt()
-        val legend = measurables[1].measure(Constraints(maxWidth = legendWidth, maxHeight = metrics.plate.roundToInt()))
-        val legendTop = metrics.plateY(Face.D).roundToInt() + (metrics.plate.roundToInt() - legend.height) / 2
+        val rowConstraints = Constraints(maxWidth = (2 * metrics.plate).roundToInt())
+        val legendRows = flagSlot + dotSlot + if (metrics.sticker >= MinLockSticker.toPx()) lockSlot else emptyList()
+        val rows = legendRows.map { it.measure(rowConstraints) }
+        val rowGap = LegendRowGap.roundToPx()
+        val legendHeight = rows.sumOf { it.height } + rowGap * (rows.size - 1).coerceAtLeast(0)
+        var rowTop = metrics.plateY(Face.D).roundToInt() + (metrics.plate.roundToInt() - legendHeight) / 2
         layout(width, net.height) {
             net.place(offsetX, 0)
-            legend.place(offsetX + legendLeft, legendTop)
+            for (row in rows) {
+                row.place(offsetX + legendLeft, rowTop)
+                rowTop += row.height + rowGap
+            }
         }
     }
 }
@@ -152,25 +157,24 @@ private class NetPlacement {
     var offsetX: Float = 0f
 }
 
-/** Explains the marks on the net: red rings, amber dots and locks, each only when there are any. */
+/** Legend row for the red rings around stickers that can't be right. */
 @Composable
-private fun NetLegend(lock: VectorPainter, showDots: Boolean, showFlags: Boolean, showLocks: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (showFlags) {
-            LegendRow(stringResource(R.string.review_legend_flagged)) { drawFlagRing() }
-        }
-        if (showDots) {
-            LegendRow(stringResource(R.string.review_legend_uncertain)) {
-                drawUncertainDot(Offset(size.width / 2f, size.height / 2f), DotRadius.toPx())
-            }
-        }
-        if (showLocks) {
-            LegendRow(stringResource(R.string.review_legend_locked)) {
-                drawLock(lock, Offset.Zero, size.minDimension, background = LegendSticker)
-            }
-        }
-    }
+private fun FlaggedLegend() = LegendRow(stringResource(R.string.review_legend_flagged)) { drawFlagRing() }
+
+/** Legend row for the amber "hard to read" dots. */
+@Composable
+private fun UncertainLegend() = LegendRow(stringResource(R.string.review_legend_uncertain)) {
+    drawUncertainDot(Offset(size.width / 2f, size.height / 2f), DotRadius.toPx())
 }
+
+/** Legend row for the locks on fixed centers. */
+@Composable
+private fun LockedLegend(lock: VectorPainter) = LegendRow(stringResource(R.string.review_legend_locked)) {
+    drawLock(lock, Offset.Zero, size.minDimension, background = LegendSticker)
+}
+
+/** Space between the legend's rows. */
+private val LegendRowGap = 10.dp
 
 @Composable
 private fun LegendRow(label: String, marker: DrawScope.() -> Unit) {

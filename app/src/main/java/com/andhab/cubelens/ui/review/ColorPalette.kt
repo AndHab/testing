@@ -209,8 +209,8 @@ private fun Swatch(
 
 /**
  * "7/9" in a small capsule: neutral below [perColor], mint with a check at exactly [perColor], red
- * above. A complete two-digit count shows as "✓ 16" so six chips still fit side by side on a
- * small phone.
+ * above. A complete count shows short, as "✓ 9" (or "✓ 49"), on every size: six chips still fit
+ * side by side on a small phone, and the check says "all there".
  */
 @Composable
 private fun CountChip(count: Int, perColor: Int) {
@@ -238,7 +238,7 @@ private fun CountChip(count: Int, perColor: Int) {
             Icon(Icons.Rounded.Check, contentDescription = null, tint = tone, modifier = Modifier.size(12.dp))
         }
         Text(
-            text = if (complete && perColor >= 10) "$perColor" else stringResource(R.string.review_count, count, perColor),
+            text = if (complete) "$perColor" else stringResource(R.string.review_count, count, perColor),
             style = MaterialTheme.typography.labelMedium.copy(fontFamily = DisplayFont, fontSize = 12.sp),
             color = tone,
             maxLines = 1,

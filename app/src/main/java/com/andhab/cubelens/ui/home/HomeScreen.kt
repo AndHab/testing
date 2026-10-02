@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.FaceletCube
@@ -91,8 +92,9 @@ import kotlin.random.Random
  * random scramble get solved. Everything enters in a quick staggered cascade.
  *
  * The hero takes whatever height the rest leaves free. On short screens the "how it works" strip
- * makes way for it, and if even then the hero would drop below a comfortable size, the page
- * scrolls instead (and the hero stops taking drags, so they scroll the page).
+ * makes way for it, then the gaps tighten (the size switch tucks under the hero's glow) and the
+ * hero shrinks a little; only if even that doesn't fit does the page scroll (and the hero stops
+ * taking drags, so they scroll the page).
  *
  * @param size the picked cube size (3 for a 3×3); the hero, the size switch and the scan button
  *   follow it.
@@ -145,11 +147,7 @@ fun HomeScreen(
                 },
                 picker = {
                     Reveal(index = 2) {
-                        SizePicker(
-                            selected = size,
-                            onSelect = onSizeChange,
-                            modifier = Modifier.padding(top = 2.dp, bottom = 24.dp),
-                        )
+                        SizePicker(selected = size, onSelect = onSizeChange)
                     }
                 },
                 intro = {
@@ -179,7 +177,6 @@ fun HomeScreen(
                 },
                 actions = {
                     Column {
-                        Spacer(Modifier.height(22.dp))
                         Reveal(index = 6) {
                             PrimaryButton(
                                 text = stringResource(R.string.home_scan, sizeLabel),
@@ -213,18 +210,42 @@ fun HomeScreen(
     }
 }
 
-/** The hero never gets smaller than this; below it, the page scrolls instead. */
+/** The hero keeps at least this height while the gaps around the picker can still give way. */
 private val MinHeroHeight = 200.dp
+
+/** On short screens, once the gaps are tight, the hero may shrink to this; below it the page scrolls. */
+private val TightMinHeroHeight = 150.dp
 
 /** The "how it works" strip only stays while the hero keeps at least this much height. */
 private val ComfortableHeroHeight = 240.dp
 
 /**
+ * The vertical gaps [HomeLayout] puts between its slots: hero to picker (negative: the picker
+ * overlaps the empty glow under the hero cube), picker to intro, and above the actions.
+ */
+private class HomeGaps(val heroToPicker: Dp, val pickerToIntro: Dp, val aboveActions: Dp) {
+    val total: Dp get() = heroToPicker + pickerToIntro + aboveActions
+}
+
+/** The gaps on screens with room to spare. */
+private val RoomyGaps = HomeGaps(heroToPicker = 2.dp, pickerToIntro = 24.dp, aboveActions = 22.dp)
+
+/** The gaps on short screens: the picker tucks under the hero's glow and the copy moves closer. */
+private val TightGaps = HomeGaps(heroToPicker = (-18).dp, pickerToIntro = 10.dp, aboveActions = 14.dp)
+
+/**
  * Stacks [brand], [hero], [picker], [intro], [steps] and [actions] top to bottom, each at full
- * width. The hero gets the height the others leave free in [viewportHeight], but never less than
- * [MinHeroHeight]; [steps] are left out (not placed) when keeping them would squeeze the hero below
- * [ComfortableHeroHeight]. The result is taller than the viewport only when the smallest hero
- * doesn't fit, so the caller should let it scroll.
+ * width. The hero gets the height the others leave free in [viewportHeight]. When space runs short,
+ * the page gives way step by step, so the size picker and all three actions stay on screen as long
+ * as possible:
+ * 1. [steps] are left out (not placed) when keeping them would squeeze the hero below
+ *    [ComfortableHeroHeight];
+ * 2. the gaps tighten from [RoomyGaps] towards [TightGaps] rather than squeeze the hero below
+ *    [MinHeroHeight];
+ * 3. the hero shrinks, down to [TightMinHeroHeight].
+ *
+ * The result is taller than the viewport only when even that doesn't fit, so the caller should let
+ * it scroll.
  */
 @Composable
 private fun HomeLayout(
@@ -252,24 +273,42 @@ private fun HomeLayout(
         val bottom = actionsSlot.map { it.measure(anyHeight) }
 
         val viewport = viewportHeight.roundToPx()
-        val fixedHeight = (above + switch + below + bottom).sumOf { it.height }
+        val slotsHeight = (above + switch + below + bottom).sumOf { it.height }
+        val roomyHeight = slotsHeight + RoomyGaps.total.roundToPx()
         val stepsHeight = stepRow.sumOf { it.height }
-        val showSteps = viewport - fixedHeight - stepsHeight >= ComfortableHeroHeight.roundToPx()
-        val othersHeight = fixedHeight + if (showSteps) stepsHeight else 0
-        val heroHeight = maxOf(MinHeroHeight.roundToPx(), viewport - othersHeight)
+        val showSteps = viewport - roomyHeight - stepsHeight >= ComfortableHeroHeight.roundToPx()
+
+        // How far the gaps must close (0 = roomy, 1 = tight) to keep the hero at its minimum.
+        val shortfall = if (showSteps) 0 else roomyHeight + MinHeroHeight.roundToPx() - viewport
+        val slack = (RoomyGaps.total - TightGaps.total).toPx()
+        val tightness = (shortfall / slack).coerceIn(0f, 1f)
+        fun gap(roomy: Dp, tight: Dp) = lerp(roomy, tight, tightness).roundToPx()
+        val heroToPicker = gap(RoomyGaps.heroToPicker, TightGaps.heroToPicker)
+        val pickerToIntro = gap(RoomyGaps.pickerToIntro, TightGaps.pickerToIntro)
+        val aboveActions = gap(RoomyGaps.aboveActions, TightGaps.aboveActions)
+
+        val othersHeight = slotsHeight + heroToPicker + pickerToIntro + aboveActions +
+            if (showSteps) stepsHeight else 0
+        val minHero = if (showSteps) MinHeroHeight else TightMinHeroHeight
+        val heroHeight = maxOf(minHero.roundToPx(), viewport - othersHeight)
         val heroes = heroSlot.map { it.measure(Constraints.fixed(width, heroHeight)) }
 
         layout(width, othersHeight + heroHeight) {
             var y = 0
-            fun stack(placeables: List<Placeable>) = placeables.forEach {
-                it.place(0, y)
-                y += it.height
+            fun stack(placeables: List<Placeable>, gapAfter: Int = 0) {
+                placeables.forEach {
+                    it.place(0, y)
+                    y += it.height
+                }
+                y += gapAfter
             }
             stack(above)
-            stack(heroes)
-            stack(switch)
+            stack(heroes, gapAfter = heroToPicker)
+            // Placed after the hero, so where they overlap the picker is drawn (and tapped) on top.
+            stack(switch, gapAfter = pickerToIntro)
             stack(below)
             if (showSteps) stack(stepRow)
+            y += aboveActions
             stack(bottom)
         }
     }
@@ -307,14 +346,19 @@ private fun HeroCube(colors: List<CubeColor>, interactive: Boolean, modifier: Mo
     val state = remember { CubeViewState(colors, initialYaw = -44f, initialPitch = 26f) }
     val shown = remember { Animatable(1f) }
     LaunchedEffect(colors) {
-        if (state.colors == colors) return@LaunchedEffect
-        shown.animateTo(0f, tween(durationMillis = 150, easing = FastOutLinearInEasing))
-        state.snapTo(colors)
-        var last = 0f
-        shown.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow)) {
-            // A twirl that eases out with the pop.
-            state.yaw += (value - last) * MORPH_TWIRL_DEGREES
-            last = value
+        if (state.colors != colors) {
+            shown.animateTo(0f, tween(durationMillis = 150, easing = FastOutLinearInEasing))
+            state.snapTo(colors)
+            var last = 0f
+            shown.animateTo(1f, MorphPop) {
+                // A twirl that eases out with the pop.
+                state.yaw += (value - last) * MORPH_TWIRL_DEGREES
+                last = value
+            }
+        } else if (shown.value != 1f) {
+            // Picked back while the old cube was still shrinking away: it is already the right one,
+            // so it only has to grow back, without a twirl.
+            shown.animateTo(1f, MorphPop)
         }
     }
     Cube3D(
@@ -344,6 +388,9 @@ private fun HeroCube(colors: List<CubeColor>, interactive: Boolean, modifier: Mo
  * quarter turn, so it lands on the same flattering three-quarter angle.
  */
 private const val MORPH_TWIRL_DEGREES = 90f
+
+/** The springy overshoot the hero cube pops back in with. */
+private val MorphPop = spring<Float>(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow)
 
 /** "Snap. Solve." over a sunset "Twist.", read as one heading. */
 @Composable

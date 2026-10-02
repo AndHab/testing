@@ -2,6 +2,7 @@ package com.andhab.cubelens.ui.review
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -21,6 +22,7 @@ import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import com.andhab.cubelens.ui.theme.StickerPalette
 import com.andhab.cubelens.ui.twistedCorner
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -50,6 +52,9 @@ class ReviewScreenshotTest {
         val review = ReviewState.fromScan(analysis)
         assertTrue(review.canSolve)
         compose.screenshot("review_scan_valid") { Review(review) }
+        // A 3×3's stickers are big enough to carry the center locks, so the legend explains them.
+        compose.onNodeWithText("Fixed center").assertIsDisplayed()
+        compose.onNodeWithText("Hard to read").assertIsDisplayed()
     }
 
     @Test
@@ -167,6 +172,10 @@ class ReviewScreenshotTest {
     fun sevenBySevenNetOnASmallPhone() {
         val review = ReviewState.fromScan(scanAnalysis(scrambledColors(7), uncertain = setOf(10, 120, 200)))
         compose.screenshot("review_7x7_compact", advanceMillis = 300) { Review(review) }
+        // The net's stickers are too small to carry the center locks, so the legend leaves them out.
+        assertTrue(review.locked.isNotEmpty())
+        assertFalse(compose.onNodeWithText("Fixed center").fetchSemanticsNode().layoutInfo.isPlaced)
+        assertTrue(compose.onNodeWithText("Hard to read").fetchSemanticsNode().layoutInfo.isPlaced)
     }
 
     /** A scanned 5×5 with a face open: unsure dots and the locked center in the editor too. */

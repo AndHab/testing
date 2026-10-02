@@ -7,8 +7,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.andhab.cubelens.core.cube.FaceletCube
-import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.NxNCube
+import com.andhab.cubelens.core.nxn.NxNSolution
 import com.andhab.cubelens.ui.theme.CubeLensTheme
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
@@ -29,7 +29,8 @@ class CubeLensAppTest {
     private val viewModel = AppViewModel(
         solver = object : CubeSolver {
             override fun prepare() = Unit
-            override fun solve(cube: FaceletCube): List<Move> = emptyList()
+            override fun prepareSize(n: Int) = Unit
+            override fun solve(cube: NxNCube): NxNSolution = NxNSolution(cube.n, emptyList())
         },
         workDispatcher = Dispatchers.Main,
     )
@@ -60,7 +61,7 @@ class CubeLensAppTest {
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
         settle()
         assertEquals(Screen.Home, viewModel.state.value.screen)
-        compose.onNodeWithText("Scan my cube").assertExists()
+        compose.onNodeWithText("Scan my 3×3").assertExists()
     }
 
     @Test
@@ -86,7 +87,7 @@ class CubeLensAppTest {
         compose.onNodeWithText("Leave").performClick()
         settle()
         assertEquals(Screen.Home, viewModel.state.value.screen)
-        compose.onNodeWithText("Scan my cube").assertExists()
+        compose.onNodeWithText("Scan my 3×3").assertExists()
     }
 
     @Test
@@ -101,6 +102,36 @@ class CubeLensAppTest {
         compose.onNodeWithContentDescription("Back").performClick()
         settle()
         assertEquals(Screen.Home, viewModel.state.value.screen)
+    }
+
+    @Test
+    fun aBigCubeIsEnteredFaceByFaceInTheFaceEditor() {
+        compose.mainClock.autoAdvance = false
+        compose.setContent { CubeLensTheme { CubeLensApp(viewModel = viewModel) } }
+        settle()
+        compose.onNodeWithContentDescription("4 by 4 cube").performClick()
+        settle()
+        compose.onNodeWithText("Scan my 4×4").assertExists()
+
+        compose.onNodeWithText("Enter colors manually").performClick()
+        settle()
+        compose.onNodeWithText("Top face").assertExists()
+        compose.onNodeWithText("96 stickers to go").assertDoesNotExist() // hidden behind the sheet
+        compose.onNodeWithContentDescription("Red, 0 of 16").performClick()
+        settle()
+        compose.onNodeWithContentDescription("Row 1, column 1: Red").assertExists()
+        compose.onNodeWithContentDescription("Next face").performClick()
+        settle()
+        compose.onNodeWithText("Left face").assertExists()
+
+        // Back closes the face editor first, then asks before dropping the work.
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        settle()
+        compose.onNodeWithText("Left face").assertDoesNotExist()
+        compose.onNodeWithText("95 stickers to go").assertExists()
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        settle()
+        compose.onNodeWithText("Leave this cube?").assertExists()
     }
 
     /** Lets screen transitions and the staggered entrance finish. */

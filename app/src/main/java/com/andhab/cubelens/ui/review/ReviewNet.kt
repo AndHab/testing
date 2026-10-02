@@ -38,7 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Facelets
+import com.andhab.cubelens.core.nxn.NxNGeometry
 import com.andhab.cubelens.ui.cube.CubeNet
 import com.andhab.cubelens.ui.cube.NetMetrics
 import com.andhab.cubelens.ui.theme.Brand
@@ -46,32 +46,42 @@ import com.andhab.cubelens.ui.theme.CubePalette
 import kotlin.math.roundToInt
 
 /**
- * The editable cube net of the review screen: a [CubeNet] centered in the available width, with two
- * extra marks drawn on top of it:
- *  - a small embossed lock on each center, which never changes;
+ * The editable cube net of the review screen: a [CubeNet] of any size centered in the available
+ * width, with two extra marks drawn on top of it:
+ *  - a small embossed lock on each [locked] sticker (the fixed centers of odd cubes), which never
+ *    changes; left out where stickers are too small to carry it;
  *  - a subtle amber dot on the corner of each [uncertain] sticker, the ones worth a second look
  *    (stickers that are [flagged] already carry the stronger danger ring instead).
  *
  * A small legend for the marks sits in the empty corner beside the bottom face. Inside a scrolling
  * parent, the face of the [selected] sticker is scrolled into view whenever the selection moves.
+ *
+ * @param colors 6·N² sticker colors in [NxNGeometry] order.
+ * @param onStickerTap makes stickers tappable (small cubes).
+ * @param onFaceTap makes each face's plate tappable instead, e.g. to open it in a face editor when
+ *   the stickers are too small to tap (big cubes).
  */
 @Composable
 internal fun ReviewNet(
     colors: List<CubeColor?>,
     flagged: Set<Int>,
     uncertain: Set<Int>,
+    locked: Set<Int>,
     selected: Int?,
     onStickerTap: ((Int) -> Unit)?,
     modifier: Modifier = Modifier,
+    onFaceTap: ((Face) -> Unit)? = null,
 ) {
+    val n = remember(colors.size) { cubeSizeOf(colors.size) }
+    val geometry = NxNGeometry.of(n)
     val placement = remember { NetPlacement() }
     val lock = rememberVectorPainter(Icons.Rounded.Lock)
-    val dots = uncertain.filter { it in 0 until Facelets.COUNT && it !in flagged }
+    val dots = uncertain.filter { it in colors.indices && it !in flagged }
     val bringIntoView = remember { BringIntoViewRequester() }
     LaunchedEffect(selected) {
         val metrics = placement.metrics ?: return@LaunchedEffect
-        if (selected == null) return@LaunchedEffect
-        val face = Facelets.faceOf(selected)
+        if (selected == null || selected !in colors.indices) return@LaunchedEffect
+        val face = geometry.faceOf(selected)
         val topLeft = Offset(placement.offsetX + metrics.plateX(face), metrics.plateY(face))
         bringIntoView.bringIntoView(Rect(topLeft, Size(metrics.plate, metrics.plate)))
     }
@@ -82,8 +92,14 @@ internal fun ReviewNet(
                 highlightFacelets = flagged,
                 selectedFacelet = selected,
                 onStickerClick = onStickerTap,
+                onFaceClick = onFaceTap,
             )
-            NetLegend(lock = lock, showDots = dots.isNotEmpty(), showFlags = flagged.isNotEmpty())
+            NetLegend(
+                lock = lock,
+                showDots = dots.isNotEmpty(),
+                showFlags = flagged.isNotEmpty(),
+                showLocks = locked.isNotEmpty(),
+            )
         },
         modifier = modifier
             .bringIntoViewRequester(bringIntoView)
@@ -91,19 +107,22 @@ internal fun ReviewNet(
                 drawContent()
                 val metrics = placement.metrics ?: return@drawWithContent
                 translate(left = placement.offsetX) {
-                    for (face in Face.entries) {
-                        val center = Facelets.center(face)
-                        drawLock(lock, Offset(metrics.stickerX(center), metrics.stickerY(center)), metrics.sticker)
+                    if (metrics.sticker >= MinLockSticker.toPx()) {
+                        for (index in locked) {
+                            drawLock(lock, Offset(metrics.stickerX(index), metrics.stickerY(index)), metrics.sticker)
+                        }
                     }
+                    val radius = (metrics.sticker * DOT_FRACTION).coerceAtMost(DotRadius.toPx())
+                    val inset = (metrics.sticker * DOT_INSET_FRACTION).coerceAtMost(DotInset.toPx())
                     for (index in dots) {
                         val corner = Offset(metrics.stickerX(index) + metrics.sticker, metrics.stickerY(index))
-                        drawUncertainDot(corner + Offset(-DotRadius.toPx() - DotInset.toPx(), DotRadius.toPx() + DotInset.toPx()))
+                        drawUncertainDot(corner + Offset(-radius - inset, radius + inset), radius)
                     }
                 }
             },
     ) { measurables, constraints ->
         // The same metrics CubeNet computes from the same constraints, so the marks line up exactly.
-        val metrics = NetMetrics.fit(constraints)
+        val metrics = NetMetrics.fit(constraints, n)
         val net = measurables[0].measure(constraints)
         val width = if (constraints.hasBoundedWidth) constraints.maxWidth else net.width
         val offsetX = (width - net.width) / 2
@@ -122,26 +141,33 @@ internal fun ReviewNet(
     }
 }
 
+/** N of a cube with [count] (6·N²) stickers. */
+internal fun cubeSizeOf(count: Int): Int =
+    (NxNGeometry.MIN_SIZE..NxNGeometry.MAX_SIZE).firstOrNull { 6 * it * it == count }
+        ?: throw IllegalArgumentException("A cube has 6·N² stickers, got $count")
+
 /** Where the net was last laid out; written by the measure pass and read by the draw pass. */
 private class NetPlacement {
     var metrics: NetMetrics? = null
     var offsetX: Float = 0f
 }
 
-/** Explains the marks on the net: red rings and amber dots when there are any, and the locks. */
+/** Explains the marks on the net: red rings, amber dots and locks, each only when there are any. */
 @Composable
-private fun NetLegend(lock: VectorPainter, showDots: Boolean, showFlags: Boolean) {
+private fun NetLegend(lock: VectorPainter, showDots: Boolean, showFlags: Boolean, showLocks: Boolean) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (showFlags) {
             LegendRow(stringResource(R.string.review_legend_flagged)) { drawFlagRing() }
         }
         if (showDots) {
             LegendRow(stringResource(R.string.review_legend_uncertain)) {
-                drawUncertainDot(Offset(size.width / 2f, size.height / 2f))
+                drawUncertainDot(Offset(size.width / 2f, size.height / 2f), DotRadius.toPx())
             }
         }
-        LegendRow(stringResource(R.string.review_legend_locked)) {
-            drawLock(lock, Offset.Zero, size.minDimension, background = LegendSticker)
+        if (showLocks) {
+            LegendRow(stringResource(R.string.review_legend_locked)) {
+                drawLock(lock, Offset.Zero, size.minDimension, background = LegendSticker)
+            }
         }
     }
 }
@@ -170,14 +196,26 @@ private val LockTint = ColorFilter.tint(Color.Black.copy(alpha = 0.34f))
 /** Neutral sticker behind the lock in the legend. */
 private val LegendSticker = Color(0xFFB9B5C9)
 
-private val DotRadius = 4.dp
-private val DotInset = 2.dp
+/** The uncertain dot's radius at most (it shrinks with small stickers, see [DOT_FRACTION]). */
+internal val DotRadius = 4.dp
+
+/** The uncertain dot's inset from the sticker's corner at most (see [DOT_INSET_FRACTION]). */
+internal val DotInset = 2.dp
+
+/** On small stickers the dot's radius shrinks to this fraction of the sticker. */
+internal const val DOT_FRACTION = 0.2f
+
+/** On small stickers the dot's inset shrinks to this fraction of the sticker. */
+internal const val DOT_INSET_FRACTION = 0.06f
+
+/** Stickers smaller than this carry no lock: it would only be a smudge. */
+private val MinLockSticker = 14.dp
 
 /**
  * The center lock on a sticker of side [sticker] at [topLeft]; with a [background], draws that
  * sticker first.
  */
-private fun DrawScope.drawLock(lock: VectorPainter, topLeft: Offset, sticker: Float, background: Color? = null) {
+internal fun DrawScope.drawLock(lock: VectorPainter, topLeft: Offset, sticker: Float, background: Color? = null) {
     if (background != null) {
         drawRoundRect(background, topLeft, Size(sticker, sticker), CornerRadius(sticker * 0.22f))
     }
@@ -188,10 +226,10 @@ private fun DrawScope.drawLock(lock: VectorPainter, topLeft: Offset, sticker: Fl
     }
 }
 
-/** An amber dot inside a dark ring, centered on [center]. */
-private fun DrawScope.drawUncertainDot(center: Offset) {
-    val radius = DotRadius.toPx()
-    drawCircle(CubePalette.Body, radius = radius + 1.75.dp.toPx(), center = center)
+/** An amber dot of [radius] inside a dark ring, centered on [center]. */
+internal fun DrawScope.drawUncertainDot(center: Offset, radius: Float) {
+    val ring = (radius * 0.45f).coerceAtMost(1.75.dp.toPx())
+    drawCircle(CubePalette.Body, radius = radius + ring, center = center)
     drawCircle(Brand.Amber, radius = radius, center = center)
 }
 

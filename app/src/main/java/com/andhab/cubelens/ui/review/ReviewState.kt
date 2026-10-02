@@ -6,8 +6,15 @@ import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.CubeError
 import com.andhab.cubelens.core.cube.CubeValidator
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Facelets
-import com.andhab.cubelens.core.vision.ScanAnalysis
+import com.andhab.cubelens.core.nxn.NxNCube
+import com.andhab.cubelens.core.nxn.NxNError
+import com.andhab.cubelens.core.nxn.NxNGeometry
+import com.andhab.cubelens.core.nxn.NxNValidator
+import com.andhab.cubelens.core.nxn.PieceKind
+import com.andhab.cubelens.core.vision.NxNScanAnalysis
+import com.andhab.cubelens.ui.DEFAULT_CUBE_SIZE
+import com.andhab.cubelens.ui.SupportedCubeSizes
+import java.util.concurrent.ConcurrentHashMap
 
 /** Where the colors on the review screen came from. */
 enum class ReviewSource {
@@ -20,7 +27,7 @@ enum class ReviewSource {
 
 /** A short-lived tip shown in response to something the user just tried. */
 enum class ReviewHint {
-    /** The user tapped a center sticker, which cannot change (it decides its face's color). */
+    /** The user tapped a fixed center sticker, which cannot change (it decides its face's color). */
     CenterLocked,
 }
 
@@ -34,7 +41,7 @@ sealed interface ReviewCheck {
     data class Incomplete(val remaining: Int) : ReviewCheck
 
     /**
-     * Every sticker has a color but no real cube looks like this.
+     * Every sticker of a 3×3 has a color but no real cube looks like this.
      *
      * @param errors every problem found, most basic first (never empty).
      * @param flagged stickers involved in any of the [errors]; empty when none of them can be pinned
@@ -52,6 +59,23 @@ sealed interface ReviewCheck {
         val sameKindCount: Int get() = errors.count { it::class == error::class }
     }
 
+    /**
+     * Every sticker of a 2×2 or of a 4×4 and larger has a color but no real cube of that size looks
+     * like this.
+     *
+     * @param errors every problem found, each with a friendly message (never empty).
+     * @param flagged stickers involved in any of the [errors]; empty when none of them can be pinned
+     *   to particular stickers.
+     */
+    data class InvalidNxN(val errors: List<NxNError>, val flagged: Set<Int>) : ReviewCheck {
+        init {
+            require(errors.isNotEmpty()) { "An invalid cube has at least one problem" }
+        }
+
+        /** The problem to tell the user about. */
+        val error: NxNError get() = errors.first()
+    }
+
     /** A real, solvable cube. */
     data object Valid : ReviewCheck
 }
@@ -64,24 +88,30 @@ sealed interface ReviewCheck {
 data class ReviewEdit(val index: Int, val previous: CubeColor?, val wasUncertain: Boolean)
 
 /**
- * Everything the review screen shows and edits: the 54 sticker colors plus the editing session
- * around them. Immutable; edits return a new state (see [tapSticker], [tapColor] and [undo]).
+ * Everything the review screen shows and edits: the 6·N² sticker colors of an N×N cube (any
+ * supported size, see [SupportedCubeSizes]) plus the editing session around them. Immutable; edits
+ * return a new state (see [tapSticker], [tapColor], [undo] and [focusFace]).
  *
  * Editing works two ways, and both are always available:
  *  - **Select, then color**: tap a sticker to select it, then tap a color to paint it. In manual
- *    entry, painting an empty sticker hops on to the next empty one in [ENTRY_ORDER], so a face can
+ *    entry, painting an empty sticker hops on to the next empty one in [entryOrder], so a face can
  *    be copied with nothing but taps on the palette.
  *  - **Paint**: with nothing selected, tap a color to pick it up as a [brush], then tap stickers to
  *    paint them. Tapping the same color again puts the brush down.
  *
- * Centers never change: the app always shows the cube with white on top and green in front, so the
- * center colors are fixed by [ColorScheme.STANDARD].
+ * On a 4×4 and larger the stickers of the net are too small to tap ([usesFaceEditor]): tapping a face
+ * opens it big in a face editor ([focusedFace]), which follows the selection as manual entry hops
+ * from face to face.
  *
- * @property colors 54 sticker colors in facelet order; `null` means not entered yet.
+ * The fixed centers of odd sizes never change ([isLocked]): they decide which color each face has.
+ * Even sizes have no fixed centers, so every sticker can be edited.
+ *
+ * @property colors 6·N² sticker colors in [NxNGeometry] order; `null` means not entered yet.
  * @property uncertain stickers the scanner was unsure about; each leaves the set once edited.
  * @property straightenedFaces how many scanned faces were turned upright automatically.
  * @property selected the sticker waiting for a color, if any (never set while [brush] is).
  * @property brush the color being painted with, if any (never set while [selected] is).
+ * @property focusedFace the face open in the face editor, if any.
  * @property history undoable edits, oldest first (at most [MAX_HISTORY]).
  * @property solving a solution is being computed; edits are paused meanwhile.
  * @property confirmingLeave the user asked to leave and is being asked whether to drop this cube.
@@ -94,14 +124,23 @@ data class ReviewState(
     val straightenedFaces: Int = 0,
     val selected: Int? = null,
     val brush: CubeColor? = null,
+    val focusedFace: Face? = null,
     val history: List<ReviewEdit> = emptyList(),
     val hint: ReviewHint? = null,
     val solving: Boolean = false,
     val confirmingLeave: Boolean = false,
 ) {
-    init {
-        require(colors.size == Facelets.COUNT) { "Need ${Facelets.COUNT} sticker colors, got ${colors.size}" }
-    }
+    /** The cube's size N (3 for a 3×3), from the 6·N² [colors]; any other count is rejected. */
+    val n: Int = sizeOf(colors.size)
+
+    /** Sticker layout of an [n]×[n] cube. */
+    val geometry: NxNGeometry get() = NxNGeometry.of(n)
+
+    /** How many stickers of each color a finished cube has: N². */
+    val stickersPerColor: Int get() = n * n
+
+    /** Whether faces are edited in the big face editor because the net's stickers are too small. */
+    val usesFaceEditor: Boolean get() = n >= FACE_EDITOR_MIN_SIZE
 
     /** How many stickers currently have each color. */
     val counts: Map<CubeColor, Int> by lazy(LazyThreadSafetyMode.PUBLICATION) {
@@ -109,7 +148,7 @@ data class ReviewState(
     }
 
     /** Validation of the current colors. */
-    val check: ReviewCheck by lazy(LazyThreadSafetyMode.PUBLICATION) { checkColors(colors) }
+    val check: ReviewCheck by lazy(LazyThreadSafetyMode.PUBLICATION) { checkColors(n, colors) }
 
     /** Whether the cube can be solved as it stands. */
     val canSolve: Boolean get() = check == ReviewCheck.Valid
@@ -128,63 +167,115 @@ data class ReviewState(
     val flagged: Set<Int>
         get() = when (val check = check) {
             is ReviewCheck.Invalid -> check.flagged.ifEmpty { uncertain }
+            is ReviewCheck.InvalidNxN -> check.flagged.ifEmpty { uncertain }
             else -> emptySet()
         }
+
+    /** The fixed centers of an odd cube, which never change; empty for even sizes. */
+    val locked: Set<Int> get() = lockedStickers(n)
+
+    /** Whether sticker [index] is a fixed center, which cannot change. */
+    fun isLocked(index: Int): Boolean = index in locked
+
+    /** The order manual entry walks the stickers of this cube in; see [entryOrder]. */
+    val entryOrder: List<Int> get() = entryOrder(n)
 
     companion object {
         /** Longest undo history kept. */
         const val MAX_HISTORY = 64
 
+        /** From this size on, faces are edited in the big face editor ([usesFaceEditor]). */
+        const val FACE_EDITOR_MIN_SIZE = 4
+
         /**
-         * The order manual entry walks the stickers in: face by face as the net lays them out (top;
-         * then left, front, right and back, as when turning the cube around; then bottom), each face
-         * row by row.
+         * The faces in the order the net lays them out and manual entry walks them: top; then left,
+         * front, right and back, as when turning the cube around; then bottom.
          */
-        val ENTRY_ORDER: List<Int> = listOf(Face.U, Face.L, Face.F, Face.R, Face.B, Face.D).flatMap { face ->
-            (0 until 9).map { Facelets.index(face, it / 3, it % 3) }
+        val FACE_ORDER: List<Face> = listOf(Face.U, Face.L, Face.F, Face.R, Face.B, Face.D)
+
+        private val entryOrders = ConcurrentHashMap<Int, List<Int>>()
+        private val lockedSets = ConcurrentHashMap<Int, Set<Int>>()
+
+        /** The order manual entry walks the stickers of an [n]×[n] cube in: face by face in [FACE_ORDER], each face row by row. */
+        fun entryOrder(n: Int): List<Int> = entryOrders.getOrPut(n) {
+            val geometry = NxNGeometry.of(n)
+            FACE_ORDER.flatMap { face -> (0 until n * n).map { geometry.index(face, it / n, it % n) } }
         }
 
-        /** A blank cube for manual entry: only the centers are set, and the first sticker is selected. */
-        fun manual(): ReviewState = ReviewState(
-            colors = List(Facelets.COUNT) { i -> if (isCenter(i)) centerColor(i) else null },
-            source = ReviewSource.Manual,
-            selected = ENTRY_ORDER.first(),
-        )
+        /**
+         * A blank [n]×[n] cube for manual entry, with the first sticker to fill selected. Odd sizes
+         * start with their fixed centers set to the standard scheme (white on top, green in front);
+         * even sizes have no fixed centers and start empty. On a cube with a face editor
+         * ([FACE_EDITOR_MIN_SIZE]), the top face opens in it right away.
+         */
+        fun manual(n: Int = DEFAULT_CUBE_SIZE): ReviewState {
+            val geometry = NxNGeometry.of(n)
+            val locked = lockedStickers(n)
+            val colors = List(geometry.stickerCount) { i ->
+                if (i in locked) ColorScheme.STANDARD.colorOf(geometry.faceOf(i)) else null
+            }
+            val first = entryOrder(n).first { it !in locked }
+            return ReviewState(
+                colors = colors,
+                source = ReviewSource.Manual,
+                selected = first,
+                focusedFace = if (n >= FACE_EDITOR_MIN_SIZE) geometry.faceOf(first) else null,
+            )
+        }
 
         /** The resolved colors of a scan, with its unsure stickers marked for a second look. */
-        fun fromScan(analysis: ScanAnalysis): ReviewState = ReviewState(
-            colors = analysis.colors,
-            source = ReviewSource.Scan,
-            uncertain = analysis.uncertain.filterTo(mutableSetOf()) { it in 0 until Facelets.COUNT && !isCenter(it) },
-            straightenedFaces = analysis.faceRotations.values.count { it.mod(4) != 0 },
-        )
+        fun fromScan(analysis: NxNScanAnalysis): ReviewState {
+            val locked = lockedStickers(analysis.n)
+            return ReviewState(
+                colors = analysis.colors,
+                source = ReviewSource.Scan,
+                uncertain = analysis.uncertain.filterTo(mutableSetOf()) { it in analysis.colors.indices && it !in locked },
+                straightenedFaces = analysis.faceRotations.values.count { it.mod(4) != 0 },
+            )
+        }
 
-        /** Whether facelet [index] is the center of its face. */
-        fun isCenter(index: Int): Boolean = index % 9 == 4
+        /** N of a cube with [count] stickers. */
+        private fun sizeOf(count: Int): Int = SupportedCubeSizes.firstOrNull { 6 * it * it == count }
+            ?: throw IllegalArgumentException("Need 6·N² sticker colors for N in $SupportedCubeSizes, got $count")
 
-        private fun centerColor(index: Int): CubeColor = ColorScheme.STANDARD.colorOf(Facelets.faceOf(index))
-
-        private fun checkColors(colors: List<CubeColor?>): ReviewCheck {
-            val remaining = colors.count { it == null }
-            if (remaining > 0) return ReviewCheck.Incomplete(remaining)
-            val result = CubeValidator.validate(colors.requireNoNulls())
-            return if (result.isValid) {
-                ReviewCheck.Valid
+        private fun lockedStickers(n: Int): Set<Int> = lockedSets.getOrPut(n) {
+            if (n % 2 == 0) {
+                emptySet()
             } else {
-                ReviewCheck.Invalid(result.errors, result.flaggedFacelets)
+                val geometry = NxNGeometry.of(n)
+                (0 until geometry.stickerCount).filterTo(LinkedHashSet()) { geometry.kindOf(it) == PieceKind.FIXED_CENTER }
             }
         }
+
+        private fun checkColors(n: Int, colors: List<CubeColor?>): ReviewCheck {
+            val remaining = colors.count { it == null }
+            if (remaining > 0) return ReviewCheck.Incomplete(remaining)
+            val complete = colors.requireNoNulls()
+            if (n == 3) {
+                val result = CubeValidator.validate(complete)
+                return if (result.isValid) ReviewCheck.Valid else ReviewCheck.Invalid(result.errors, result.flaggedFacelets)
+            }
+            val result = NxNValidator.validate(NxNCube.of(n, complete))
+            return when {
+                result.isValid -> ReviewCheck.Valid
+                // A cube whose arrangement can't be worked out always reports why, but stay safe.
+                result.errors.isEmpty() -> ReviewCheck.InvalidNxN(listOf(UnknownProblem), emptySet())
+                else -> ReviewCheck.InvalidNxN(result.errors, result.flaggedStickers)
+            }
+        }
+
+        private val UnknownProblem = NxNError("Some colors don't fit together. Check the stickers.")
     }
 }
 
 /**
  * Handles a tap on sticker [index]: paints it while a brush is up, and otherwise selects it (or
- * deselects it when it already was). Centers cannot change; tapping one only shows a hint.
+ * deselects it when it already was). Fixed centers cannot change; tapping one only shows a hint.
  */
 fun ReviewState.tapSticker(index: Int): ReviewState {
-    require(index in 0 until Facelets.COUNT) { "No sticker $index" }
+    require(index in colors.indices) { "No sticker $index" }
     if (solving) return this
-    if (ReviewState.isCenter(index)) return copy(hint = ReviewHint.CenterLocked)
+    if (isLocked(index)) return copy(hint = ReviewHint.CenterLocked)
     val brush = brush
     return when {
         brush != null -> paint(index, brush).copy(hint = null)
@@ -195,7 +286,9 @@ fun ReviewState.tapSticker(index: Int): ReviewState {
 
 /**
  * Handles a tap on [color] in the palette: paints the selected sticker (moving on to the next
- * empty one in manual entry), or picks the color up as a brush, or puts it down again.
+ * empty one in manual entry, with the face editor following it to its face), or picks the color up
+ * as a brush, or puts it down again. Filling the very last empty sticker closes the face editor,
+ * so the verdict on the finished cube (and the solve button) comes into view.
  */
 fun ReviewState.tapColor(color: CubeColor): ReviewState {
     if (solving) return this
@@ -204,10 +297,19 @@ fun ReviewState.tapColor(color: CubeColor): ReviewState {
     val wasEmpty = colors[target] == null
     val painted = paint(target, color)
     val next = if (wasEmpty) painted.nextEmptyAfter(target) else null
-    return painted.copy(selected = next, hint = null)
+    val face = when {
+        focusedFace == null -> null
+        next != null -> geometry.faceOf(next)
+        wasEmpty -> null // that was the last empty sticker: the cube is complete
+        else -> focusedFace
+    }
+    return painted.copy(selected = next, focusedFace = face, hint = null)
 }
 
-/** Takes back the most recent edit and selects the sticker it changed (unless a brush is up). */
+/**
+ * Takes back the most recent edit and selects the sticker it changed (unless a brush is up). An
+ * open face editor turns to that sticker's face, so the change is in view.
+ */
 fun ReviewState.undo(): ReviewState {
     if (solving) return this
     val edit = history.lastOrNull() ?: return this
@@ -217,12 +319,42 @@ fun ReviewState.undo(): ReviewState {
         uncertain = if (edit.wasUncertain) uncertain + edit.index else uncertain,
         history = history.dropLast(1),
         selected = if (brush == null) edit.index else null,
+        focusedFace = focusedFace?.let { geometry.faceOf(edit.index) },
         hint = null,
     )
 }
 
-/** Puts the brush down and clears the selection. */
-fun ReviewState.clearTools(): ReviewState = copy(selected = null, brush = null, hint = null)
+/**
+ * Opens [face] in the face editor. A selection elsewhere is dropped; in manual entry, the face's
+ * first empty sticker is selected instead (unless a brush is up), ready for the next color.
+ */
+fun ReviewState.focusFace(face: Face): ReviewState {
+    if (solving) return this
+    val current = selected
+    val selection = when {
+        brush != null -> null
+        current != null && geometry.faceOf(current) == face -> current
+        source == ReviewSource.Manual -> entryOrder.firstOrNull { geometry.faceOf(it) == face && colors[it] == null }
+        else -> null
+    }
+    return copy(focusedFace = face, selected = selection, hint = null)
+}
+
+/**
+ * Moves the face editor [steps] faces on in [ReviewState.FACE_ORDER] (negative to go back),
+ * wrapping around; does nothing while no face is open.
+ */
+fun ReviewState.stepFace(steps: Int): ReviewState {
+    val face = focusedFace ?: return this
+    val order = ReviewState.FACE_ORDER
+    return focusFace(order[(order.indexOf(face) + steps).mod(order.size)])
+}
+
+/** Closes the face editor, keeping the selection. */
+fun ReviewState.closeFace(): ReviewState = copy(focusedFace = null, hint = null)
+
+/** Puts the brush down, clears the selection and closes the face editor. */
+fun ReviewState.clearTools(): ReviewState = copy(selected = null, brush = null, focusedFace = null, hint = null)
 
 /** Paints sticker [index] with [color], recording the edit; a no-op when it already has that color. */
 private fun ReviewState.paint(index: Int, color: CubeColor): ReviewState {
@@ -236,11 +368,12 @@ private fun ReviewState.paint(index: Int, color: CubeColor): ReviewState {
     )
 }
 
-/** The next sticker without a color after [index] in [ReviewState.ENTRY_ORDER] (wrapping around), if any. */
+/** The next sticker without a color after [index] in [ReviewState.entryOrder] (wrapping around), if any. */
 private fun ReviewState.nextEmptyAfter(index: Int): Int? {
-    val order = ReviewState.ENTRY_ORDER
+    val order = entryOrder
     val position = order.indexOf(index)
     return (1 until order.size)
+        .asSequence()
         .map { order[(position + it) % order.size] }
         .firstOrNull { colors[it] == null }
 }

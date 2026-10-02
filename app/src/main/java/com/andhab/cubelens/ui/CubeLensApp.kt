@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -47,13 +48,15 @@ import com.andhab.cubelens.ui.review.ReviewScreen
 import com.andhab.cubelens.ui.scan.ScanScreen
 import com.andhab.cubelens.ui.solve.SolveScreen
 import com.andhab.cubelens.ui.theme.Brand
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import kotlinx.coroutines.delay
 
 /**
  * The whole app: shows the [AppViewModel]'s current screen, slides between screens (forward
  * moves come in from the right, back moves from the left), routes system back through
  * [AppViewModel.back] and floats short-lived error messages over the top. A screen on its way out
- * ignores touches, so a quick second tap can't act on the screen being left.
+ * ignores touches, so a quick second tap can't act on the screen being left, and keeps drawing its
+ * cube in its own colors while it slides away.
  */
 @Composable
 fun CubeLensApp(
@@ -92,38 +95,49 @@ fun CubeLensApp(
     }
 }
 
-/** The composable for [screen], wired to [viewModel]. */
+/**
+ * The composable for [screen], wired to [viewModel], drawing its cube in the screen's own
+ * [Screen.palette] (e.g. a pastel cube's colors on its review and solution).
+ */
 @Composable
 private fun ScreenContent(screen: Screen, state: AppUiState, viewModel: AppViewModel) {
-    when (screen) {
-        Screen.Home -> HomeScreen(
-            onScan = viewModel::openScan,
-            onManualEntry = viewModel::openManualEntry,
-            onRandomScramble = viewModel::playRandomScramble,
-            scrambling = state.scrambling,
-        )
-        is Screen.Scan -> ScanScreen(
-            onScanned = viewModel::onScanned,
-            onBack = { viewModel.back() },
-            onManualEntry = viewModel::openManualEntry,
-        )
-        is Screen.Review -> ReviewScreen(
-            review = screen.review,
-            onBack = { viewModel.back() },
-            onRescan = viewModel::rescan,
-            onStickerTap = viewModel::onStickerTap,
-            onColorTap = viewModel::onColorTap,
-            onUndo = viewModel::undo,
-            onSolve = viewModel::solve,
-            onLeave = viewModel::leaveReview,
-            onStay = viewModel::keepEditing,
-        )
-        is Screen.Solve -> SolveScreen(
-            startColors = screen.startColors,
-            moves = screen.moves,
-            onBack = { viewModel.back() },
-            onDone = viewModel::onSolveDone,
-        )
+    CompositionLocalProvider(LocalStickerPalette provides screen.palette) {
+        when (screen) {
+            Screen.Home -> HomeScreen(
+                onScan = viewModel::openScan,
+                onManualEntry = viewModel::openManualEntry,
+                onRandomScramble = viewModel::playRandomScramble,
+                size = state.size,
+                onSizeChange = viewModel::selectSize,
+                scrambling = state.scrambling,
+            )
+            is Screen.Scan -> ScanScreen(
+                onScanned = viewModel::onScanned,
+                onBack = { viewModel.back() },
+                onManualEntry = viewModel::openManualEntry,
+                size = screen.size,
+            )
+            is Screen.Review -> ReviewScreen(
+                review = screen.review,
+                onBack = { viewModel.back() },
+                onRescan = viewModel::rescan,
+                onStickerTap = viewModel::onStickerTap,
+                onColorTap = viewModel::onColorTap,
+                onFaceTap = viewModel::onFaceTap,
+                onFaceStep = viewModel::onFaceStep,
+                onFaceClose = viewModel::onFaceClose,
+                onUndo = viewModel::undo,
+                onSolve = viewModel::solve,
+                onLeave = viewModel::leaveReview,
+                onStay = viewModel::keepEditing,
+            )
+            is Screen.Solve -> SolveScreen(
+                startColors = screen.startColors,
+                solution = screen.solution,
+                onBack = { viewModel.back() },
+                onDone = viewModel::onSolveDone,
+            )
+        }
     }
 }
 
@@ -185,6 +199,7 @@ private fun MessageBanner(message: AppMessage?, onDismiss: () -> Unit, modifier:
     ) { current ->
         if (current == null) return@AnimatedContent
         val title = when (current) {
+            AppMessage.ScanFailed -> stringResource(R.string.message_scan_failed)
             AppMessage.SolveFailed -> stringResource(R.string.message_solve_failed)
             AppMessage.ScrambleFailed -> stringResource(R.string.message_scramble_failed)
         }

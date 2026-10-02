@@ -8,6 +8,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -18,12 +20,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Undo
@@ -54,12 +58,13 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
-import com.andhab.cubelens.core.cube.Facelets
+import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.ui.components.AuroraBackground
 import com.andhab.cubelens.ui.components.ButtonHeight
 import com.andhab.cubelens.ui.components.CircleIconButton
@@ -73,15 +78,23 @@ import com.andhab.cubelens.ui.cube.Cube3D
 import com.andhab.cubelens.ui.cube.rememberCubeViewState
 import com.andhab.cubelens.ui.cube.viewAnglesFor
 import com.andhab.cubelens.ui.theme.Brand
+import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
+import com.andhab.cubelens.ui.theme.StickerPalette
 
 /**
- * "Check your cube": the colors about to be solved, as a draggable 3D preview and a large editable
- * net, with a six-color palette, live per-color counters, a status banner that says in plain words
- * what (if anything) is wrong, undo, and the "Solve it" button, enabled once the cube is valid.
+ * "Check your cube": the colors about to be solved, for any cube size, as a draggable 3D preview
+ * and a large editable net, with a six-color palette, live per-color counters, a status banner that
+ * says in plain words what (if anything) is wrong, undo, and the "Solve it" button, enabled once the
+ * cube is valid. Every sticker is drawn in [LocalStickerPalette], so a pastel cube shows its own
+ * colors (a small chip says so).
  *
  * Scanned stickers the camera was unsure about carry a subtle amber dot; stickers involved in a
- * problem get a strong red ring, on the net and on the 3D cube. Centers are locked. The 3D preview
- * turns to show the face of the selected sticker.
+ * problem get a strong red ring, on the net and on the 3D cube. Fixed centers are locked. The 3D
+ * preview turns to show the face being edited.
+ *
+ * Up to 3×3, stickers are tapped right on the net. From 4×4 on they are too small for that: tapping
+ * a face opens it big in a [FaceSheet] (see [ReviewState.focusedFace]), with the palette at hand.
  *
  * The palette, the status and the buttons stay pinned at the bottom, so a color is always one tap
  * away. Above them the preview and the net share the remaining height; on short screens that part
@@ -89,6 +102,9 @@ import com.andhab.cubelens.ui.theme.Brand
  * its second line. While [ReviewState.confirmingLeave] is set, a sheet asks whether to drop the cube.
  *
  * @param onRescan shown as a camera action in the top bar for scanned cubes.
+ * @param onFaceTap a face of a big cube's net was tapped: open it in the face editor.
+ * @param onFaceStep move the face editor to the next (+1) or previous (-1) face.
+ * @param onFaceClose close the face editor.
  * @param onLeave the user confirmed leaving (dropping the cube).
  * @param onStay the user chose to keep editing instead of leaving.
  */
@@ -99,6 +115,9 @@ fun ReviewScreen(
     onRescan: () -> Unit,
     onStickerTap: (Int) -> Unit,
     onColorTap: (CubeColor) -> Unit,
+    onFaceTap: (Face) -> Unit,
+    onFaceStep: (Int) -> Unit,
+    onFaceClose: () -> Unit,
     onUndo: () -> Unit,
     onSolve: () -> Unit,
     onLeave: () -> Unit,
@@ -106,13 +125,14 @@ fun ReviewScreen(
     modifier: Modifier = Modifier,
 ) {
     val editable = !review.solving
+    // While a sheet is up, it is the only thing on screen for accessibility too.
+    val covered = review.confirmingLeave || review.focusedFace != null
     AuroraBackground(modifier.fillMaxSize(), intensity = 0.85f) {
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.systemBars)
-                // While the leave sheet is up, it is the only thing on screen for accessibility too.
-                .then(if (review.confirmingLeave) Modifier.clearAndSetSemantics {} else Modifier),
+                .then(if (covered) Modifier.clearAndSetSemantics {} else Modifier),
         ) {
             val compact = maxHeight < CompactHeight
             val previewSize = (maxHeight * PreviewHeightFraction).coerceIn(MinPreviewSize, MaxPreviewSize)
@@ -135,7 +155,8 @@ fun ReviewScreen(
                     review = review,
                     previewSize = previewSize,
                     compact = compact,
-                    onStickerTap = if (editable) onStickerTap else null,
+                    onStickerTap = onStickerTap.takeIf { editable && !review.usesFaceEditor },
+                    onFaceTap = onFaceTap.takeIf { editable && review.usesFaceEditor },
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -144,6 +165,7 @@ fun ReviewScreen(
                     Reveal(index = 2) {
                         ColorPalette(
                             counts = review.counts,
+                            perColor = review.stickersPerColor,
                             brush = review.brush,
                             onColorTap = onColorTap,
                             enabled = editable,
@@ -178,6 +200,16 @@ fun ReviewScreen(
                 }
             }
         }
+        FaceSheet(
+            review = review,
+            onStickerTap = onStickerTap,
+            onColorTap = onColorTap,
+            onStepFace = onFaceStep,
+            onFaceTap = onFaceTap,
+            onUndo = onUndo,
+            onClose = onFaceClose,
+            enabled = editable,
+        )
         LeaveSheet(
             visible = review.confirmingLeave,
             source = review.source,
@@ -206,6 +238,7 @@ private fun ReviewBody(
     previewSize: Dp,
     compact: Boolean,
     onStickerTap: ((Int) -> Unit)?,
+    onFaceTap: ((Face) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
@@ -231,8 +264,10 @@ private fun ReviewBody(
                     colors = review.colors,
                     flagged = review.flagged,
                     uncertain = review.uncertain,
+                    locked = review.locked,
                     selected = review.selected,
                     onStickerTap = onStickerTap,
+                    onFaceTap = onFaceTap,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -267,18 +302,24 @@ private fun Modifier.fadingEdges(scroll: ScrollState, length: Dp = 24.dp): Modif
     }
 
 /**
- * The 3D preview next to a short heading, the editing hint (left out when [compact]) and an info
- * pill: how to hold the cube for manual entry, how many faces were straightened, or how many
- * stickers were hard to read.
+ * The 3D preview next to a short heading, the editing hint (left out when [compact]) and info
+ * pills: how to hold the cube for manual entry, how many faces were straightened, or how many
+ * stickers were hard to read; plus, for a cube drawn in its own colors, a chip saying so.
  */
 @Composable
 private fun ReviewHeader(review: ReviewState, previewSize: Dp, compact: Boolean, previewInteractive: Boolean) {
     val scanned = review.source == ReviewSource.Scan
+    val palette = LocalStickerPalette.current
     Row(verticalAlignment = Alignment.CenterVertically) {
         PreviewCube(review, interactive = previewInteractive, modifier = Modifier.size(previewSize))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Overline(stringResource(if (scanned) R.string.review_overline_scan else R.string.review_overline_manual))
+            Overline(
+                stringResource(
+                    if (scanned) R.string.review_overline_scan else R.string.review_overline_manual,
+                    stringResource(R.string.cube_size_label, review.n),
+                ),
+            )
             Spacer(Modifier.height(8.dp))
             Text(
                 text = stringResource(if (scanned) R.string.review_heading_scan else R.string.review_heading_manual),
@@ -288,13 +329,23 @@ private fun ReviewHeader(review: ReviewState, previewSize: Dp, compact: Boolean,
             if (!compact) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = stringResource(if (scanned) R.string.review_body_scan else R.string.review_body_manual),
+                    text = if (scanned) {
+                        stringResource(R.string.review_body_scan, review.colors.size)
+                    } else {
+                        stringResource(
+                            if (review.usesFaceEditor) R.string.review_body_manual_faces else R.string.review_body_manual,
+                        )
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = Brand.TextSecondary,
                 )
             }
             val pill = when {
-                !scanned -> InfoPill(stringResource(R.string.review_hold_manual), Icons.Rounded.ViewInAr, Brand.TextSecondary)
+                !scanned -> InfoPill(
+                    stringResource(if (review.locked.isEmpty()) R.string.review_hold_manual_even else R.string.review_hold_manual),
+                    Icons.Rounded.ViewInAr,
+                    Brand.TextSecondary,
+                )
                 review.straightenedFaces > 0 -> InfoPill(
                     pluralStringResource(R.plurals.review_straightened, review.straightenedFaces, review.straightenedFaces),
                     Icons.Rounded.AutoFixHigh,
@@ -311,6 +362,10 @@ private fun ReviewHeader(review: ReviewState, previewSize: Dp, compact: Boolean,
                 Spacer(Modifier.height(10.dp))
                 Pill(text = pill.text, icon = pill.icon, color = pill.color)
             }
+            if (palette != StickerPalette.Standard) {
+                Spacer(Modifier.height(8.dp))
+                OwnColorsPill(palette)
+            }
         }
     }
 }
@@ -319,13 +374,56 @@ private fun ReviewHeader(review: ReviewState, previewSize: Dp, compact: Boolean,
 private data class InfoPill(val text: String, val icon: ImageVector, val color: Color)
 
 /**
- * The draggable 3D cube, showing the current colors with problem stickers pulsing. When a sticker is
- * selected, the cube turns to its face and dims the others.
+ * "Using your cube's colors": a quiet glass chip led by the cube's own six colors as a fanned row
+ * of glossy dots, shown when the cube is drawn in its own (e.g. pastel) colors.
+ */
+@Composable
+private fun OwnColorsPill(palette: StickerPalette) {
+    Row(
+        modifier = Modifier
+            .heightIn(min = 30.dp)
+            .background(Brand.TextPrimary.copy(alpha = 0.07f), CircleShape)
+            .border(1.dp, Brand.TextPrimary.copy(alpha = 0.16f), CircleShape)
+            .padding(start = 8.dp, end = 12.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            CubeColor.entries.forEachIndexed { i, color ->
+                Box(
+                    Modifier
+                        .offset(x = DotStep * i)
+                        .size(DotSize)
+                        .background(CubePalette.Body, CircleShape)
+                        .padding(1.5.dp)
+                        .background(palette.color(color), CircleShape)
+                        .background(DotGloss, CircleShape),
+                )
+            }
+            Spacer(Modifier.width(DotStep * (CubeColor.entries.size - 1) + DotSize))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = stringResource(R.string.review_own_colors),
+            style = MaterialTheme.typography.labelMedium,
+            color = Brand.TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private val DotSize = 12.dp
+private val DotStep = 7.dp
+private val DotGloss = Brush.linearGradient(listOf(Color.White.copy(alpha = 0.38f), Color.Transparent))
+
+/**
+ * The draggable 3D cube, showing the current colors with problem stickers pulsing. When a face is
+ * being edited (or a sticker is selected), the cube turns to that face and dims the others.
  */
 @Composable
 private fun PreviewCube(review: ReviewState, interactive: Boolean, modifier: Modifier = Modifier) {
     val state = rememberCubeViewState(review.colors)
-    val focusFace = review.selected?.let { Facelets.faceOf(it) }
+    val focusFace = review.focusedFace ?: review.selected?.let { review.geometry.faceOf(it) }
     LaunchedEffect(focusFace) {
         if (focusFace != null) {
             val (yaw, pitch) = viewAnglesFor(focusFace)

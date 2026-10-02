@@ -220,9 +220,135 @@ class SyntheticFaces(private val random: Random, private val look: CubeLook) {
         return image to guide
     }
 
-    private companion object {
+    /**
+     * Renders a photo of an [n]x[n] face (n in 2..10) showing [colors] (`n * n`, row-major as seen),
+     * like [render] does for 3x3 faces, returning the image and the guide square the face was aligned
+     * with. [guideSize] is the guide's side in pixels; the image is the guide plus a margin of 11% of
+     * it on every side (the proportions of [render]).
+     *
+     * Stickers have realistic proportions for the size: a 2x2 cube's tiles cover about 84% of their
+     * cell, a 7x7's about 74% (the plastic between stickers is about as thick on every size, while
+     * cells get smaller). [Conditions] keep their meaning relative to the whole face (shift, scale,
+     * rotation, perspective, illumination gradient), and [Conditions.highlights] stickers get a glare
+     * spot as on a 3x3 face. Noise comes from a table of Gaussian values (faster than drawing them for
+     * the large images of big faces). The same [random] sequence is not shared with [render].
+     */
+    fun render(n: Int, colors: List<CubeColor>, conditions: Conditions, guideSize: Int): Pair<IntImage, GridRegion> {
+        require(n in 2..10 && colors.size == n * n)
+        val margin = (guideSize * 0.141).toInt() // 0.11 of the image on each side, as in render()
+        val imageSize = guideSize + 2 * margin
+        val guide = GridRegion(margin, margin, guideSize)
+        val cells = n * n
+        val half = n / 2.0
+        val (minHalf, maxHalf) = stickerHalfRange(n)
+
+        val stickerHalf = DoubleArray(cells) { random.nextDouble(minHalf, maxHalf) }
+        val jitterX = DoubleArray(cells) { random.nextDouble(-0.02, 0.02) }
+        val jitterY = DoubleArray(cells) { random.nextDouble(-0.02, 0.02) }
+        val tint = Array(cells) { DoubleArray(3) { random.nextDouble(0.95, 1.05) } }
+        val highlightCells = (0 until cells).shuffled(random).take(conditions.highlights).toSet()
+        val highlight = Array(cells) { doubleArrayOf(random.nextDouble(-0.2, 0.2), random.nextDouble(-0.2, 0.2), random.nextDouble(0.08, 0.16)) }
+        val background = doubleArrayOf(random.nextDouble(0.05, 0.4), random.nextDouble(0.05, 0.4), random.nextDouble(0.03, 0.3))
+        val seamShade = if (look.body == Body.STICKERLESS) (if (random.nextBoolean()) 1.0 else random.nextDouble(0.55, 0.9)) else 1.0
+        val whiteBody = if (look.body == Body.WHITE) random.nextDouble(0.5, 0.68) else 0.0
+
+        val cx = guide.left + guide.size / 2.0 + conditions.shift.first * guide.size
+        val cy = guide.top + guide.size / 2.0 + conditions.shift.second * guide.size
+        val cell = guide.size * conditions.scale / n
+        val theta = Math.toRadians(conditions.rotationDegrees)
+        val cosT = cos(theta)
+        val sinT = sin(theta)
+        val (kx, ky) = conditions.keystone
+        val toThree = 3.0 / n // face coordinates in 3x3 cells, for the face-relative keystone
+
+        val image = IntImage(imageSize, imageSize)
+        val linear = DoubleArray(3)
+        for (py in 0 until imageSize) {
+            for (px in 0 until imageSize) {
+                // Image -> face coordinates (cells, -n/2..n/2 around the face center).
+                val dx = (px + 0.5 - cx) / cell
+                val dy = (py + 0.5 - cy) / cell
+                var fx = cosT * dx + sinT * dy
+                var fy = -sinT * dx + cosT * dy
+                val w = 1.0 + kx * fx * toThree + ky * fy * toThree
+                fx /= w
+                fy /= w
+                if (abs(fx) >= half || abs(fy) >= half) {
+                    for (ch in 0 until 3) linear[ch] = background[ch]
+                } else {
+                    val col = min(n - 1, max(0, (fx + half).toInt()))
+                    val row = min(n - 1, max(0, (fy + half).toInt()))
+                    val k = row * n + col
+                    val lx = fx + half - col - 0.5 - jitterX[k]
+                    val ly = fy + half - row - 0.5 - jitterY[k]
+                    val inSticker = if (look.body == Body.STICKERLESS) {
+                        abs(fx + half - col - 0.5) < 0.5 - SEAM && abs(fy + half - row - 0.5) < 0.5 - SEAM
+                    } else {
+                        insideRoundedSquare(lx, ly, stickerHalf[k], 0.09)
+                    }
+                    if (inSticker) {
+                        val base = look.linear.getValue(colors[k])
+                        for (ch in 0 until 3) linear[ch] = base[ch] * tint[k][ch]
+                        if (k in highlightCells) {
+                            val h = highlight[k]
+                            val d2 = ((lx - h[0]) * (lx - h[0]) + 0.5 * (ly - h[1]) * (ly - h[1])) / (h[2] * h[2])
+                            if (d2 < 1.0) {
+                                val alpha = 0.9 * (1.0 - d2)
+                                for (ch in 0 until 3) linear[ch] = linear[ch] * (1 - alpha) + 1.6 * alpha
+                            }
+                        }
+                    } else {
+                        when (look.body) {
+                            Body.BLACK -> {
+                                val plastic = 0.012 + 0.006 * random.nextDouble()
+                                for (ch in 0 until 3) linear[ch] = plastic
+                            }
+                            Body.WHITE -> {
+                                val plastic = whiteBody * (0.97 + 0.06 * random.nextDouble())
+                                for (ch in 0 until 3) linear[ch] = plastic
+                            }
+                            Body.STICKERLESS -> {
+                                val base = look.linear.getValue(colors[k])
+                                for (ch in 0 until 3) linear[ch] = base[ch] * seamShade
+                            }
+                        }
+                    }
+                }
+                val light = conditions.brightness * (1.0 + conditions.gradient.first * fx / n + conditions.gradient.second * fy / n)
+                var argb = 0xFF shl 24
+                for (ch in 0 until 3) {
+                    val v = ColorMath.linearToSrgb(linear[ch] * light * conditions.whiteBalance[ch]) + GAUSSIAN[random.nextInt(GAUSSIAN.size)] * conditions.noise
+                    argb = argb or (v.toInt().coerceIn(0, 255) shl (16 - 8 * ch))
+                }
+                image[px, py] = argb
+            }
+        }
+        return image to guide
+    }
+
+    companion object {
         /** Half-width of the seam between two stickerless tiles, in cells. */
-        const val SEAM = 0.025
+        private const val SEAM = 0.025
+
+        /**
+         * Range of a sticker's half-width (cells) on an [n]x[n] cube: 2x2 tiles cover about 84% of
+         * their cell, 3x3 ones 74-80% (as [render] draws them), 7x7 ones about 72-76%.
+         */
+        fun stickerHalfRange(n: Int): Pair<Double, Double> = when (n) {
+            2 -> 0.405 to 0.43
+            3, 4 -> 0.37 to 0.40
+            5, 6 -> 0.36 to 0.39
+            else -> 0.355 to 0.38
+        }
+
+        /** Standard normal values for [render] with a size (reproducible). */
+        private val GAUSSIAN: DoubleArray = Random(7).let { r ->
+            DoubleArray(8192) {
+                val u1 = r.nextDouble(1e-12, 1.0)
+                val u2 = r.nextDouble()
+                kotlin.math.sqrt(-2.0 * kotlin.math.ln(u1)) * cos(2.0 * Math.PI * u2)
+            }
+        }
     }
 
     private fun insideRoundedSquare(x: Double, y: Double, half: Double, radius: Double): Boolean {

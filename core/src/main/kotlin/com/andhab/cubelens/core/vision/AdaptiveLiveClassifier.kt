@@ -39,10 +39,15 @@ import com.andhab.cubelens.core.cube.CubeColor
  *    earlier names fixed. Simple, and six centers always get six different names, but an early
  *    mistake can't be undone and pushes later centers onto wrong names.
  *
+ * **Any cube size.** [learnFaces] takes the captured faces of an N×N cube (2x2 to 10x10). Odd sizes
+ * have fixed centers and use [learnCenters]. Even sizes have none, so the colors are learned from all
+ * captured stickers at once, clustered and named jointly, which on a scrambled cube usually works from
+ * the first or second capture (the fourth or fifth on a 2x2, whose faces have four stickers each).
+ *
  * Thread-safe: [classify] and [labelForCenter] may run on a camera analyzer thread while [learn],
- * [learnCenters], [forget] and [reset] are called on the UI thread. The learned state is an immutable
- * snapshot that writers replace atomically, so readers never block and always see a consistent set
- * of colors.
+ * [learnCenters], [learnFaces], [forget] and [reset] are called on another thread. The learned state
+ * is an immutable snapshot that writers replace atomically, so readers never block and always see a
+ * consistent set of colors.
  */
 class AdaptiveLiveClassifier {
 
@@ -175,6 +180,49 @@ class AdaptiveLiveClassifier {
     }
 
     /**
+     * Learns this cube's colors from all faces of an [n]x[n] cube captured so far, replacing everything
+     * learned before; any size (n in 2..10). [faces] are the captured faces (at most six, any order;
+     * a rescanned face simply replaces its old entry), each with all `n * n` samples as returned by
+     * [GridSampler.sample] for that size.
+     *
+     *  - **Odd sizes** have a fixed center per face: this is [learnCenters] with the faces' centers
+     *    (and the faces, for settling light pastel centers). Returns the name of each face's center
+     *    ([faces] order, all different), which the scan screen can show as that face's color.
+     *  - **Even sizes** have no fixed centers, so no face has a color of its own: all captured
+     *    stickers are clustered jointly under a per-photo lighting model and the clusters are named
+     *    by how they relate to each other ([PaletteLabeler], as the resolver does), once there is
+     *    enough evidence: at least twelve stickers, among which all six colors show clearly (each at
+     *    least twice, as clusters clearly apart). On a scrambled cube that is usually from the first
+     *    or second capture on (4x4 and larger), the fourth or fifth on a 2x2. Until then nothing is
+     *    learned and [classify] uses the default rules. Returns null: there is no per-face center
+     *    color; the scan screen identifies faces by its guided order instead.
+     *
+     * The scan screen should call this after every capture (and recapture) with all faces captured so
+     * far, from a background thread for big cubes (a few milliseconds for 7x7 with six faces), and
+     * keep calling [classify] for the live preview: it then compares stickers with this cube's
+     * learned colors.
+     *
+     * @throws IllegalArgumentException if [n] is not in 2..10, there are more than six faces, or a
+     *   face does not have `n * n` samples.
+     */
+    fun learnFaces(faces: List<List<StickerSample>>, n: Int): List<CubeColor>? {
+        require(n in MIN_SIZE..MAX_SIZE) { "Cube size must be in $MIN_SIZE..$MAX_SIZE, got $n" }
+        require(faces.size <= COLORS.size) { "A cube has six faces, got ${faces.size}" }
+        require(faces.all { it.size == n * n }) { "Every face needs ${n * n} samples, got ${faces.map { it.size }}" }
+        if (n % 2 == 1) {
+            val center = (n / 2) * n + n / 2
+            return learnCenters(faces.map { it[center] }, faces)
+        }
+        val learned = JointClustering.learnColors(faces)
+        val references = arrayOfNulls<Reference>(COLORS.size)
+        learned?.forEach { (color, sample) -> references[color.ordinal] = Reference(sample) }
+        synchronized(lock) {
+            state = State(references)
+        }
+        return null
+    }
+
+    /**
      * The color to learn a newly captured face's [center] as: the most likely one among the colors
      * not learned yet, named together with the centers learned already (whose names stay fixed; see
      * [PaletteLabeler]). Six centers captured one after another, each [learn]ed with the label
@@ -239,6 +287,10 @@ class AdaptiveLiveClassifier {
 
     private companion object {
         val COLORS = CubeColor.entries
+
+        /** Supported cube sizes for [learnFaces]. */
+        const val MIN_SIZE = 2
+        const val MAX_SIZE = 10
 
         /** Nothing learned. */
         val EMPTY = State(arrayOfNulls(COLORS.size))

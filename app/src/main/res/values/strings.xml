@@ -24,12 +24,17 @@
     <string name="color_orange">Orange</string>
     <string name="color_not_set">Not set</string>
 
+    <!-- Cube sizes: "4×4" on screen, "4 by 4 cube" for screen readers. -->
+    <string name="cube_size_label">%1$d×%1$d</string>
+    <string name="cube_size_description">%1$d by %1$d cube</string>
+
     <!-- Home. -->
     <string name="home_overline">Rubik\'s cube solver</string>
     <string name="home_headline">Snap. Solve.</string>
     <string name="home_headline_accent">Twist.</string>
     <string name="home_subtitle">Point your camera at a scrambled cube and get a quick path back to solved.</string>
-    <string name="home_scan">Scan my cube</string>
+    <!-- %1$s = the picked size, e.g. "4×4". -->
+    <string name="home_scan">Scan my %1$s</string>
     <string name="home_manual">Enter colors manually</string>
     <string name="home_random">Try a random scramble</string>
     <string name="home_random_busy">Mixing one up…</string>
@@ -41,37 +46,59 @@
     <string name="home_step_solve_caption">Turn by turn</string>
     <string name="home_step_number">Step %1$d</string>
 
-    <!-- Review: header. -->
+    <!-- Review: header. %1$s = the cube size, e.g. "4×4". -->
     <string name="review_title">Check your cube</string>
     <string name="review_rescan">Scan again</string>
-    <string name="review_overline_scan">Your scan</string>
-    <string name="review_overline_manual">Manual entry</string>
+    <string name="review_overline_scan">Your %1$s scan</string>
+    <string name="review_overline_manual">%1$s manual entry</string>
     <string name="review_heading_scan">Does this match your cube?</string>
     <string name="review_heading_manual">Copy your cube\'s colors</string>
-    <string name="review_body_scan">We read all 54 stickers. Fix anything that looks off.</string>
+    <!-- %1$d = how many stickers the cube has. -->
+    <string name="review_body_scan">We read all %1$d stickers. Fix anything that looks off.</string>
     <string name="review_body_manual">Pick colors face by face and we\'ll hop to the next sticker.</string>
+    <string name="review_body_manual_faces">Tap a face to zoom in. We\'ll hop to the next sticker as you go.</string>
     <plurals name="review_straightened">
         <item quantity="one">We straightened %d face</item>
         <item quantity="other">We straightened %d faces</item>
     </plurals>
     <string name="review_hold_manual">White top, green front</string>
+    <!-- Even cubes have no fixed centers, so any way of holding them works. -->
+    <string name="review_hold_manual_even">Any side can be the front</string>
     <plurals name="review_hard_to_read">
         <item quantity="one">%d unclear sticker</item>
         <item quantity="other">%d unclear stickers</item>
     </plurals>
+    <!-- Shown when the cube is drawn in its own (e.g. pastel) sticker colors. -->
+    <string name="review_own_colors">Your cube\'s colors</string>
 
     <!-- Review: marks on the net. -->
     <string name="review_legend_flagged">Needs a look</string>
     <string name="review_legend_uncertain">Hard to read</string>
     <string name="review_legend_locked">Fixed center</string>
 
+    <!-- Review: faces, as named in the face editor and the tips. -->
+    <string name="review_face_top">Top face</string>
+    <string name="review_face_bottom">Bottom face</string>
+    <string name="review_face_front">Front face</string>
+    <string name="review_face_back">Back face</string>
+    <string name="review_face_left">Left face</string>
+    <string name="review_face_right">Right face</string>
+    <string name="review_face_previous">Previous face</string>
+    <string name="review_face_next">Next face</string>
+    <string name="review_face_done">Done</string>
+
     <!-- Review: palette and editing tips. -->
-    <string name="review_count">%1$d/9</string>
-    <string name="review_count_description">%1$s, %2$d of 9</string>
+    <!-- "12/16": stickers of a color so far, out of how many a finished cube has. -->
+    <string name="review_count">%1$d/%2$d</string>
+    <string name="review_count_description">%1$s, %2$d of %3$d</string>
     <string name="review_swatch_painting">Painting</string>
     <string name="review_tip_idle">Tap a sticker, then a color. Or pick a color to paint.</string>
+    <string name="review_tip_idle_net">Tap a face to zoom in and edit it.</string>
     <string name="review_tip_selected">Hold %1$s toward you, %2$s on top. Now pick a color.</string>
+    <!-- %1$s = a face name ("Top face"), %2$d = a row number. -->
+    <string name="review_tip_selected_row">%1$s, row %2$d. Now pick a color.</string>
     <string name="review_tip_brush">Painting with %1$s. Tap stickers, or tap %1$s again to stop.</string>
+    <string name="review_tip_brush_net">Painting with %1$s. Tap a face to paint its stickers.</string>
     <string name="review_tip_center">Centers set each face\'s color, so they stay put.</string>
     <string name="review_undo">Undo</string>
     <string name="review_solve">Solve it</string>
@@ -109,6 +136,7 @@
         <item quantity="other">%d edges are repeated</item>
     </plurals>
     <string name="review_error_duplicate_message">Every piece is one of a kind. Check the marked stickers.</string>
+    <string name="review_error_check_marked">Check the marked stickers.</string>
     <string name="review_error_marked">The marked stickers were hard to read. Start there.</string>
     <string name="review_error_twisted">One corner looks twisted</string>
     <string name="review_error_twisted_message">One corner sticker is probably off. Check the corners.</string>
@@ -125,6 +153,7 @@
     <string name="review_leave_confirm">Leave</string>
 
     <!-- App-wide messages. -->
+    <string name="message_scan_failed">Couldn\'t read that scan</string>
     <string name="message_solve_failed">Couldn\'t solve that one</string>
     <string name="message_scramble_failed">Couldn\'t mix up a cube</string>
     <string name="message_try_again">Something went wrong. Give it another try.</string>

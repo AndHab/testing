@@ -36,6 +36,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
@@ -57,18 +58,22 @@ import com.andhab.cubelens.ui.theme.Brand
 import com.andhab.cubelens.ui.theme.CubeLensMotion
 import com.andhab.cubelens.ui.theme.CubePalette
 import com.andhab.cubelens.ui.theme.DisplayFont
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 
 /**
- * The six sticker colors as big glossy swatches, each with a live "n/9" counter underneath that
- * turns mint at exactly nine and red above it. The [brush] color is lifted inside a sunset ring.
+ * The six sticker colors as big glossy swatches in the cube's own colors ([LocalStickerPalette]),
+ * each with a live counter underneath ("12/16") that turns mint with a check at exactly
+ * [perColor] and red above it. The [brush] color is lifted inside a sunset ring.
  *
  * @param counts how many stickers have each color.
+ * @param perColor how many stickers of each color a finished cube has (N²: 9 for a 3×3).
  * @param brush the color currently picked up for painting, if any.
  * @param enabled false while solving: swatches ignore taps.
  */
 @Composable
 internal fun ColorPalette(
     counts: Map<CubeColor, Int>,
+    perColor: Int,
     brush: CubeColor?,
     onColorTap: (CubeColor) -> Unit,
     modifier: Modifier = Modifier,
@@ -82,6 +87,7 @@ internal fun ColorPalette(
             Swatch(
                 color = color,
                 count = counts[color] ?: 0,
+                perColor = perColor,
                 active = brush == color,
                 enabled = enabled,
                 onClick = { onColorTap(color) },
@@ -97,6 +103,7 @@ private val SwatchSize = 48.dp
 private fun Swatch(
     color: CubeColor,
     count: Int,
+    perColor: Int,
     active: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -119,9 +126,9 @@ private fun Swatch(
     )
     val haptics = LocalHapticFeedback.current
     val name = colorName(color)
-    val countDescription = stringResource(R.string.review_count_description, name, count)
+    val countDescription = stringResource(R.string.review_count_description, name, count, perColor)
     val painting = stringResource(R.string.review_swatch_painting)
-    val fill = CubePalette.color(color)
+    val fill = LocalStickerPalette.current.color(color)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -189,23 +196,29 @@ private fun Swatch(
                 Icon(
                     imageVector = Icons.Rounded.FormatPaint,
                     contentDescription = null,
-                    tint = if (color == CubeColor.WHITE || color == CubeColor.YELLOW) Brand.OnAccent else Color.White,
+                    // Dark on light stickers (white, yellow, every pastel), white on the rest.
+                    tint = if (fill.luminance() > 0.45f) Brand.OnAccent else Color.White,
                     modifier = Modifier.size(18.dp),
                 )
             }
         }
         Spacer(Modifier.height(8.dp))
-        CountChip(count)
+        CountChip(count, perColor)
     }
 }
 
-/** "7/9" in a small capsule: neutral below nine, mint with a check at nine, red above. */
+/**
+ * "7/9" in a small capsule: neutral below [perColor], mint with a check at exactly [perColor], red
+ * above. A complete count shows short, as "✓ 9" (or "✓ 49"), on every size: six chips still fit
+ * side by side on a small phone, and the check says "all there".
+ */
 @Composable
-private fun CountChip(count: Int) {
+private fun CountChip(count: Int, perColor: Int) {
+    val complete = count == perColor
     val tone by animateColorAsState(
         targetValue = when {
-            count == 9 -> Brand.Mint
-            count > 9 -> Brand.Danger
+            complete -> Brand.Mint
+            count > perColor -> Brand.Danger
             else -> Brand.TextTertiary
         },
         animationSpec = CubeLensMotion.select(),
@@ -217,15 +230,15 @@ private fun CountChip(count: Int) {
             .height(22.dp)
             .background(tone.copy(alpha = 0.13f), CircleShape)
             .border(1.dp, tone.copy(alpha = 0.28f), CircleShape)
-            .padding(horizontal = 7.dp),
+            .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally),
     ) {
-        if (count == 9) {
+        if (complete) {
             Icon(Icons.Rounded.Check, contentDescription = null, tint = tone, modifier = Modifier.size(12.dp))
         }
         Text(
-            text = stringResource(R.string.review_count, count),
+            text = if (complete) "$perColor" else stringResource(R.string.review_count, count, perColor),
             style = MaterialTheme.typography.labelMedium.copy(fontFamily = DisplayFont, fontSize = 12.sp),
             color = tone,
             maxLines = 1,

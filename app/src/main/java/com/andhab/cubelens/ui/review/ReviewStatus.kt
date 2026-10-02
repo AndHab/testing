@@ -5,10 +5,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import com.andhab.cubelens.R
-import com.andhab.cubelens.core.cube.ColorScheme
 import com.andhab.cubelens.core.cube.CubeError
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.ui.components.BannerKind
 import com.andhab.cubelens.ui.components.colorName
 
@@ -35,12 +33,13 @@ internal fun reviewStatus(review: ReviewState): ReviewStatus = when (val check =
         ),
     )
     is ReviewCheck.Invalid -> errorStatus(check, review)
+    is ReviewCheck.InvalidNxN -> errorStatus(check, review)
 }
 
 /**
- * A plain-words title for the first problem found (counting others of the same kind), with advice
- * on where to look. Problems that can't be pinned to particular stickers point at the hard-to-read
- * ones instead, which [ReviewState.flagged] marks for exactly that reason.
+ * A plain-words title for the first problem found on a 3×3 (counting others of the same kind), with
+ * advice on where to look. Problems that can't be pinned to particular stickers point at the
+ * hard-to-read ones instead, which [ReviewState.flagged] marks for exactly that reason.
  */
 @Composable
 private fun errorStatus(check: ReviewCheck.Invalid, review: ReviewState): ReviewStatus {
@@ -54,7 +53,7 @@ private fun errorStatus(check: ReviewCheck.Invalid, review: ReviewState): Review
             stringResource(R.string.review_error_centers_message),
         )
         is CubeError.WrongColorCount -> {
-            val name = colorName(review.colors[Facelets.center(error.face)]).lowercase()
+            val name = colorName(review.colors[review.geometry.index(error.face, 1, 1)]).lowercase()
             ReviewStatus(
                 BannerKind.Error,
                 stringResource(if (error.count > 9) R.string.review_error_too_many else R.string.review_error_too_few, name),
@@ -103,24 +102,80 @@ private fun errorStatus(check: ReviewCheck.Invalid, review: ReviewState): Review
     }
 }
 
-/** The one-line editing tip under the palette, following what the user is doing. */
+/**
+ * The first problem found on a 2×2 or a 4×4 and larger, in the validator's own friendly words, with
+ * advice on where to look: the marked stickers when any problem points at some, else the
+ * hard-to-read ones, else similar colors. Problems that point nowhere at all (a twisted corner, two
+ * swapped pieces) are a softer warning, as on a 3×3.
+ */
+@Composable
+private fun errorStatus(check: ReviewCheck.InvalidNxN, review: ReviewState): ReviewStatus {
+    val pinned = check.flagged.isNotEmpty()
+    val counts = review.counts.values.any { it != review.stickersPerColor }
+    return ReviewStatus(
+        kind = if (pinned || counts) BannerKind.Error else BannerKind.Warning,
+        title = check.error.message,
+        message = stringResource(
+            when {
+                pinned -> R.string.review_error_check_marked
+                review.uncertain.isNotEmpty() -> R.string.review_error_marked
+                else -> R.string.review_error_swapped_message
+            },
+        ),
+    )
+}
+
+/**
+ * The one-line editing tip under the palette, following what the user is doing. On a cube edited
+ * face by face, the tips for the net (face editor closed) point at the faces instead of stickers.
+ */
 @Composable
 internal fun reviewTip(review: ReviewState): String {
     val brush = review.brush
     val selected = review.selected
+    val onNet = review.usesFaceEditor && review.focusedFace == null
     return when {
         review.hint == ReviewHint.CenterLocked -> stringResource(R.string.review_tip_center)
+        brush != null && onNet -> stringResource(R.string.review_tip_brush_net, colorName(brush).lowercase())
         brush != null -> stringResource(R.string.review_tip_brush, colorName(brush).lowercase())
-        selected != null -> {
-            // How to hold the real cube to find this sticker in the same spot as on the net.
-            val face = Facelets.faceOf(selected)
-            val toward = colorName(ColorScheme.STANDARD.colorOf(face)).lowercase()
-            val onTop = colorName(ColorScheme.STANDARD.colorOf(face.netTop)).lowercase()
-            stringResource(R.string.review_tip_selected, toward, onTop)
-        }
+        selected != null -> selectedTip(review, selected)
+        onNet -> stringResource(R.string.review_tip_idle_net)
         else -> stringResource(R.string.review_tip_idle)
     }
 }
+
+/**
+ * How to hold the real cube to find sticker [index] in the same spot as on screen: by the colors of
+ * the fixed centers on odd cubes ("Hold green toward you, white on top"), by face and row on even
+ * cubes, which have no fixed centers.
+ */
+@Composable
+private fun selectedTip(review: ReviewState, index: Int): String {
+    val geometry = review.geometry
+    val face = geometry.faceOf(index)
+    if (review.n % 2 == 1) {
+        val middle = review.n / 2
+        val toward = review.colors[geometry.index(face, middle, middle)]
+        val onTop = review.colors[geometry.index(face.netTop, middle, middle)]
+        if (toward != null && onTop != null) {
+            return stringResource(R.string.review_tip_selected, colorName(toward).lowercase(), colorName(onTop).lowercase())
+        }
+    }
+    return stringResource(R.string.review_tip_selected_row, faceName(face), geometry.rowOf(index) + 1)
+}
+
+/** The face's plain name: "Top face", "Front face"… */
+@Composable
+internal fun faceName(face: Face): String = stringResource(
+    when (face) {
+        Face.U -> R.string.review_face_top
+        Face.D -> R.string.review_face_bottom
+        Face.F -> R.string.review_face_front
+        Face.B -> R.string.review_face_back
+        Face.L -> R.string.review_face_left
+        Face.R -> R.string.review_face_right
+    },
+)
 
 /**
  * The face that sits above [this] one when it is drawn on the net (and held toward the user to

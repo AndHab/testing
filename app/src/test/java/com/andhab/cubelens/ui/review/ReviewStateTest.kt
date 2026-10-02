@@ -5,7 +5,6 @@ import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.CubeError
 import com.andhab.cubelens.core.cube.Face
 import com.andhab.cubelens.core.cube.Facelets
-import com.andhab.cubelens.core.vision.ScanAnalysis
 import com.andhab.cubelens.ui.UserCubeColors
 import com.andhab.cubelens.ui.impossibleEdgeSwap
 import com.andhab.cubelens.ui.twistedCorner
@@ -43,7 +42,7 @@ class ReviewStateTest {
 
     @Test
     fun entryGoesFaceByFaceInNetOrder() {
-        val order = ReviewState.ENTRY_ORDER
+        val order = ReviewState.entryOrder(3)
         assertEquals((0 until Facelets.COUNT).toSet(), order.toSet())
         assertEquals(
             listOf(Face.U, Face.L, Face.F, Face.R, Face.B, Face.D),
@@ -64,8 +63,8 @@ class ReviewStateTest {
     @Test
     fun copyingTheWholeCubeMakesItValid() {
         var review = ReviewState.manual()
-        for (i in ReviewState.ENTRY_ORDER) {
-            if (!ReviewState.isCenter(i)) review = review.tapColor(UserCubeColors[i])
+        for (i in ReviewState.entryOrder(3)) {
+            if (!ReviewState.manual().isLocked(i)) review = review.tapColor(UserCubeColors[i])
         }
         assertEquals(UserCubeColors, review.colors)
         assertNull(review.selected)
@@ -198,7 +197,7 @@ class ReviewStateTest {
     @Test
     fun wrongCountsAreReported() {
         val colors = UserCubeColors.toMutableList()
-        val firstGreen = colors.indices.first { !ReviewState.isCenter(it) && colors[it] == CubeColor.GREEN }
+        val firstGreen = colors.indices.first { !ReviewState.manual().isLocked(it) && colors[it] == CubeColor.GREEN }
         colors[firstGreen] = CubeColor.RED
         val review = ReviewState(colors, ReviewSource.Scan)
         assertEquals(10, review.counts[CubeColor.RED])
@@ -209,19 +208,148 @@ class ReviewStateTest {
 
     @Test
     fun scanAnalysisBecomesAReview() {
-        val analysis = ScanAnalysis(
-            rawColors = UserCubeColors,
+        val analysis = scanAnalysis(
             colors = UserCubeColors,
             faceRotations = mapOf(Face.U to 0, Face.R to 1, Face.F to 4, Face.D to -1, Face.L to 2, Face.B to 0),
-            isValid = true,
             uncertain = setOf(3, 4, 20),
         )
         val review = ReviewState.fromScan(analysis)
         assertEquals(ReviewSource.Scan, review.source)
         assertEquals(3, review.straightenedFaces)
-        assertEquals(setOf(3, 20), review.uncertain)
+        assertEquals("a fixed center is never unsure", setOf(3, 20), review.uncertain)
         assertNull(review.selected)
+        assertNull(review.focusedFace)
         assertTrue(review.canSolve)
+    }
+
+    @Test
+    fun aBigScanKeepsItsUnsureStickers() {
+        val colors = scrambledColors(4)
+        val review = ReviewState.fromScan(scanAnalysis(colors, uncertain = setOf(0, 17, 95, 96)))
+        assertEquals(4, review.n)
+        assertEquals("index 96 is past the cube's 96 stickers", setOf(0, 17, 95), review.uncertain)
+        assertTrue(review.locked.isEmpty())
+        assertEquals(ReviewCheck.Valid, review.check)
+        assertTrue(review.usesFaceEditor)
+    }
+
+    @Test
+    fun everySizeCountsItsOwnColors() {
+        for (n in 2..7) {
+            val review = ReviewState(scrambledColors(n), ReviewSource.Scan)
+            assertEquals(n, review.n)
+            assertEquals(n * n, review.stickersPerColor)
+            assertTrue("$n: ${review.counts}", review.counts.values.all { it == n * n })
+            assertEquals("$n×$n", ReviewCheck.Valid, review.check)
+            assertEquals(n >= ReviewState.FACE_EDITOR_MIN_SIZE, review.usesFaceEditor)
+        }
+    }
+
+    @Test
+    fun aSizeThatIsNoCubeIsRejected() {
+        val tooFew = List(53) { CubeColor.WHITE }
+        assertTrue(runCatching { ReviewState(tooFew, ReviewSource.Scan) }.isFailure)
+    }
+
+    @Test
+    fun bigCubesExplainProblemsInPlainWordsAndFlagTheStickers() {
+        val colors = scrambledColors(4).toMutableList()
+        val firstGreen = colors.indexOf(CubeColor.GREEN)
+        colors[firstGreen] = CubeColor.RED
+        val review = ReviewState(colors, ReviewSource.Scan, uncertain = setOf(5))
+        val check = review.check
+        assertTrue(check is ReviewCheck.InvalidNxN)
+        val invalid = check as ReviewCheck.InvalidNxN
+        assertTrue(invalid.errors.toString(), invalid.errors.any { "17 red" in it.message })
+        assertEquals(17, review.counts[CubeColor.RED])
+        assertFalse(review.canSolve)
+        // A wrong count points at no sticker in particular: the unsure ones stand in.
+        if (invalid.flagged.isEmpty()) assertEquals(setOf(5), review.flagged) else assertEquals(invalid.flagged, review.flagged)
+    }
+
+    @Test
+    fun oddBigCubesLockTheirFixedCentersAndEvenOnesNothing() {
+        val five = ReviewState.manual(5)
+        assertEquals(6, five.locked.size)
+        val center = five.geometry.index(Face.F, 2, 2)
+        assertTrue(five.isLocked(center))
+        assertEquals(ReviewHint.CenterLocked, five.tapSticker(center).hint)
+        assertEquals(CubeColor.GREEN, five.colors[center])
+
+        val four = ReviewState.manual(4)
+        assertTrue(four.locked.isEmpty())
+        assertTrue(four.colors.all { it == null })
+        assertEquals(0, four.selected)
+        assertEquals(Face.U, four.focusedFace)
+        val two = ReviewState.manual(2)
+        assertTrue(two.colors.all { it == null })
+        assertNull("a 2×2 is edited right on the net", two.focusedFace)
+    }
+
+    @Test
+    fun theFaceEditorFollowsManualEntryFromFaceToFace() {
+        var review = ReviewState.manual(5)
+        assertEquals(Face.U, review.focusedFace)
+        repeat(24) { review = review.tapColor(CubeColor.WHITE) }
+        assertEquals("the top face's 24 free stickers are done", Face.L, review.focusedFace)
+        assertEquals(review.geometry.index(Face.L, 0, 0), review.selected)
+
+        // Undo shows the change: back to the top face, its last sticker selected.
+        review = review.undo()
+        assertEquals(Face.U, review.focusedFace)
+        assertEquals(review.geometry.index(Face.U, 4, 4), review.selected)
+    }
+
+    @Test
+    fun finishingABigCubeClosesTheFaceEditorToShowTheVerdict() {
+        val colors = scrambledColors(4)
+        val almost = manualEntry(4, colors, stickers = 6 * 16 - 1)
+        assertEquals("the last face is still open", Face.D, almost.focusedFace)
+        val done = almost.tapColor(colors[checkNotNull(almost.selected)])
+        assertNull(done.focusedFace)
+        assertNull(done.selected)
+        assertEquals(colors, done.colors)
+        assertTrue(done.canSolve)
+
+        // Recoloring a sticker of a finished cube keeps the editor open on its face.
+        val fixing = done.focusFace(Face.F).tapSticker(done.geometry.index(Face.F, 1, 1)).tapColor(CubeColor.RED)
+        assertEquals(Face.F, fixing.focusedFace)
+    }
+
+    @Test
+    fun openingAFacePicksItsFirstGapInManualEntryOnly() {
+        val manual = ReviewState.manual(4).closeFace()
+        assertNull(manual.focusedFace)
+        val front = manual.focusFace(Face.F)
+        assertEquals(Face.F, front.focusedFace)
+        assertEquals(front.geometry.index(Face.F, 0, 0), front.selected)
+
+        val scanned = ReviewState(scrambledColors(4), ReviewSource.Scan).tapSticker(3)
+        assertEquals(3, scanned.focusFace(Face.U).selected)
+        assertNull("a selection on another face is dropped", scanned.focusFace(Face.B).selected)
+        val painting = scanned.tapSticker(3).tapColor(CubeColor.RED).focusFace(Face.B)
+        assertNull("a brush stays up instead", painting.selected)
+        assertEquals(CubeColor.RED, painting.brush)
+    }
+
+    @Test
+    fun steppingThroughFacesWrapsAround() {
+        val review = ReviewState(scrambledColors(6), ReviewSource.Scan).focusFace(Face.U)
+        assertEquals(ReviewState.FACE_ORDER[1], review.stepFace(1).focusedFace)
+        assertEquals(Face.D, review.stepFace(-1).focusedFace)
+        assertEquals(Face.U, review.stepFace(6).focusedFace)
+        assertNull(review.closeFace().stepFace(1).focusedFace)
+        assertNull(review.clearTools().focusedFace)
+    }
+
+    @Test
+    fun entryOrderCoversEveryStickerFaceByFace() {
+        for (n in 2..7) {
+            val order = ReviewState.entryOrder(n)
+            assertEquals((0 until 6 * n * n).toList(), order.sorted())
+            val geometry = ReviewState.manual(n).geometry
+            assertEquals(ReviewState.FACE_ORDER, order.chunked(n * n).map { face -> geometry.faceOf(face.first()) })
+        }
     }
 
     private fun scanned(uncertain: Set<Int> = emptySet()) =

@@ -4,7 +4,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.MotionDurationScale
-import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.ui.cube.CubeViewState
 import com.andhab.cubelens.ui.cube.TurnEasing
 import com.andhab.cubelens.ui.cube.signedQuarterTurns
@@ -13,16 +13,17 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 /**
- * Shows which layer turns next, and which way, while the cube waits for [move]: every few seconds
- * the layer flicks a little way into the turn and eases back. The person sees it from where they
- * hold the cube, so this works for the faces pointing away from them (back, bottom, left) just as
- * well as for the ones they can see. The colors never change.
+ * Shows which layers turn next, and which way, while the cube waits for [move] (any layers: outer,
+ * wide or inner): every few seconds they flick a little way into the turn and ease back. The person
+ * sees it from where they hold the cube, so this works for the sides pointing away from them (back,
+ * bottom, left) and for inner layers just as well as for the faces they can see. The colors never
+ * change.
  *
  * Runs until cancelled. Every frame checks [stillWaiting] before touching the cube, and the cube is
  * left alone as soon as it returns false, so a turn or snap that takes over is never disturbed, even
  * in the frames before this coroutine is cancelled. Does nothing while animations are turned off.
  */
-internal suspend fun CubeViewState.hintTurnWhileWaiting(move: Move, stillWaiting: () -> Boolean) {
+internal suspend fun CubeViewState.hintTurnWhileWaiting(move: LayerMove, stillWaiting: () -> Boolean) {
     try {
         delay(TurnHint.FIRST_DELAY_MILLIS)
         while (true) {
@@ -31,12 +32,12 @@ internal suspend fun CubeViewState.hintTurnWhileWaiting(move: Move, stillWaiting
         }
     } finally {
         // Cancelled mid-nudge with nothing taking over (e.g. the screen went away): settle the layer.
-        if (stillWaiting() && animatingMove == move) setPreview(null, 0f)
+        if (stillWaiting() && animatingLayerMove == move) setPreview(null, 0f)
     }
 }
 
-/** One flick of [move]'s layer into the turn and back; returns early once [stillWaiting] is false. */
-private suspend fun CubeViewState.nudge(move: Move, stillWaiting: () -> Boolean) {
+/** One flick of [move]'s layers into the turn and back; returns early once [stillWaiting] is false. */
+private suspend fun CubeViewState.nudge(move: LayerMove, stillWaiting: () -> Boolean) {
     var start = -1L
     while (true) {
         val more = withFrameMillis { now ->
@@ -95,7 +96,7 @@ internal object TurnHint {
      * The time fraction of [move]'s turn animation at which its layer has turned [degrees], found by
      * inverting the turn easing, so a nudge turns every move (quarter or half) by the same angle.
      */
-    fun progressFor(move: Move, degrees: Float): Float {
+    fun progressFor(move: LayerMove, degrees: Float): Float {
         val eased = (degrees / (90f * abs(move.signedQuarterTurns))).coerceIn(0f, 1f)
         var lo = 0f
         var hi = 1f

@@ -51,7 +51,7 @@ import com.andhab.cubelens.ui.theme.DisplayFont
 /**
  * Transport controls for [playback], symmetric around a big glowing play/pause disc:
  * start over, previous, play/pause, next and the speed selector, which steps through
- * 0.5×, 1× and 2× and always shows the current speed.
+ * 0.5×, 1×, 2× and 4× (for the long solutions of big cubes) and always shows the current speed.
  *
  * The row keeps a 16dp gutter on each side: on narrow screens the gaps close up first, then the
  * buttons shrink (never below a 48dp touch target).

@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Solve screen (ui/solve): step-by-step solution playback. -->
+<!-- Solve screen (ui/solve): step-by-step solution playback for cubes of every size. -->
 <resources>
-    <!-- Orientation hint; %1$s = color of the front center, %2$s = color of the top center (lowercase). -->
+    <!-- Orientation hint for cubes with fixed centers; %1$s = color of the front center, %2$s = color of the top center (lowercase). -->
     <string name="solve_hold_hint">Hold %1$s toward you, %2$s on top</string>
+    <!-- Orientation hint for 2×2, 4×4 and 6×6 cubes, which have no fixed centers: hold it as during the scan (the 1st scanned face in front, the 5th on top). -->
+    <string name="solve_hold_hint_scanned">Hold it as scanned: first face toward you, fifth on top</string>
 
-    <!-- Faces, as named in move descriptions. -->
+    <!-- Outer layers, as named in move descriptions. -->
     <string name="solve_face_u">Top face</string>
     <string name="solve_face_d">Bottom face</string>
     <string name="solve_face_f">Front face</string>
@@ -12,17 +14,69 @@
     <string name="solve_face_l">Left face</string>
     <string name="solve_face_r">Right face</string>
 
-    <!-- Turn directions, as seen looking straight at the face. -->
+    <!-- The two outer layers of a side turning together. -->
+    <string name="solve_wide2_u">Top two layers</string>
+    <string name="solve_wide2_d">Bottom two layers</string>
+    <string name="solve_wide2_f">Front two layers</string>
+    <string name="solve_wide2_b">Back two layers</string>
+    <string name="solve_wide2_l">Left two layers</string>
+    <string name="solve_wide2_r">Right two layers</string>
+
+    <!-- Three or more outer layers of a side turning together; %1$d = how many (3 or more). -->
+    <string name="solve_wide_u">Top %1$d layers</string>
+    <string name="solve_wide_d">Bottom %1$d layers</string>
+    <string name="solve_wide_f">Front %1$d layers</string>
+    <string name="solve_wide_b">Back %1$d layers</string>
+    <string name="solve_wide_l">Left %1$d layers</string>
+    <string name="solve_wide_r">Right %1$d layers</string>
+
+    <!-- One inner layer; %1$s = its position counted from that side, from solve_ordinals ("2nd"). -->
+    <string name="solve_slice_u">%1$s layer from the top</string>
+    <string name="solve_slice_d">%1$s layer from the bottom</string>
+    <string name="solve_slice_f">%1$s layer from the front</string>
+    <string name="solve_slice_b">%1$s layer from the back</string>
+    <string name="solve_slice_l">%1$s layer from the left</string>
+    <string name="solve_slice_r">%1$s layer from the right</string>
+
+    <!-- Several adjacent inner layers; %1$d to %2$d = their positions counted from that side. -->
+    <string name="solve_range_u">Layers %1$d–%2$d from the top</string>
+    <string name="solve_range_d">Layers %1$d–%2$d from the bottom</string>
+    <string name="solve_range_f">Layers %1$d–%2$d from the front</string>
+    <string name="solve_range_b">Layers %1$d–%2$d from the back</string>
+    <string name="solve_range_l">Layers %1$d–%2$d from the left</string>
+    <string name="solve_range_r">Layers %1$d–%2$d from the right</string>
+
+    <!-- Every layer at once: the whole cube turns in the hand. -->
+    <string name="solve_whole_cube">Whole cube</string>
+
+    <!-- Layer positions counted from a side, for solve_slice_*. -->
+    <string-array name="solve_ordinals">
+        <item>1st</item>
+        <item>2nd</item>
+        <item>3rd</item>
+        <item>4th</item>
+        <item>5th</item>
+        <item>6th</item>
+        <item>7th</item>
+        <item>8th</item>
+        <item>9th</item>
+        <item>10th</item>
+    </string-array>
+
+    <!-- Turn directions, as seen looking straight at the side the layers are counted from. -->
     <string name="solve_turn_clockwise">clockwise</string>
     <string name="solve_turn_counter_clockwise">counter-clockwise</string>
     <string name="solve_turn_half">half turn</string>
 
-    <!-- Where "clockwise" is judged from, for the faces pointing away from the person holding the cube. -->
-    <string name="solve_view_b">Seen from behind</string>
+    <!-- Where "clockwise" is judged from: always shown for the sides pointing away from the person holding the cube, and for whole-cube turns. -->
+    <string name="solve_view_u">Seen from above</string>
     <string name="solve_view_d">Seen from below</string>
+    <string name="solve_view_f">Seen from the front</string>
+    <string name="solve_view_b">Seen from behind</string>
     <string name="solve_view_l">Seen from the left</string>
+    <string name="solve_view_r">Seen from the right</string>
 
-    <!-- "Right face · clockwise" -->
+    <!-- "Right two layers · clockwise" -->
     <string name="solve_move_description">%1$s · %2$s</string>
     <string name="solve_move_counter">Move %1$d of %2$d</string>
     <plurals name="solve_moves_to_go">
@@ -33,6 +87,24 @@
     <string name="solve_current_move_spoken">%1$s: %2$s, %3$s</string>
     <!-- As above, plus where to look from: "Move 17 of 20: B prime, Back face · counter-clockwise. Seen from behind". -->
     <string name="solve_current_move_spoken_viewpoint">%1$s: %2$s, %3$s. %4$s</string>
+
+    <!-- Stages of a big cube's solution. -->
+    <string name="solve_stage_solve">Solve</string>
+    <string name="solve_stage_corners">Corners</string>
+    <string name="solve_stage_frame">Corners &amp; middle edges</string>
+    <string name="solve_stage_edges">Edges</string>
+    <string name="solve_stage_centers">Centers</string>
+    <!-- Overline above the current move: "Step 2 of 3 · Edges" (shown uppercase). -->
+    <string name="solve_stage_overline">Step %1$d of %2$d · %3$s</string>
+    <!-- Shorter overline for narrow screens: "2/3 · Edges". -->
+    <string name="solve_stage_overline_short">%1$d/%2$d · %3$s</string>
+    <!-- Divider in the move timeline where a stage begins: "Step 2", then the stage name. -->
+    <string name="solve_stage_number">Step %1$d</string>
+    <string name="solve_stage_previous">Previous step</string>
+    <string name="solve_stage_next">Next step</string>
+    <string name="solve_jump_to_stage">Jump to this step</string>
+    <!-- Spoken progress through a stage: "Edges, step 2 of 3, 12 of 78 moves done". -->
+    <string name="solve_stage_spoken">%1$s, step %2$d of %3$d, %4$d of %5$d moves done</string>
 
     <!-- Timeline and controls. -->
     <string name="solve_timeline">Solution moves</string>
@@ -54,6 +126,8 @@
         <item quantity="other">%d moves</item>
     </plurals>
     <string name="solve_solved_subtitle">That\'s the short way home.</string>
+    <!-- After a big cube's solution, done step by step. -->
+    <string name="solve_solved_subtitle_staged">Every layer, right back where it belongs.</string>
     <string name="solve_already_solved_subtitle">Every face matches. Nothing to do!</string>
     <string name="solve_scan_another">Scan another cube</string>
     <string name="solve_replay">Replay</string>

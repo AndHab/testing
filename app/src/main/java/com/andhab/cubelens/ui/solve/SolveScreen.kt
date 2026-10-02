@@ -13,13 +13,8 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,17 +22,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded._3dRotation
-import androidx.compose.material.icons.rounded.ViewInAr
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -49,40 +38,54 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.style.LineBreak
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.andhab.cubelens.R
 import com.andhab.cubelens.core.cube.CubeColor
 import com.andhab.cubelens.core.cube.Face
-import com.andhab.cubelens.core.cube.Facelets
 import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.NxNCube
+import com.andhab.cubelens.core.nxn.NxNGeometry
 import com.andhab.cubelens.core.nxn.NxNSolution
+import com.andhab.cubelens.core.nxn.NxNSolver
+import com.andhab.cubelens.core.nxn.NxNValidator
+import com.andhab.cubelens.core.nxn.SolveStage
+import com.andhab.cubelens.core.nxn.toLayerMove
 import com.andhab.cubelens.ui.components.AuroraBackground
 import com.andhab.cubelens.ui.components.CircleIconButton
 import com.andhab.cubelens.ui.components.ConfettiBurst
-import com.andhab.cubelens.ui.components.Pill
 import com.andhab.cubelens.ui.components.TopBar
-import com.andhab.cubelens.ui.components.colorName
 import com.andhab.cubelens.ui.cube.Cube3D
 import com.andhab.cubelens.ui.cube.CubeViewState
 import com.andhab.cubelens.ui.cube.rememberCubeViewState
 import com.andhab.cubelens.ui.theme.Brand
-import com.andhab.cubelens.ui.theme.CubePalette
+import com.andhab.cubelens.ui.theme.LocalStickerPalette
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.ceil
 
 /**
- * Playback of a staged solution for a cube of any size (N inferred from [startColors]).
+ * Step-by-step animated playback of a staged solution, for a cube of any size.
  *
- * STUB: delegates to the 3×3 playback for now; the staged, any-size playback replaces it.
+ * The scrambled cube turns in 3D at the top (drag to look around) under a hint on how to hold it;
+ * below it the current move is spelled out big, the whole solution runs along a tappable timeline,
+ * and transport controls step, play and pace it (up to 4× for the hundreds of moves of a big cube).
+ * A solution in several stages ("Corners", "Edges", "Centers") names the stage under way, marks
+ * where each stage starts on the timeline and offers jumps to the previous and next stage. While
+ * paused, the layers that turn next give a little nudge the way they will turn every few seconds.
+ * Reaching the end celebrates with confetti and offers to scan another cube or replay the solution.
+ * A solution with no moves celebrates straight away.
+ *
+ * Sticker colors everywhere (the cube, the turn pictogram, the hint swatches, the confetti) come
+ * from [LocalStickerPalette], so a pastel cube is shown in its own colors.
+ *
+ * @param startColors the scrambled cube: 6·N² colors in [NxNGeometry] order, in the orientation
+ *   it was scanned in (N is inferred from their number).
+ * @param solution the solution, stage by stage; applying its moves to [startColors] solves the cube.
+ * @param onBack leave playback without finishing (also the system back gesture).
+ * @param onDone leave playback (e.g. "Scan another cube").
  */
 @Composable
 fun SolveScreen(
@@ -92,17 +95,20 @@ fun SolveScreen(
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    SolveScreen(startColors, solution.moves.mapNotNull { it.toMove() }, onBack, onDone, modifier)
+    val cubeState = rememberCubeViewState(startColors, HomeYaw, HomePitch)
+    val playback = rememberSolvePlayback(startColors, solution, cubeState)
+    BackHandler(onBack = onBack)
+    SolveContent(
+        playback = playback,
+        cubeState = cubeState,
+        onBack = onBack,
+        onDone = onDone,
+        modifier = modifier,
+    )
 }
 
 /**
- * Step-by-step animated solution playback.
- *
- * The scrambled cube turns in 3D at the top (drag to look around); below it the current move is
- * spelled out big, the whole solution runs along a tappable timeline, and transport controls step,
- * play and pace it. While paused, the layer that turns next gives a little nudge the way it will
- * turn every few seconds. Reaching the end celebrates with confetti and offers to scan another
- * cube or replay the solution. A solution with no moves celebrates straight away.
+ * Step-by-step animated playback of a 3×3 solution: the [SolveScreen] for [moves] as a single stage.
  *
  * @param startColors the scrambled cube (54 colors, facelet order, standard orientation).
  * @param moves the solution; applying them to [startColors] solves the cube.
@@ -117,16 +123,11 @@ fun SolveScreen(
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val cubeState = rememberCubeViewState(startColors, HomeYaw, HomePitch)
-    val playback = rememberSolvePlayback(startColors, moves, cubeState)
-    BackHandler(onBack = onBack)
-    SolveContent(
-        playback = playback,
-        cubeState = cubeState,
-        onBack = onBack,
-        onDone = onDone,
-        modifier = modifier,
-    )
+    val solution = remember(moves) {
+        val stages = if (moves.isEmpty()) emptyList() else listOf(SolveStage(NxNSolver.STAGE_SOLVE, moves.map { it.toLayerMove() }))
+        NxNSolution(3, stages)
+    }
+    SolveScreen(startColors, solution, onBack, onDone, modifier)
 }
 
 /** Camera angles the cube starts at, and returns to with "Reset view". */
@@ -151,12 +152,16 @@ internal fun SolveContent(
         animationSpec = tween(durationMillis = 900),
         label = "solveAurora",
     )
-    val startColors = remember(playback) { playback.colorsAt(0) }
-    val faceColor = remember(startColors) { { face: Face -> CubePalette.color(startColors[Facelets.center(face)]) } }
+    val orientation = remember(playback) { CubeOrientation.of(playback.n, playback.colorsAt(0)) }
+    val palette = LocalStickerPalette.current
+    val faceColor = remember(orientation, palette) {
+        { face: Face -> orientation.scheme?.get(face)?.let(palette::color) ?: Brand.TextSecondary }
+    }
+    val stages = rememberTimelineStages(playback)
     val scope = rememberCoroutineScope()
     val animationsEnabled = rememberAnimationsEnabled()
 
-    // While paused, nudge the layer that turns next (left out of static previews and screenshots).
+    // While paused, nudge the layers that turn next (left out of static previews and screenshots).
     val waitingIndex = playback.waitingIndex
     if (waitingIndex != null && !LocalInspectionMode.current) {
         LaunchedEffect(cubeState, playback, waitingIndex) {
@@ -179,8 +184,7 @@ internal fun SolveContent(
                 showHint = !finished,
                 // A slow victory spin once solved.
                 spin = finished && animationsEnabled,
-                front = startColors[Facelets.center(Face.F)],
-                top = startColors[Facelets.center(Face.U)],
+                hold = orientation.hold,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -198,6 +202,7 @@ internal fun SolveContent(
                 if (done) {
                     SolvedCard(
                         moveCount = playback.moveCount,
+                        staged = stages.size > 1,
                         onScanAnother = onDone,
                         onReplay = {
                             playback.restart()
@@ -207,11 +212,49 @@ internal fun SolveContent(
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
                     )
                 } else {
-                    PlaybackSection(playback, faceColor)
+                    PlaybackSection(playback, stages, faceColor)
                 }
             }
         }
+        // Confetti in the cube's own sticker colors (the palette is read by the burst).
         ConfettiBurst(trigger = if (finished) playback.celebration else null)
+    }
+}
+
+/** The stages of [playback] as the timeline and panel label them, localized. */
+@Composable
+private fun rememberTimelineStages(playback: SolvePlayback): List<TimelineStage> {
+    val resources = LocalResources.current
+    val configuration = LocalConfiguration.current
+    return remember(playback, resources, configuration) {
+        playback.stages.mapIndexed { s, stage -> TimelineStage(resources.stageName(stage.name), playback.stageStart(s)) }
+    }
+}
+
+/**
+ * What the start colors say about holding the cube: the color of each side once solved
+ * ([scheme], from the fixed centers of odd sizes, inferred from the corners for even sizes; null
+ * if it cannot be told) and the [hold] hint.
+ */
+@Immutable
+private class CubeOrientation(val scheme: Map<Face, CubeColor>?, val hold: HoldOrientation) {
+    companion object {
+        fun of(n: Int, colors: List<CubeColor>): CubeOrientation {
+            if (n % 2 == 1) {
+                val geometry = NxNGeometry.of(n)
+                val centers = Face.entries.associateWith { colors[geometry.index(it, n / 2, n / 2)] }
+                return CubeOrientation(
+                    scheme = centers,
+                    hold = HoldOrientation.Centers(
+                        front = centers.getValue(Face.F),
+                        top = centers.getValue(Face.U),
+                        right = centers.getValue(Face.R),
+                    ),
+                )
+            }
+            val scheme = NxNValidator.validate(NxNCube.of(n, colors)).scheme
+            return CubeOrientation(scheme, HoldOrientation.AsScanned)
+        }
     }
 }
 
@@ -224,8 +267,7 @@ private fun CubeStage(
     cubeState: CubeViewState,
     showHint: Boolean,
     spin: Boolean,
-    front: CubeColor,
-    top: CubeColor,
+    hold: HoldOrientation,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
@@ -233,7 +275,7 @@ private fun CubeStage(
             state = cubeState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 36.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 40.dp),
             interactive = true,
             autoRotate = spin,
         )
@@ -244,92 +286,46 @@ private fun CubeStage(
             exit = fadeOut(),
             label = "holdHint",
         ) {
-            HoldHint(front = front, top = top)
+            HoldHint(hold)
         }
     }
 }
 
 /** Current move, timeline and transport controls. */
 @Composable
-private fun PlaybackSection(playback: SolvePlayback, faceColor: (Face) -> Color) {
+private fun PlaybackSection(playback: SolvePlayback, stages: List<TimelineStage>, faceColor: (Face) -> Color) {
+    val panelStages = if (stages.size > 1) {
+        PanelStages(
+            stages = stages,
+            current = playback.currentStage,
+            hasPrevious = playback.hasPreviousStage,
+            hasNext = playback.hasNextStage,
+            onPrevious = playback::previousStage,
+            onNext = playback::nextStage,
+        )
+    } else {
+        null
+    }
     Column(Modifier.fillMaxWidth()) {
         MovePanel(
             moves = playback.moves,
+            n = playback.n,
             currentIndex = playback.currentIndex,
             position = playback.position,
             faceColor = faceColor,
+            stages = panelStages,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
         Spacer(Modifier.height(6.dp))
         MoveTimeline(
             moves = playback.moves,
+            stages = stages,
             currentIndex = playback.currentIndex,
             onMoveClick = playback::jumpTo,
+            onStageClick = { playback.jumpTo(playback.stageStart(it)) },
         )
         Spacer(Modifier.height(4.dp))
         PlaybackControls(playback, Modifier.padding(bottom = 20.dp))
-    }
-}
-
-/**
- * The orientation the solution assumes, in the cube's own colors: "Hold green toward you, white
- * on top". A [Pill] when it fits on one line inside the screen gutter; on very narrow screens with
- * large text, a matching capsule that wraps, since every word of it matters.
- */
-@Composable
-private fun HoldHint(front: CubeColor, top: CubeColor, modifier: Modifier = Modifier) {
-    val locale = currentLocale()
-    val text = stringResource(
-        R.string.solve_hold_hint,
-        colorName(front).lowercase(locale),
-        colorName(top).lowercase(locale),
-    )
-    BoxWithConstraints(modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.TopCenter) {
-        val measurer = rememberTextMeasurer()
-        val density = LocalDensity.current
-        val style = MaterialTheme.typography.labelMedium
-        val oneLine = remember(text, style, density, maxWidth) {
-            val width = with(density) { measurer.measure(text, style, softWrap = false, maxLines = 1).size.width.toDp() }
-            width + PillChrome <= maxWidth
-        }
-        if (oneLine) {
-            Pill(text = text, icon = Icons.Rounded.ViewInAr)
-        } else {
-            // Balanced lines ("Hold green toward / you, white on top"), not a lone last word, and
-            // the capsule hugs the longest line instead of stretching across the screen.
-            val wrapStyle = style.copy(lineBreak = LineBreak.Heading)
-            val textWidth = remember(text, wrapStyle, density, maxWidth) {
-                val maxTextWidth = with(density) { (maxWidth - WrappingHintChrome).roundToPx().coerceAtLeast(0) }
-                val layout = measurer.measure(text, wrapStyle, constraints = Constraints(maxWidth = maxTextWidth))
-                val widest = (0 until layout.lineCount).maxOf { layout.getLineRight(it) - layout.getLineLeft(it) }
-                with(density) { ceil(widest).toDp() }
-            }
-            WrappingHint(text = text, style = wrapStyle, textWidth = textWidth)
-        }
-    }
-}
-
-/** Width a [Pill] with an icon adds around its text: start padding, icon, gap and end padding. */
-private val PillChrome = 10.dp + 15.dp + 6.dp + 12.dp
-
-/** Width [WrappingHint] adds around its text. */
-private val WrappingHintChrome = 12.dp + 15.dp + 8.dp + 14.dp
-
-/** The [Pill] look for a hint that needs two lines, its text [textWidth] wide. */
-@Composable
-private fun WrappingHint(text: String, style: TextStyle, textWidth: Dp) {
-    val color = Brand.TextSecondary
-    val shape = RoundedCornerShape(18.dp)
-    Row(
-        modifier = Modifier
-            .background(color.copy(alpha = 0.12f), shape)
-            .border(1.dp, color.copy(alpha = 0.24f), shape)
-            .padding(start = 12.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(Icons.Rounded.ViewInAr, contentDescription = null, tint = color, modifier = Modifier.size(15.dp))
-        Text(text = text, style = style, color = color, modifier = Modifier.width(textWidth))
     }
 }
 

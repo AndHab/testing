@@ -1,7 +1,7 @@
 package com.andhab.cubelens.ui.solve
 
 import androidx.compose.runtime.MonotonicFrameClock
-import com.andhab.cubelens.core.cube.Move
+import com.andhab.cubelens.core.nxn.LayerMove
 import com.andhab.cubelens.ui.cube.CubeViewState
 import com.andhab.cubelens.ui.cube.TurnEasing
 import kotlinx.coroutines.delay
@@ -27,7 +27,7 @@ class SolvePlaybackCubeTest {
     @Test
     fun turnsLandOnTheCube() = runTest(FakeFrameClock()) {
         val state = CubeViewState(UserCube.startColors)
-        val playback = SolvePlayback(UserCube.startColors, moves, CubeViewAnimator(state), this)
+        val playback = SolvePlayback(UserCube.startColors, UserCube.fixture.solution, CubeViewAnimator(state), this)
         playback.next()
         runCurrent()
         advanceTimeBy(200)
@@ -45,7 +45,7 @@ class SolvePlaybackCubeTest {
     @Test
     fun jumpingMidTurnSnapsTheCube() = runTest(FakeFrameClock()) {
         val state = CubeViewState(UserCube.startColors)
-        val playback = SolvePlayback(UserCube.startColors, moves, CubeViewAnimator(state), this)
+        val playback = SolvePlayback(UserCube.startColors, UserCube.fixture.solution, CubeViewAnimator(state), this)
         playback.play()
         runCurrent()
         advanceTimeBy(150)
@@ -60,7 +60,7 @@ class SolvePlaybackCubeTest {
     @Test
     fun rapidCommandsKeepTheCubeInStep() = runTest(FakeFrameClock()) {
         val state = CubeViewState(UserCube.startColors)
-        val playback = SolvePlayback(UserCube.startColors, moves, CubeViewAnimator(state), this)
+        val playback = SolvePlayback(UserCube.startColors, UserCube.fixture.solution, CubeViewAnimator(state), this)
         val random = Random(4242)
         repeat(400) { step ->
             when (random.nextInt(9)) {
@@ -84,8 +84,8 @@ class SolvePlaybackCubeTest {
     @Test
     fun waitingCubeNudgesTheNextLayerWithoutChangingColors() = runTest(FakeFrameClock()) {
         val state = CubeViewState(UserCube.startColors)
-        val playback = SolvePlayback(UserCube.startColors, moves, CubeViewAnimator(state), this)
-        val hint = launch { state.hintTurnWhileWaiting(moves[0]) { playback.waitingIndex == 0 } }
+        val playback = SolvePlayback(UserCube.startColors, UserCube.fixture.solution, CubeViewAnimator(state), this)
+        val hint = launch { state.hintTurnWhileWaiting(UserCube.moves[0]) { playback.waitingIndex == 0 } }
 
         advanceTimeBy(TurnHint.FIRST_DELAY_MILLIS - 50)
         assertNull("no nudge straight away", state.animatingMove)
@@ -113,9 +113,9 @@ class SolvePlaybackCubeTest {
     @Test
     fun aNudgeNeverDisturbsTheTurnThatReplacesIt() = runTest(FakeFrameClock()) {
         val state = CubeViewState(UserCube.startColors)
-        val playback = SolvePlayback(UserCube.startColors, moves, CubeViewAnimator(state), this)
+        val playback = SolvePlayback(UserCube.startColors, UserCube.fixture.solution, CubeViewAnimator(state), this)
         // Not cancelled when the wait ends, as an effect could be a frame late: it must stand aside.
-        val hint = launch { state.hintTurnWhileWaiting(moves[0]) { playback.waitingIndex == 0 } }
+        val hint = launch { state.hintTurnWhileWaiting(UserCube.moves[0]) { playback.waitingIndex == 0 } }
         advanceTimeBy(TurnHint.FIRST_DELAY_MILLIS + 150)
         assertEquals(moves[0], state.animatingMove)
 
@@ -135,11 +135,33 @@ class SolvePlaybackCubeTest {
     }
 
     @Test
+    fun aWaitingBigCubeNudgesInnerLayers() = runTest(FakeFrameClock()) {
+        val fixture = RealSolutions.of(5)
+        val slice = fixture.moves.indexOfFirst { it.fromDepth > 1 }
+        val state = CubeViewState(fixture.startColors)
+        val playback = SolvePlayback(fixture.startColors, fixture.solution, CubeViewAnimator(state), this, initialPosition = slice)
+        val hint = launch { state.hintTurnWhileWaiting(fixture.moves[slice]) { playback.waitingIndex == slice } }
+        advanceTimeBy(TurnHint.FIRST_DELAY_MILLIS + 330)
+        assertEquals(fixture.moves[slice], state.animatingLayerMove)
+        assertEquals(fixture.colorsAfter(slice), state.colors)
+
+        // Stepping on turns the slice for real and lands on the next state.
+        playback.next()
+        advanceTimeBy(SolvePlayback.TURN_MILLIS + 100L)
+        hint.cancel()
+        advanceUntilIdle()
+        assertEquals(slice + 1, playback.position)
+        assertNull(state.animatingLayerMove)
+        assertEquals(fixture.colorsAfter(slice + 1), state.colors)
+    }
+
+    @Test
     fun aNudgeTurnsQuarterAndHalfTurnsByTheSameAngle() {
-        for (move in listOf(Move.R1, Move.R2, Move.R3)) {
-            val progress = TurnHint.progressFor(move, TurnHint.DEGREES)
-            val total = if (move == Move.R2) 180f else 90f
-            assertEquals("$move", TurnHint.DEGREES, total * TurnEasing.transform(progress), 0.05f)
+        for (move in listOf("R", "R2", "R'", "Rw2", "2R'", "2-3Rw")) {
+            val layerMove = LayerMove.parse(move)
+            val progress = TurnHint.progressFor(layerMove, TurnHint.DEGREES)
+            val total = if (layerMove.turns == 2) 180f else 90f
+            assertEquals(move, TurnHint.DEGREES, total * TurnEasing.transform(progress), 0.05f)
         }
         assertEquals(0f, TurnHint.lift(0), 0f)
         assertEquals(1f, TurnHint.lift(300), 0f)

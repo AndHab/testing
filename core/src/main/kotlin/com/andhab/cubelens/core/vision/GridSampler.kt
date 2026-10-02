@@ -21,16 +21,21 @@ import kotlin.math.sqrt
  *     unsaturated plastic between stickers (a shaded saturated sticker such as dark blue still scores
  *     high), and splits it into sticker / plastic with Otsu's threshold. If the "plastic" class is not
  *     dark (stickerless cubes, whose colored tiles touch, and white-bodied cubes), there are no dark
- *     gaps to lock onto, and step 2a replaces steps 2 and 3. On faces of 4x4 and up the class must also
- *     run across the whole face as gaps do: on a white body under a color cast, the darkest stickers
- *     alone can be dark enough to pass for gaps.
+ *     gaps to lock onto, and step 2a replaces steps 2 and 3. On a white body under a color cast the
+ *     darkest stickers can be dark enough to pass for gaps, so the darker class must also be laid out
+ *     like gaps: thin lines between wide bright patches (on a face all of whose stickers are dark, it
+ *     is the other way round), and on faces of 4x4 and up running across every row and column.
  *  2a. Faces without dark gaps: finds the global shift and scale of the N×N grid at which the sampling
  *     windows are most uniform in color (least sRGB variance, from summed-area tables), so that no
  *     window reaches into the white plastic or a neighbouring tile. Every grid within a tolerance of
  *     the best counts as equally good, and of those the one closest to the guide as placed is used:
- *     the guide itself whenever it is good enough (always on a face of one color), otherwise the grid
- *     that moves it least. On faces of 4x4 and up, each cell is then re-centered on its own plateau of
- *     most uniform windows, as step 3 does on stickers (see "Larger faces").
+ *     the guide itself whenever it is good enough, otherwise the grid that moves it least. On faces of
+ *     4x4 and up, each window that is misplaced (over the face's edge, over a border between tiles,
+ *     or on the background) counts as a move away from the guide: on a face of few colors (a solved
+ *     or nearly solved cube) every grid is about equally uniform, and the guide, which follows the
+ *     user's hand rather than the face, can put a whole outer row of windows off the face. Each cell
+ *     is then re-centered on its own plateau of most uniform windows, as step 3 does on stickers (see
+ *     "Larger faces").
  *  2. Scores a candidate sticker position as the sticker fraction of a half-cell window there minus
  *     the sticker fraction of a thin square ring at the distance of the gaps between stickers. A
  *     real sticker is a bright patch surrounded by dark plastic, so this is high only on stickers,
@@ -61,12 +66,16 @@ import kotlin.math.sqrt
  * Measured on rendered faces with 22 pixels per cell (see the tests), in poses as handheld scanning
  * gives them (guide off by up to 3% of the face, 3 degrees of rotation, perspective) under neutral,
  * warm, cool and mixed light: every sticker of black-bodied and white-bodied faces, vivid and pastel,
- * read right at every size up to 7x7. Stickerless faces from 5x5 on are the hardest case, because
- * neighbouring tiles of one color merge into one patch: about one face in 200 has one to three
- * stickers near a corner of the face read partly off their tile. In poses off by more (4% of the
- * face, 4 degrees, stronger perspective) that becomes a few faces in 100, and about one white-bodied
- * 7x7 face in 80 is read off-grid altogether (its outer row lies beyond the search range). From 4x4
- * on, [ScanResolver] corrects a single misread sticker and reports more as an invalid cube.
+ * read right at every size up to 7x7. Stickerless faces from 4x4 on are the hardest case, because
+ * neighbouring tiles of one color merge into one patch: about one face in 300 has a sticker near a
+ * corner of the face read partly off its tile. On the faces of solved and nearly solved cubes (one
+ * color, or one with an outer row of another), stickerless faces read right too. The weakest case
+ * left is a white face on a white body with one or two outer rows of other colors: its white
+ * stickers look like the plastic between them, so only the face's edge and the colored rows place
+ * the grid, and about one such 6x6 or 7x7 face in 15 has a sticker or a row misread. In poses off
+ * by more (4% of the face, 4 degrees, stronger perspective) about one stickerless face in 70 and one
+ * white-bodied face in 300 has a misread sticker. From 4x4 on, [ScanResolver] corrects a single
+ * misread sticker and reports more as an invalid cube.
  *
  * Cost grows with the number of stickers, not with the image size: about 6k pixel reads for a 3×3
  * face (under a millisecond on the JVM) and 23k for a 7×7 face (2 to 3 milliseconds). Scratch buffers
@@ -124,6 +133,8 @@ object GridSampler {
     private const val UNIFORM_PLATEAU = 0.25 // windows within this fraction of the least variance (plus noise) are a cell's plateau
     private const val UNIFORM_CONTRAST = 300.0 // a located cell's surroundings vary this much more (sRGB levels squared, 3 channels: 10 levels)
     private const val UNIFORM_RETRY_DISTANCE = 2.0 // lattice steps off the fit's prediction that overrule a located cell
+    private const val MISPLACED_WEIGHT = 8.0 // faces without dark gaps, 4x4 and up: a misplaced window weighs as much as moving the grid sqrt(8) lattice steps
+    private const val BACKGROUND_LIKE = 3 * 20.0 * 20.0 // a window whose mean is this close to the background (sRGB levels squared, 3 channels) is off the face
     private const val AFFINE_MAX_SIZE = 3 // faces up to this size predict cells with an affine fit; larger ones with a homography
     private const val FIT_ROUNDS = 2 // fit-and-search-again rounds on larger faces
     private const val MIN_PROJECTIVE_CELLS = 8 // confident cells needed for the homography (8 unknowns)
@@ -197,10 +208,15 @@ object GridSampler {
         val above = IntArray(cells * STEPS * STEPS)
         val darkPerRow = IntArray(n * STEPS)
         val darkPerColumn = IntArray(n * STEPS)
+        val darkRuns = IntArray(n * STEPS + 1)
+        val brightRuns = IntArray(n * STEPS + 1)
         val histogram = IntArray(FEATURE_LEVELS)
         val rgb = IntArray(side * side)
         val uniformity = UniformityMap(side)
         val uniformVariance = DoubleArray(cells * UNIFORM_GRIDS)
+        val offFace = BooleanArray(cells * UNIFORM_GRIDS)
+        val ring = IntArray(4 * side)
+        val background = IntArray(3)
         val uniformCellBest = DoubleArray(cells)
         val uniformExcess = DoubleArray(cells)
         val uniformScores = DoubleArray(UNIFORM_GRIDS)
@@ -470,9 +486,11 @@ object GridSampler {
      *
      * On a white body the darkest stickers (red, blue) can make up the darker class on their own, and
      * under a cool or warm cast they can be dark enough to pass for gaps; the grid would then lock onto
-     * the white plastic. Faces of [GAP_LINES_MIN_SIZE] and more stickers per row therefore also need
-     * the darker class to be laid out like gaps ([crossesEveryLine]); 2x2 and 3x3 faces keep the
-     * brightness test alone.
+     * the white plastic. The darker class must therefore also be laid out like gaps: thin lines
+     * between wide bright patches ([darkRunsAreThin], every size; this catches faces all of whose
+     * stickers are dark, such as a blue face in warm light) and, on faces of [GAP_LINES_MIN_SIZE] and
+     * more stickers per row, lines that cross every row and column of the face ([crossesEveryLine];
+     * this catches faces with a few dark stickers).
      */
     private fun hasDarkGaps(feature: IntArray, brightness: IntArray, threshold: Int, work: Workspace): Boolean {
         val side = work.side
@@ -499,7 +517,62 @@ object GridSampler {
         }
         if (nBelow == 0 || nAbove == 0) return true
         if (!(select(below, nBelow, nBelow / 2) < GAP_DARKNESS * select(above, nAbove, nAbove / 2))) return false
+        if (!darkRunsAreThin(feature, threshold, work)) return false
         return work.n < GAP_LINES_MIN_SIZE || crossesEveryLine(work)
+    }
+
+    /**
+     * Whether the darker class of the lattice (feature at most [threshold]) is made of thin lines
+     * between wide bright patches, as the gaps between stickers are, rather than of wide patches
+     * between thin bright lines: along the lattice rows and columns inside the region, the median
+     * length of the dark runs is below the median length of the bright runs. On a stickered face the
+     * dark runs are gap-wide (a sixth to a quarter of a cell) and the bright runs sticker-wide. On a
+     * white body whose stickers are all dark under a color cast (a blue face in warm light) it is the
+     * other way round, and the stickers pass every other test for gaps: the dark class is much darker
+     * than the white plastic and runs across every row and column of the face. Runs that touch the
+     * region's border are cut off and are not counted; without complete runs of both classes the test
+     * has no say.
+     */
+    private fun darkRunsAreThin(feature: IntArray, threshold: Int, work: Workspace): Boolean {
+        val side = work.side
+        val inside = work.n * STEPS
+        val darkRuns = work.darkRuns
+        val brightRuns = work.brightRuns
+        darkRuns.fill(0)
+        brightRuns.fill(0)
+        for (line in MARGIN until MARGIN + inside) {
+            for (axis in 0 until 2) {
+                var start = -1 // the first run touches the border and is not counted
+                var dark = false
+                for (k in MARGIN until MARGIN + inside) {
+                    val isDark = feature[if (axis == 0) line * side + k else k * side + line] <= threshold
+                    if (k == MARGIN) {
+                        dark = isDark
+                        continue
+                    }
+                    if (isDark == dark) continue
+                    if (start >= 0) (if (dark) darkRuns else brightRuns)[k - start]++
+                    start = k
+                    dark = isDark
+                }
+            }
+        }
+        val darkMedian = histogramMedian(darkRuns)
+        val brightMedian = histogramMedian(brightRuns)
+        return darkMedian < 0 || brightMedian < 0 || darkMedian < brightMedian
+    }
+
+    /** Upper median of the values counted in [histogram] (`histogram[v]`: how often v occurs), or -1 if it is empty. */
+    private fun histogramMedian(histogram: IntArray): Int {
+        var total = 0
+        for (count in histogram) total += count
+        if (total == 0) return -1
+        var seen = 0
+        for (v in histogram.indices) {
+            seen += histogram[v]
+            if (seen > total / 2) return v
+        }
+        return histogram.size - 1
     }
 
     /**
@@ -538,12 +611,18 @@ object GridSampler {
         map.reset(work.rgb)
         val variance = work.uniformVariance
         val grids = UNIFORM_GRIDS
+        // Larger faces also count misplaced windows (see misplacedWindows), which needs the background.
+        val countMisplaced = n >= UNIFORM_REFINE_MIN_SIZE
+        val offFace = work.offFace
+        val background = work.background
+        if (countMisplaced) estimateBackground(work)
         var g = 0
         for (scale in UNIFORM_SCALES) {
             for (dy in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
                 for (dx in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
                     for (cell in 0 until cells) {
                         variance[cell * grids + g] = map.variance(work.cellCenter(cell % n, scale, dx.toDouble()), work.cellCenter(cell / n, scale, dy.toDouble()))
+                        if (countMisplaced) offFace[cell * grids + g] = map.meanDistanceSquared(background) < BACKGROUND_LIKE
                     }
                     g++
                 }
@@ -570,7 +649,11 @@ object GridSampler {
             if (total < best) best = total
         }
 
-        // Of all grids about as uniform as the best one, the one closest to the guide as placed.
+        // Of all grids about as uniform as the best one, the one closest to the guide as placed; on
+        // larger faces, each misplaced window (see misplacedWindows) counts as a move of the grid
+        // away from the guide. Ranking misplaced windows first would let a face of few colors on a
+        // white body push the windows of its few colored stickers onto the large white area next to
+        // them; ignoring them lets the grid follow the guide over the face's edge.
         val limit = best + UNIFORM_TOLERANCE * noise + work.uniformFloor
         var closest = Double.POSITIVE_INFINITY
         var scale = 1.0
@@ -580,14 +663,16 @@ object GridSampler {
         for (candidateScale in UNIFORM_SCALES) {
             for (y in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
                 for (x in -UNIFORM_SHIFT..UNIFORM_SHIFT) {
-                    val score = scores[g++]
+                    val k = g++
+                    val score = scores[k]
                     if (score > limit) continue
-                    // Distance in lattice steps (a scale step moves the outer cells by about one step);
-                    // ties go to the more uniform grid.
+                    // Squared distance in lattice steps (a scale step moves the outer cells by about one
+                    // step), plus the misplaced windows; ties go to the more uniform grid.
                     val scaleSteps = (candidateScale - 1.0) * STEPS
-                    val distance = (x * x + y * y).toDouble() + scaleSteps * scaleSteps + 1e-3 * score / limit
-                    if (distance < closest) {
-                        closest = distance
+                    var cost = (x * x + y * y).toDouble() + scaleSteps * scaleSteps + 1e-3 * score / limit
+                    if (countMisplaced) cost += MISPLACED_WEIGHT * misplacedWindows(variance, cellBest, k, work)
+                    if (cost < closest) {
+                        closest = cost
                         scale = candidateScale
                         dx = x.toDouble()
                         dy = y.toDouble()
@@ -602,6 +687,52 @@ object GridSampler {
             centers[2 * cell + 1] = latticeToCell(work.cellCenter(cell / n, scale, dy))
         }
         return centers
+    }
+
+    /**
+     * How many cells' windows are misplaced at grid [grid] of [locateByUniformity]: a window that
+     * straddles a boundary, the edge of the face or the border between two tiles of different colors,
+     * is far less uniform there ([UNIFORM_CONTRAST] more) than at that cell's most uniform grid
+     * ([cellBest]); a window wholly off the face is as uniform as the background, but has its color
+     * ([Workspace.offFace], see [estimateBackground]).
+     *
+     * The uniformity score leaves out the least uniform cells (for specular highlights), a whole row
+     * on a big face, and on a face of few colors (a solved or nearly solved cube) most grids are
+     * equally uniform; the grid closest to the guide, which follows the guide rather than the face,
+     * could then hang a row of windows over the face's edge at no cost, and a grid chosen for few
+     * straddling windows alone could lie partly on a uniform background. Cells that look like the
+     * background wherever the grid is (a tile of the background's color) count the same for every
+     * grid and do not change the choice.
+     */
+    private fun misplacedWindows(variance: DoubleArray, cellBest: DoubleArray, grid: Int, work: Workspace): Int {
+        var count = 0
+        for (cell in 0 until work.cells) {
+            val k = cell * UNIFORM_GRIDS + grid
+            if (variance[k] - cellBest[cell] > UNIFORM_CONTRAST || work.offFace[k]) count++
+        }
+        return count
+    }
+
+    /**
+     * Estimates the background's color into [Workspace.background] (sRGB, per channel) as the median
+     * of the lattice's outermost ring, three quarters of a cell outside the guide: beyond the face
+     * even when the face is held a few percent off the guide or larger than it.
+     */
+    private fun estimateBackground(work: Workspace) {
+        val side = work.side
+        val ring = work.ring
+        val rgb = work.rgb
+        for (channel in 0 until 3) {
+            val shift = 16 - 8 * channel
+            var count = 0
+            for (k in 0 until side) {
+                ring[count++] = (rgb[k] shr shift) and 0xFF // top row
+                ring[count++] = (rgb[(side - 1) * side + k] shr shift) and 0xFF // bottom row
+                ring[count++] = (rgb[k * side] shr shift) and 0xFF // left column
+                ring[count++] = (rgb[k * side + side - 1] shr shift) and 0xFF // right column
+            }
+            work.background[channel] = select(ring, count, count / 2)
+        }
     }
 
     /**
@@ -763,14 +894,33 @@ object GridSampler {
             val r = (x0 + UNIFORM_WINDOW).coerceIn(0, side)
             val b = (y0 + UNIFORM_WINDOW).coerceIn(0, side)
             val n = ((r - l) * (b - t)).toDouble()
-            if (n <= 0.0) return 0.0
+            if (n <= 0.0) {
+                meanR = Double.NaN // no window: not like anything
+                return 0.0
+            }
             fun sum(table: IntArray): Double =
                 (table[b * stride + r] - table[t * stride + r] - table[b * stride + l] + table[t * stride + l]).toDouble()
             val squares = (sumSquares[b * stride + r] - sumSquares[t * stride + r] - sumSquares[b * stride + l] + sumSquares[t * stride + l]).toDouble()
             val mr = sum(sumR) / n
             val mg = sum(sumG) / n
             val mb = sum(sumB) / n
+            meanR = mr
+            meanG = mg
+            meanB = mb
             return squares / n - mr * mr - mg * mg - mb * mb
+        }
+
+        // The mean color of the window of the last variance() call.
+        private var meanR = 0.0
+        private var meanG = 0.0
+        private var meanB = 0.0
+
+        /** Squared distance (sRGB levels, summed over the channels) of the mean color of the last [variance] window from [rgb]. */
+        fun meanDistanceSquared(rgb: IntArray): Double {
+            val dr = meanR - rgb[0]
+            val dg = meanG - rgb[1]
+            val db = meanB - rgb[2]
+            return dr * dr + dg * dg + db * db
         }
     }
 

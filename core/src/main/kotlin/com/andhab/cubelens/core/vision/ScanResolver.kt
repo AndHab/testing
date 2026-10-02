@@ -141,6 +141,19 @@ object ScanResolver {
      * second color with their first colors exchanged, so validation alone cannot tell which one was
      * misread).
      *
+     * **One face photographed twice** (the user forgot to turn the cube) puts one face's colors on the
+     * cube twice and leaves another out. When two scans look alike sticker for sticker (under some
+     * quarter turn, allowing for each photo's exposure and white balance) and the reading had to force
+     * stickers into colors they don't show, the first problem says so and highlights the later of the
+     * two scans, to be retaken. Bigger cubes never pass validation that way; a 2x2 cube, which has only
+     * its corners to check, often did, so a valid 2x2 reading is rejected in that case, and also when
+     * it rests on any sticker read as a color it clearly doesn't show (a misread cannot be told from
+     * the right reading on a 2x2 cube); a 2x2 reading that may rest on a duplicate in a less clear way
+     * has every sticker flagged. A wrong scan order (e.g. the side faces in mirrored order, or up and
+     * down swapped) is not detectable in general: on rendered 2x2 cubes with up and down, or front
+     * and back, swapped, about one session in 40 still gave a valid (wrong) cube, so scan screens
+     * should guide the order clearly.
+     *
      * For n = 3 this returns exactly what the 3x3 [resolve] returns for the same arguments. Malformed
      * scans (not six scans of `n * n`), garbage such as grey surfaces or one face scanned six times,
      * never throw: they give a result with `isValid == false`.

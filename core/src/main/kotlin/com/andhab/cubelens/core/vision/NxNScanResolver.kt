@@ -27,6 +27,9 @@ import com.andhab.cubelens.core.nxn.NxNValidator
  *     stickers, orientation ambiguity, and the stickers that differ in another valid reading that
  *     explains the photos about as well ([alternativeReadings], and for even sizes another
  *     clustering, [withRivalReadings]).
+ *  6. One face photographed twice ([duplicateEvidence], from [LookAlikeScans]) is reported first
+ *     when the reading is invalid; on 2x2 cubes, whose corners alone are too weak a check, a valid
+ *     reading is also rejected for it, or for resting on a clearly misread sticker ([checkTwoByTwo]).
  */
 internal object NxNScanResolver {
 
@@ -58,6 +61,18 @@ internal object NxNScanResolver {
     private const val ALTERNATIVE_MAX_COST = 2.0 * ScanResolver.UNCERTAIN_MARGIN
     private const val ALTERNATIVE_TRIALS = 300
 
+    /**
+     * [duplicateEvidence]: a reading forces stickers when their negative margins (how much better the
+     * color a sticker shows best fits it than the color it was given, CIEDE2000) add up to more than
+     * [FORCING], more than a few close calls the other way round; a sticker counts as forced when its
+     * own margin is below -[FORCED_STICKER]. On solved and nearly solved cubes of very pale colors the
+     * lighting model can hardly tell a cast from a color, and many stickers are slight close calls:
+     * lower thresholds took one such 2x2 session in 60 for a duplicate, higher ones let duplicates of
+     * pale faces through.
+     */
+    private const val FORCING = ScanResolver.UNCERTAIN_MARGIN.toDouble()
+    private const val FORCED_STICKER = 2.0
+
     /** [poorFits]: distance (CIEDE2000) to the nearest color beyond which a sticker matches no color well. */
     private const val POOR_FIT = 10.0
 
@@ -81,7 +96,9 @@ internal object NxNScanResolver {
         val samples = scans.flatten()
         val linear = JointClustering.linearOf(scans)
         val positions = scanPositions?.takeIf { it.size == 6 && it.toSet().size == 6 }
-        return if (layout.center >= 0) resolveOdd(layout, linear, positions) else resolveEven(layout, samples, linear, positions)
+        // Needed for every 2x2 reading (see checkTwoByTwo), otherwise only to explain an invalid one.
+        val lookAlikes = lazy { LookAlikeScans.find(n, linear, distinctive = n == 2) }
+        return if (layout.center >= 0) resolveOdd(layout, linear, positions, lookAlikes) else resolveEven(layout, samples, linear, positions, lookAlikes)
     }
 
     /**
@@ -106,36 +123,51 @@ internal object NxNScanResolver {
     }
 
     /** Odd sizes: clusters seeded from the fixed centers, placed by center color or else by scan position. */
-    private fun resolveOdd(layout: Layout, linear: Array<DoubleArray>, positions: List<Face>?): NxNScanAnalysis {
+    private fun resolveOdd(layout: Layout, linear: Array<DoubleArray>, positions: List<Face>?, lookAlikes: Lazy<List<LookAlike>>): NxNScanAnalysis {
         val clusters = clusterWithCenters(layout, linear)
         val named = Named(clusters)
         val byCenters = named.labels.map { scheme.faceOf(it) }
-        if (!named.plausible) return implausible(layout, clusters.classification(named.labels, byCenters, layout.center), named.palette, Placement.CENTER_COLORS)
-        val first = analyze(layout, clusters.classification(named.labels, byCenters, layout.center), Placement.CENTER_COLORS, named.palette)
+        val centerPlaced = Placed(clusters.classification(named.labels, byCenters, layout.center), byCenters, lookAlikes)
+        if (!named.plausible) return implausible(layout, centerPlaced, named.palette, Placement.CENTER_COLORS)
+        val first = analyze(layout, centerPlaced, Placement.CENTER_COLORS, named.palette)
         if (first.isValid || positions == null || positions == byCenters) return first
-        val second = analyze(layout, clusters.classification(named.labels, positions, layout.center), Placement.SCAN_ORDER, named.palette)
+        val second = analyze(layout, Placed(clusters.classification(named.labels, positions, layout.center), positions, lookAlikes), Placement.SCAN_ORDER, named.palette)
         return if (second.isValid) second else first
     }
 
-    /** Even sizes: clusters from scratch (best few tried in turn), placed by scan position. */
-    private fun resolveEven(layout: Layout, samples: List<StickerSample>, linear: Array<DoubleArray>, positions: List<Face>?): NxNScanAnalysis {
+    /**
+     * Even sizes: clusters from scratch (best few tried in turn), placed by scan position. A 2x2
+     * reading rejected as a duplicate scan or for a confidently misread sticker ([checkTwoByTwo]) ends
+     * the search: the scans, not the clustering, are at fault.
+     */
+    private fun resolveEven(
+        layout: Layout,
+        samples: List<StickerSample>,
+        linear: Array<DoubleArray>,
+        positions: List<Face>?,
+        lookAlikes: Lazy<List<LookAlike>>,
+    ): NxNScanAnalysis {
         val faces = positions ?: GUIDED_ORDER
         val quota = IntArray(6) { layout.perFace }
         val candidates = JointClustering.clusterFromScratch(samples, linear, 6, layout.perFace, quota, quota).take(CLUSTERINGS_TRIED)
         var first: NxNScanAnalysis? = null
         for ((k, clusters) in candidates.withIndex()) {
             val named = Named(clusters)
-            val classification = clusters.classification(named.labels, faces, -1)
+            val placed = Placed(clusters.classification(named.labels, faces, -1), faces, lookAlikes)
             val analysis = if (named.plausible) {
-                analyze(layout, classification, Placement.SCAN_ORDER, named.palette)
+                analyze(layout, placed, Placement.SCAN_ORDER, named.palette)
             } else {
-                implausible(layout, classification, named.palette, Placement.SCAN_ORDER)
+                implausible(layout, placed, named.palette, Placement.SCAN_ORDER)
             }
             if (analysis.isValid) return withRivalReadings(layout, analysis, clusters, candidates.filterIndexed { i, _ -> i != k }, faces)
+            if (layout.n == 2 && analysis.problems.firstOrNull()?.message in REJECTIONS) return analysis
             if (first == null) first = analysis
         }
         return first!!
     }
+
+    /** A classification with the faces its scans were placed on (scan k on `faces[k]`), and the look-alike scans of the session. */
+    private class Placed(val classification: Classification, val faces: List<Face>, val lookAlikes: Lazy<List<LookAlike>>)
 
     /**
      * Even sizes: [analysis] (valid, from the clustering [chosen]) with every sticker flagged that a
@@ -191,9 +223,12 @@ internal object NxNScanResolver {
      * Orientation fixing, repair and uncertainty for one placement of the scans: the colors as
      * classified if some face rotations make them a valid cube; else the cheapest exchange of two
      * close calls that does ([JointClustering.repairBySwap]); else, from 4x4 on, the cheapest
-     * correction of one confidently misread sticker ([repairMisread]).
+     * correction of one confidently misread sticker ([repairMisread]). A valid 2x2 reading must also
+     * pass [checkTwoByTwo]; an invalid reading of scans that look like one face scanned twice reports
+     * that first ([duplicateEvidence]).
      */
-    private fun analyze(layout: Layout, classification: Classification, placement: Placement, palette: CubePaletteEstimate): NxNScanAnalysis {
+    private fun analyze(layout: Layout, placed: Placed, placement: Placement, palette: CubePaletteEstimate): NxNScanAnalysis {
+        val classification = placed.classification
         val n = layout.n
         val orient = { colors: List<CubeColor> -> NxNOrientationFixer.orient(n, colors) }
         val uncertainRaw = classification.uncertain().toMutableSet()
@@ -213,7 +248,17 @@ internal object NxNScanResolver {
             // The validator always finds a problem here (the search includes the colors as captured); the
             // fallback only guards against the two ever disagreeing.
             val problems = problemsOf(n, raw).ifEmpty { listOf(NxNError("These colors don't form a ${n}×$n cube.")) }
-            return NxNScanAnalysis(n, raw, raw, NO_ROTATIONS, false, uncertainRaw.toSortedSet(), palette, placement, problems)
+            val duplicate = duplicateEvidence(layout, placed, raw)
+            if (duplicate.level == Duplication.CLEAR) uncertainRaw += secondScanOf(layout, placed, duplicate.pair!!)
+            return NxNScanAnalysis(n, raw, raw, NO_ROTATIONS, false, uncertainRaw.toSortedSet(), palette, placement, duplicate.explain(layout, placed) + problems)
+        }
+        val duplicate = if (n == 2) duplicateEvidence(layout, placed, raw) else null
+        if (duplicate != null) {
+            val rejection = checkTwoByTwo(layout, placed, raw, duplicate)
+            if (rejection != null) {
+                uncertainRaw += rejection.stickers
+                return NxNScanAnalysis(n, raw, raw, NO_ROTATIONS, false, uncertainRaw.toSortedSet(), palette, placement, listOf(rejection) + problemsOf(n, raw))
+            }
         }
         val rotations = oriented.rotations
         val uncertain = uncertainRaw.mapTo(sortedSetOf()) { i ->
@@ -221,7 +266,103 @@ internal object NxNScanResolver {
         }
         uncertain += oriented.ambiguous
         uncertain += alternativeReadings(classification, raw, oriented, orient)
+        // A possible duplicate: no sticker of a reading that may rest on the wrong photo can be trusted.
+        if (duplicate?.level == Duplication.POSSIBLE) uncertain += 0 until layout.count
         return NxNScanAnalysis(n, raw, oriented.colors, rotations, true, uncertain, palette, placement, emptyList())
+    }
+
+    /**
+     * Rejects a valid 2x2 reading [raw] of [placed] (the colors as classified, or as repaired by
+     * [JointClustering.repairBySwap]) that rests on stickers read as colors they clearly don't show,
+     * returning the problem to report, or null to keep it ([duplicate]: the evidence for a duplicate
+     * scan). A 2x2 cube has only its corners for validation to check, and a wrong reading passes for a
+     * valid cube far too easily: a third of rendered sessions with one face scanned twice did, most of
+     * them with wrong stickers unflagged, often after exchanging two clearly read stickers. It is
+     * rejected when
+     *  - two scans look like the same face ([Duplication.CLEAR]): the later one is to be retaken;
+     *  - the reading gives a sticker another color than it shows, by more than
+     *    [ScanResolver.UNCERTAIN_MARGIN]: a misread, or an exchange of two clearly read stickers,
+     *    which validation cannot tell from the right reading on a 2x2 cube, or a duplicate scan that
+     *    the look-alike test missed.
+     * On rendered scans of real 2x2 cubes (scrambled, solved and nearly solved, vivid and pastel, in
+     * any light) about one session in a hundred is rejected, nearly all of them solved or nearly
+     * solved cubes of very pale colors in a color cast.
+     */
+    private fun checkTwoByTwo(layout: Layout, placed: Placed, raw: List<CubeColor>, duplicate: DuplicateEvidence): NxNError? {
+        if (duplicate.level == Duplication.CLEAR) return duplicate.explain(layout, placed).single()
+        val fit = Fit(placed.classification, raw)
+        val misread = fit.movable.filter { fit.margin[it] < -ScanResolver.UNCERTAIN_MARGIN }
+        if (misread.isEmpty()) return null
+        return NxNError(MISREAD_MESSAGE, misread.toSortedSet())
+    }
+
+    /** How strongly the scans look like one face scanned twice ([duplicateEvidence]). */
+    private enum class Duplication {
+        /** No sign of a duplicate. */
+        NONE,
+
+        /**
+         * Two scans look alike in a distinctive way but are read as different faces: possibly a
+         * duplicate whose colors the lighting model explained away as another face's under an
+         * unusual cast.
+         */
+        POSSIBLE,
+
+        /** Two scans look alike and the reading needed stickers forced into colors they don't show. */
+        CLEAR,
+    }
+
+    /** The [level] of evidence for a duplicate scan, and the [pair] of scans it rests on. */
+    private class DuplicateEvidence(val level: Duplication, val pair: LookAlike?) {
+        /** The problem to report for a [Duplication.CLEAR] duplicate (the later scan's stickers highlighted), else nothing. */
+        fun explain(layout: Layout, placed: Placed): List<NxNError> =
+            if (level == Duplication.CLEAR) listOf(NxNError(DUPLICATE_MESSAGE, secondScanOf(layout, placed, pair!!))) else emptyList()
+    }
+
+    /** The stickers (indices in the placed colors) of the later scan of [pair]. */
+    private fun secondScanOf(layout: Layout, placed: Placed, pair: LookAlike): Set<Int> {
+        val start = placed.faces[pair.second].ordinal * layout.perFace
+        return (start until start + layout.perFace).toSortedSet()
+    }
+
+    /**
+     * Whether some two scans look like the same face ([LookAlike]) and the reading [colors] of
+     * [placed] (as classified, or repaired) shows the signs of a duplicate. A face scanned twice, in
+     * place of another face, puts one face's colors on the cube twice and leaves out another's, but
+     * every color must appear `n * n` times, so the joint classification has to give stickers colors
+     * they don't show (negative margins). It is [Duplication.CLEAR] when two look-alike scans are read alike while stickers had
+     * to be forced (more than [FORCING] in all), or are read differently only where stickers were
+     * forced ([FORCED_STICKER]). Two different faces that look alike (a 2x2 cube often has two faces
+     * with the same pattern; a solved pale cube has uniform faces that look alike under different
+     * casts) are read as what they show and need nothing forced. Of several such pairs, the one that
+     * matches most closely is taken for the duplicate (two photos of one face differ least).
+     *
+     * Pairs read differently without forcing are [Duplication.POSSIBLE] if their match is
+     * [LookAlike.distinctive]: the lighting model can also explain a duplicate of a pale face as
+     * another face under an unusual cast, with nothing forced.
+     */
+    private fun duplicateEvidence(layout: Layout, placed: Placed, colors: List<CubeColor>): DuplicateEvidence {
+        val lookAlikes = placed.lookAlikes.value
+        if (lookAlikes.isEmpty()) return DuplicateEvidence(Duplication.NONE, null)
+        val fit = Fit(placed.classification, colors)
+        val forced = fit.movable.sumOf { minOf(0.0, fit.margin[it]) } < -FORCING
+        var possible: LookAlike? = null
+        for (pair in lookAlikes) {
+            val a = placed.faces[pair.first].ordinal * layout.perFace
+            val b = placed.faces[pair.second].ordinal * layout.perFace
+            var alike = true
+            var onlyForced = true
+            for (p in 0 until layout.perFace) {
+                val i = a + p
+                val j = b + pair.matching[p]
+                if (colors[i] == colors[j]) continue
+                alike = false
+                if (!(fit.margin[i] < -FORCED_STICKER || fit.margin[j] < -FORCED_STICKER)) onlyForced = false
+            }
+            if ((alike && forced) || (!alike && onlyForced)) return DuplicateEvidence(Duplication.CLEAR, pair)
+            if (!alike && pair.distinctive && possible == null) possible = pair
+        }
+        return DuplicateEvidence(if (possible != null) Duplication.POSSIBLE else Duplication.NONE, possible)
     }
 
     /**
@@ -401,11 +542,20 @@ internal object NxNScanResolver {
     val IMPLAUSIBLE = NxNError("These scans don't show six different sticker colors.")
 
     /** Clusters that are not six clearly different colors (one face scanned six times, grey surfaces): no cube, all uncertain. */
-    private fun implausible(layout: Layout, classification: Classification, palette: CubePaletteEstimate, placement: Placement): NxNScanAnalysis {
-        val raw = classification.colors
-        val problems = listOf(IMPLAUSIBLE) + problemsOf(layout.n, raw)
+    private fun implausible(layout: Layout, placed: Placed, palette: CubePaletteEstimate, placement: Placement): NxNScanAnalysis {
+        val raw = placed.classification.colors
+        val problems = duplicateEvidence(layout, placed, raw).explain(layout, placed) + IMPLAUSIBLE + problemsOf(layout.n, raw)
         return NxNScanAnalysis(layout.n, raw, raw, NO_ROTATIONS, false, (0 until layout.count).toSortedSet(), palette, placement, problems)
     }
+
+    /** The problem reported when two scans look like the same face. */
+    const val DUPLICATE_MESSAGE = "Two photos seem to show the same side of the cube. Retake the highlighted side."
+
+    /** The problem reported when a 2x2 reading needs stickers to be colors they clearly don't show. */
+    const val MISREAD_MESSAGE = "These stickers don't look like the colors the cube still needs. Retake the sides they are on."
+
+    /** Problems that reject the scans themselves, so that no other clustering is tried. */
+    private val REJECTIONS = setOf(DUPLICATE_MESSAGE, MISREAD_MESSAGE)
 
     /** Best-effort result for scans that are not six of n × n samples: per-sticker guesses, all uncertain. */
     private fun malformed(layout: Layout, scans: List<List<StickerSample>>): NxNScanAnalysis {

@@ -194,6 +194,101 @@ class NxNGridSamplerTest {
         println(report)
     }
 
+    /** A face of [base] with one outer row (the side given by [side], 0 to 3) of [other]; all [base] if [other] is null. */
+    private fun nearlyUniform(n: Int, base: CubeColor, other: CubeColor?, side: Int): List<CubeColor> = List(n * n) { p ->
+        val row = p / n
+        val col = p % n
+        val edge = when (side) {
+            0 -> row == 0
+            1 -> col == n - 1
+            2 -> row == n - 1
+            else -> col == 0
+        }
+        if (other != null && edge) other else base
+    }
+
+    @Test
+    fun readsNearlyUniformFaces() {
+        // The faces of solved and nearly solved cubes: one color, or one color with an outer row of
+        // another. On stickerless and white-bodied cubes a face like that has no edges inside to lock
+        // onto, and the grid followed the guide, which follows the user's hand rather than the face:
+        // it put the outer rows of big faces over the face's edge or onto the neighbouring row (6, 6
+        // and 3 of these 288 faces per look were misread). Now the grid is kept on the face. The
+        // hardest case left is a white face on a white body with an outer row of another color, whose
+        // white stickers look just like the plastic between them: about one such 6x6 or 7x7 face in 15.
+        val looks = listOf(
+            KnockOffCubes.STICKERLESS,
+            KnockOffCubes.WHITE_BODY,
+            CubeLook("pastel, stickerless", KnockOffCubes.PASTEL.srgb, SyntheticFaces.Body.STICKERLESS),
+        )
+        val report = StringBuilder("Nearly uniform faces, misread faces:")
+        for (look in looks) {
+            var misread = 0
+            var total = 0
+            val examples = mutableListOf<String>()
+            for (n in 4..7) {
+                for (light in listOf(NxNSessions.Light.NORMAL, NxNSessions.Light.MIXED, NxNSessions.Light.WARM)) {
+                    val random = Random(300 + n * 13 + look.name.length + light.ordinal)
+                    val renderer = SyntheticFaces(random, look)
+                    repeat(NEARLY_UNIFORM_FACES) { k ->
+                        val base = CubeColor.entries[random.nextInt(6)]
+                        val other = if (k % 3 == 0) null else (CubeColor.entries - base)[random.nextInt(5)]
+                        val colors = nearlyUniform(n, base, other, random.nextInt(4))
+                        val cast = NxNSessions.sessionCast(light, random)
+                        val conditions = NxNSessions.conditions(light, cast, random)
+                        val (image, guide) = renderer.render(n, colors, conditions, NxNSessions.guideSize(n))
+                        val samples = GridSampler.sample(image, guide, 0, n)
+                        val session = NxNSessions.Session(n, listOf(Face.F), listOf(colors), listOf(samples), listOf(0), listOf(conditions), cast)
+                        val errors = NxNSessions.samplerErrors(session, look)
+                        total++
+                        if (errors.isNotEmpty()) {
+                            misread++
+                            examples += "${n}x$n $light face $k: ${errors.map { it.second }}"
+                        }
+                    }
+                }
+            }
+            report.append(" $look $misread/$total;")
+            val allowed = if (look.body == SyntheticFaces.Body.WHITE) 2 else 0
+            assertTrue("$look: $misread of $total faces misread: $examples", misread <= allowed)
+        }
+        println(report)
+    }
+
+    @Test
+    fun darkStickersOnAWhiteBodyAreNotTakenForGaps() {
+        // A white-bodied face whose stickers are all dark under a warm cast (a blue face in incandescent
+        // light): the stickers are much darker than the white plastic and cover every row and column,
+        // so they passed for the dark gaps of a black body, and the grid locked onto the plastic between
+        // them: one or two of these 30 faces per size were read entirely off their stickers, at every
+        // size. Gaps are thin lines between wide stickers; these are the other way round.
+        val report = StringBuilder("White body, warm light, dark faces read right:")
+        for (n in 2..7) {
+            val random = Random(900 + n)
+            val renderer = SyntheticFaces(random, KnockOffCubes.WHITE_BODY)
+            var right = 0
+            var total = 0
+            for (color in listOf(CubeColor.BLUE, CubeColor.RED, CubeColor.GREEN)) {
+                repeat(DARK_FACES) { k ->
+                    // Uniform faces, and faces of the color with a row of another dark color.
+                    val other = if (k % 2 == 0) null else listOf(CubeColor.BLUE, CubeColor.RED, CubeColor.GREEN).first { it != color }
+                    val colors = nearlyUniform(n, color, other, k % 4)
+                    val cast = NxNSessions.sessionCast(NxNSessions.Light.WARM, random)
+                    val conditions = NxNSessions.conditions(NxNSessions.Light.WARM, cast, random)
+                    val (image, guide) = renderer.render(n, colors, conditions, NxNSessions.guideSize(n))
+                    val samples = GridSampler.sample(image, guide, 0, n)
+                    val session = NxNSessions.Session(n, listOf(Face.F), listOf(colors), listOf(samples), listOf(0), listOf(conditions), cast)
+                    val errors = NxNSessions.samplerErrors(session, KnockOffCubes.WHITE_BODY)
+                    assertTrue("${n}x$n $color face $k: misread ${errors.map { it.second }}", errors.isEmpty())
+                    right++
+                    total++
+                }
+            }
+            report.append(" ${n}x$n $right/$total;")
+        }
+        println(report)
+    }
+
     @Test
     fun aFitThroughImpreciselyLocatedCellsDoesNotWarpTheGrid() {
         // A pastel stickerless 6x6 in warm light (the fourth session of this seed): tiles of one color
@@ -285,5 +380,7 @@ class NxNGridSamplerTest {
     private companion object {
         const val FACES = 40
         const val CAST_FACES = 60
+        const val NEARLY_UNIFORM_FACES = 24
+        const val DARK_FACES = 10
     }
 }

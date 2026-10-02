@@ -32,7 +32,8 @@ import kotlin.math.sqrt
  * returns an [NxNScanAnalysis] (joint clustering of `6 * n * n` stickers; even sizes, which have no
  * fixed centers, are clustered from scratch and placed by scan order; face rotations are fixed by
  * [NxNOrientationFixer]; from 4x4 on, a single confidently misread sticker is corrected, and every
- * sticker that another equally good reading colors differently is flagged), and
+ * sticker that another equally good reading colors differently is flagged; one face photographed
+ * twice is reported, and a 2x2 reading resting on clearly misread stickers is rejected), and
  * [AdaptiveLiveClassifier.learnFaces] learns any size's colors while scanning. For n = 3 they give
  * exactly the 3x3 results.
  *
@@ -146,9 +147,19 @@ data class NxNScanAnalysis(
     val isValid: Boolean,
     /**
      * Stickers whose color assignment was uncertain; the UI may highlight these for review. Indices
-     * refer to positions in [colors]. A sticker is uncertain when its color was a close call, or when
-     * it depends on how a face was held during scanning (another combination of face rotations also
-     * gives a valid cube, with a different color here).
+     * refer to positions in [colors]. A sticker is uncertain when its color was a close call, when it
+     * matches no color well, when it was corrected, or when it depends on how a face was held during
+     * scanning (another combination of face rotations also gives a valid cube, with a different color
+     * here), or on which of two equally good readings is right.
+     *
+     * This set can be large. Solved and lightly scrambled cubes have faces of one or two colors, and
+     * a face of few colors often gives a valid cube held in more than one way: with faces held at
+     * random angles, about half of such sessions come back with tens of stickers flagged (on a 2x2
+     * cube often all 24), at every size. Faces captured upright as the guide asks make this much
+     * rarer. A 2x2 reading that may rest on one face photographed twice (two photos that look alike
+     * sticker for sticker, read as different faces) also has every sticker flagged. The scan screen
+     * should be ready for a large set, e.g. by asking how a face was held, or by offering to retake
+     * the faces whose stickers are flagged, rather than asking about every sticker.
      */
     val uncertain: Set<Int>,
     /**
@@ -164,8 +175,9 @@ data class NxNScanAnalysis(
     val placement: Placement,
     /**
      * Why [colors] is not a valid cube, as [NxNValidator] reports it (friendly messages with the
-     * stickers to highlight), preceded by a note for malformed or implausible scans; empty when
-     * [isValid].
+     * stickers to highlight), preceded by a note for malformed or implausible scans, for two photos
+     * that seem to show the same side (the later one highlighted, to be retaken), and for a 2x2
+     * reading that would need stickers to be colors they clearly don't show; empty when [isValid].
      */
     val problems: List<NxNError>,
 ) {

@@ -412,11 +412,13 @@ class NxNScanResolverTest {
     }
 
     @Test
-    fun rivalClusteringsOfATwoByTwoAreFlagged() {
+    fun rivalClusteringsOfATwoByTwoAreNotSilentlyWrong() {
         // A very pale pastel 2x2 in cool light: with four stickers per photo the per-photo lighting
         // model explains the stickers about as well with two different clusterings, and both make a
-        // valid cube (only the corners can be checked). The cheaper one is wrong here; every sticker
-        // the two disagree on is flagged.
+        // valid cube (only the corners can be checked). The cheaper one is wrong here. It made a valid
+        // cube only by exchanging two stickers that each clearly show their own color, which a 2x2
+        // reading is not allowed to rest on: the scan is reported for retaking those sides. (Before
+        // that rule, the wrong reading came back with every sticker the two disagree on flagged.)
         val random = Random(215170)
         val renderer = SyntheticFaces(random, KnockOffCubes.PALE)
         repeat(23) { c ->
@@ -424,9 +426,119 @@ class NxNScanResolverTest {
             val session = NxNSessions.scan(renderer, 2, truth, NxNSessions.Light.COOL, random)
             if (c == 22) {
                 val analysis = ScanResolver.resolve(2, session.scans, NxNSessions.GUIDED)
-                assertEquals(NxNSessions.Outcome.FLAGGED, NxNSessions.outcome(analysis, truth))
+                assertEquals(NxNSessions.Outcome.INVALID, NxNSessions.outcome(analysis, truth))
+                assertEquals(NxNScanResolver.MISREAD_MESSAGE, analysis.problems.first().message)
+                assertTrue(analysis.problems.first().stickers.isNotEmpty())
             }
         }
+    }
+
+    @Test
+    fun aFaceScannedTwiceIsReportedNeverSilentlyWrong() {
+        // Forgetting to turn the cube before a photo puts one face on the cube twice and leaves out
+        // another. Every color must still appear n * n times, so stickers are forced into colors they
+        // don't show, and a 2x2 cube, with only its corners to check, often still made a valid cube:
+        // 17 of these 40 vivid and 19 of 40 pastel sessions did, 6 and 9 of them with wrong stickers
+        // unflagged. Now the scans are reported, with the later of the two look-alike scans to retake.
+        for (look in listOf(KnockOffCubes.VIVID, KnockOffCubes.PASTEL)) {
+            val random = Random(5)
+            val renderer = SyntheticFaces(random, look)
+            val outcomes = IntArray(NxNSessions.Outcome.entries.size)
+            var reported = 0
+            var rightSide = 0
+            repeat(DUPLICATE_SESSIONS) { c ->
+                val truth = NxNSessions.scrambled(2, random).toColors()
+                val session = NxNSessions.scan(renderer, 2, truth, NxNSessions.Light.NORMAL, random)
+                val slot = random.nextInt(6)
+                val face = (slot + 1 + random.nextInt(5)) % 6
+                val scans = session.scans.toMutableList()
+                if (c % 4 == 0) {
+                    scans[slot] = session.scans[face] // the very same samples
+                } else {
+                    // The face photographed again, in the light of the session.
+                    val (image, guide) = renderer.render(2, session.shown[face], NxNSessions.conditions(NxNSessions.Light.NORMAL, session.cast, random), NxNSessions.guideSize(2))
+                    scans[slot] = GridSampler.sample(image, guide, 0, 2)
+                }
+                val analysis = ScanResolver.resolve(2, scans, NxNSessions.GUIDED)
+                assertWellFormed(2, analysis)
+                val outcome = NxNSessions.outcome(analysis, truth)
+                outcomes[outcome.ordinal]++
+                assertTrue("$look cube $c (slot $slot holds face $face): $outcome", outcome != NxNSessions.Outcome.WRONG)
+                val first = analysis.problems.firstOrNull()
+                if (first?.message == NxNScanResolver.DUPLICATE_MESSAGE) {
+                    reported++
+                    // The later scan of a look-alike pair is highlighted: all of its stickers, as placed.
+                    // Two faces of a real 2x2 cube can look alike too; nearly always it is the duplicate.
+                    assertTrue("$look cube $c: ${first.stickers}", first.stickers.size == 4 && first.stickers.map { it / 4 }.toSet().size == 1)
+                    val later = NxNSessions.GUIDED[maxOf(slot, face)].ordinal * 4
+                    if (first.stickers == (later until later + 4).toSet()) rightSide++
+                }
+            }
+            println("2x2 $look, one face scanned twice: ${NxNSessions.Outcome.entries.joinToString { "${it.name.lowercase()} ${outcomes[it.ordinal]}" }}; $reported reported as the same side twice ($rightSide with the right side highlighted)")
+            assertTrue("$look: only $reported of $DUPLICATE_SESSIONS reported as duplicates", reported * 4 >= DUPLICATE_SESSIONS * 3)
+            assertTrue("$look: the right side highlighted in only $rightSide of $reported", rightSide * 10 >= reported * 9)
+        }
+        // Bigger cubes never made a valid cube of a duplicate; now they also say why first.
+        val random = Random(55)
+        for (n in listOf(4, 5, 6, 7)) {
+            val renderer = SyntheticFaces(random, KnockOffCubes.PASTEL)
+            val truth = NxNSessions.scrambled(n, random).toColors()
+            val session = NxNSessions.scan(renderer, n, truth, NxNSessions.Light.NORMAL, random)
+            val (image, guide) = renderer.render(n, session.shown[1], NxNSessions.conditions(NxNSessions.Light.NORMAL, session.cast, random), NxNSessions.guideSize(n))
+            val scans = session.scans.toMutableList().also { it[4] = GridSampler.sample(image, guide, 0, n) }
+            val analysis = ScanResolver.resolve(n, scans, NxNSessions.GUIDED)
+            assertFalse("${n}x$n", analysis.isValid)
+            assertEquals("${n}x$n", NxNScanResolver.DUPLICATE_MESSAGE, analysis.problems.first().message)
+        }
+        // Real 2x2 cubes (scrambled, solved and nearly solved; their faces may look alike) are not
+        // taken for duplicates.
+        for (look in listOf(KnockOffCubes.VIVID, KnockOffCubes.PASTEL, KnockOffCubes.STICKERLESS, KnockOffCubes.WHITE_BODY)) {
+            val r = Random(56 + look.name.length)
+            val renderer = SyntheticFaces(r, look)
+            repeat(DUPLICATE_SESSIONS) { c ->
+                val moves = if (c % 2 == 0) NxNScrambler.randomMoves(2, r) else NxNScrambler.randomMoves(2, r).take(c % 3)
+                val truth = NxNCube.solved(2).apply(moves).toColors()
+                val analysis = ScanResolver.resolve(2, NxNSessions.scan(renderer, 2, truth, NxNSessions.Light.NORMAL, r).scans, NxNSessions.GUIDED)
+                val outcome = NxNSessions.outcome(analysis, truth)
+                assertTrue("$look cube $c: $outcome ${analysis.problems.take(1)}", outcome == NxNSessions.Outcome.EXACT || outcome == NxNSessions.Outcome.FLAGGED)
+            }
+        }
+    }
+
+    @Test
+    fun nearlySolvedCubesOfEverySize() {
+        // Solved cubes and cubes one or two outer turns from solved: faces of one or two colors, which
+        // give the sampler few edges to lock onto and the joint classification little variety. Held as
+        // the guide asks, every one is read exactly. Held at random angles they are often genuinely
+        // ambiguous (another way of holding a face also gives a valid cube); then every sticker that
+        // depends on it is flagged. None may be wrong.
+        val pastelStickerless = CubeLook("pastel stickerless", KnockOffCubes.PASTEL.srgb, SyntheticFaces.Body.STICKERLESS)
+        val report = StringBuilder("Nearly solved cubes (exact as guided; at random angles exact / ambiguous+flagged / invalid):")
+        for (look in listOf(KnockOffCubes.VIVID, KnockOffCubes.PASTEL, KnockOffCubes.STICKERLESS, KnockOffCubes.WHITE_BODY, pastelStickerless)) {
+            report.append("\n  $look:")
+            for (n in sizes) {
+                val random = Random(800 + 17 * n + look.name.length)
+                val renderer = SyntheticFaces(random, look)
+                var guidedExact = 0
+                val turned = IntArray(NxNSessions.Outcome.entries.size)
+                repeat(NEAR_SOLVED_CUBES) { c ->
+                    val moves = NxNScrambler.randomMoves(n, random).take(c % 3).map { it.copy(fromDepth = 1, toDepth = 1) }
+                    val truth = NxNCube.solved(n).apply(moves).toColors()
+                    val light = if (c % 2 == 0) NxNSessions.Light.NORMAL else NxNSessions.Light.entries[1 + c / 2 % 3]
+                    for (upright in listOf(true, false)) {
+                        val session = NxNSessions.scan(renderer, n, truth, light, random, heldAt = if (upright) List(6) { 0 } else null)
+                        val analysis = ScanResolver.resolve(n, session.scans, NxNSessions.GUIDED)
+                        val outcome = NxNSessions.outcome(analysis, truth)
+                        assertTrue("${n}x$n $look $light cube $c (${moves.size} turns, upright $upright): $outcome", outcome != NxNSessions.Outcome.WRONG)
+                        if (upright && outcome == NxNSessions.Outcome.EXACT) guidedExact++
+                        if (!upright) turned[outcome.ordinal]++
+                    }
+                }
+                report.append(" ${n}x$n $guidedExact/$NEAR_SOLVED_CUBES (${turned[0]}/${turned[1]}/${turned[3]});")
+                assertTrue("${n}x$n $look: $guidedExact of $NEAR_SOLVED_CUBES exact as guided", guidedExact >= NEAR_SOLVED_CUBES - 1)
+            }
+        }
+        println(report)
     }
 
     @Test
@@ -491,5 +603,7 @@ class NxNScanResolverTest {
         const val OTHER_CUBES = 8
         const val ARRANGEMENT_CUBES = 6
         const val MISREAD_CUBES = 20
+        const val DUPLICATE_SESSIONS = 40
+        const val NEAR_SOLVED_CUBES = 6
     }
 }
